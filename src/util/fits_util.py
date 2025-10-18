@@ -16,6 +16,7 @@ class FitsUtil:
         self.dap_dir = self.data_dir / "analysis"
         self.images_dir = self.data_dir / "images"
 
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.drp_dir.mkdir(parents=True, exist_ok=True)
         self.dap_dir.mkdir(parents=True, exist_ok=True)
         self.images_dir.mkdir(parents=True, exist_ok=True)

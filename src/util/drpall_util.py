@@ -92,8 +92,8 @@ def unique_by_id(table: Table, id_candidates: Iterable[str]) -> Table:
     return unique_table
 
 
-def get_all_fits(fits_file: str):
-    fits_path = Path(fits_file)
+def get_all_fits(drpall_file: str):
+    fits_path = Path(drpall_file)
     drpall = load_table(fits_path)
 
     galaxies = select_target_galaxies(drpall)
@@ -102,3 +102,63 @@ def get_all_fits(fits_file: str):
 
     log.info("--- 筛选完成 ---")
     return uniquegals
+
+# get z_sys from drpall
+def get_z_sys(drpall_file, plateifu) -> float | None:
+    drpall_hdu = fits.open(drpall_file)
+    try:
+        drpall_data = drpall_hdu[1].data
+        match = drpall_data['plateifu'] == plateifu
+        if not np.any(match):
+            print(f"No match found for {plateifu} in drpall")
+            return None
+
+        # determine available column names in a robust way (avoid comparing Column objects with strings)
+        try:
+            colnames = [n.lower() for n in drpall_hdu[1].columns.names]
+        except Exception:
+            # fallback for numpy recarray
+            colnames = [n.lower() for n in getattr(drpall_data, 'dtype').names] if getattr(drpall_data, 'dtype', None) else []
+
+        # find z_sys
+        z_sys = None
+        if 'nsa_z' in colnames:
+                        print("Using nsa_z for z_sys")
+                        z_sys = drpall_data['nsa_z'][match][0]
+        elif 'nsa_zdist' in colnames:
+            print("Using nsa_zdist for z_sys")
+            z_sys = drpall_data['nsa_zdist'][match][0]
+        elif 'z' in colnames:
+            print("Using z for z_sys")
+            z_sys = drpall_data['z'][match][0]
+
+        # find pa
+        pa_deg = None
+        if 'nsa_sersic_phi' in colnames:
+            print("Using nsa_sersic_phi for pa_deg")
+            pa_deg = drpall_data['nsa_sersic_phi'][match][0]
+        elif 'nsa_petro_phi' in colnames:
+            print("Using nsa_petro_phi for pa_deg")
+            pa_deg = drpall_data['nsa_petro_phi'][match][0]
+        elif 'elpetro_phi' in colnames:
+            print("Using elpetro_phi for pa_deg")
+            pa_deg = drpall_data['elpetro_phi'][match][0]
+
+        # find ba
+        ba = None
+        if 'nsa_sersic_ba' in colnames:
+            print("Using nsa_sersic_ba for ba")
+            ba = drpall_data['nsa_sersic_ba'][match][0]
+        elif 'nsa_petro_ba' in colnames:
+            print("Using nsa_petro_ba for ba")
+            ba = drpall_data['nsa_petro_ba'][match][0]
+        elif 'elpetro_ba' in colnames:
+            print("Using elpetro_ba for ba")
+            ba = drpall_data['elpetro_ba'][match][0]
+
+        return z_sys, pa_deg, ba
+
+
+    finally:
+        drpall_hdu.close()
+

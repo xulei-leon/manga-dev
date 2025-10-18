@@ -3,52 +3,40 @@ from astropy.utils.exceptions import AstropyWarning
 from astropy.io import fits
 import numpy as np
 
-# get z_sys from drpall
-def get_z_sys(drpall_path, plateifu):
-    drpall_hdu = fits.open(drpall_path)
-    try:
-        drpall_data = drpall_hdu[1].data
-        match = drpall_data['plateifu'] == plateifu
-        if np.any(match):
-            z_sys = drpall_data['nsa_z'][match][0]
-            return z_sys
-        else:
-            print(f"No match found for {plateifu} in drpall")
-            return None
-    finally:
-        drpall_hdu.close()
-
 
 # get velocity map from MAPS file
-def get_vel_from_map(maps_file_path, channel_name='Ha'):
+# Emission Line Gaussian Velocity (EMLINE_GVEL) extension
+# channel_name: 'Ha' for Hα, 'OIII' for [O III], etc.
+def get_spin_vel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str]:
     try:
-        with fits.open(maps_file_path) as hdul:
-            # Find the channel index based on the channel name
+        with fits.open(maps_file_path) as hdu:
+            hdr = hdu['EMLINE_GVEL'].header
             channel_index = None
-            for key, value in hdul['EMLINE_GVEL'].header.items():
-                if key.startswith('C') and isinstance(value, str):
-                    if channel_name.upper() in value.upper():
-                        channel_index = int(key[1:]) - 1
-                        print(f"Found channel {channel_name} at index {channel_index}")
-                        break
+            naxis3 = int(hdr.get('NAXIS3', 0))
+            for i in range(naxis3):
+                line_name = hdr.get(f'C{i+1}', '')
+                if isinstance(line_name, str) and  channel_name.strip().upper() in line_name.upper():
+                    channel_index = i
+                    print(f"Found Hα channel at index {channel_index}: {line_name}")
+                    break
 
             if channel_index is None:
                 raise ValueError(f"Channel {channel_name} not found in MAPS file.")
             
             # Extract velocity data
-            gas_vel_data = hdul['EMLINE_GVEL'].data
+            gas_vel_data = hdu['EMLINE_GVEL'].data
             gas_vel_channel = gas_vel_data[channel_index, :, :]
             
             # Extract mask data
-            gas_mask_data = hdul['EMLINE_GVEL_MASK'].data
+            gas_mask_data = hdu['EMLINE_GVEL_MASK'].data
             gas_mask_channel = gas_mask_data[channel_index, :, :]
             
             # Extract IVAR data (not used in this function, but extracted for completeness)
-            gas_ivar_data = hdul['EMLINE_GVEL_IVAR'].data
+            gas_ivar_data = hdu['EMLINE_GVEL_IVAR'].data
             gas_ivar_channel = gas_ivar_data[channel_index, :, :]
             
             # Get velocity unit
-            velocity_unit = hdul['EMLINE_GVEL'].header['BUNIT']
+            velocity_unit = hdu['EMLINE_GVEL'].header['BUNIT']
             
             # print(f"Successfully extracted {channel_name} velocity map, shape: {gas_vel_channel.shape}")
             # print(f"Velocity unit: {velocity_unit}")

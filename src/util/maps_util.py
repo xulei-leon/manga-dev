@@ -5,9 +5,16 @@ import numpy as np
 
 
 # get velocity map from MAPS file
+##############################################################################
+# EMLINE_GVEL (Emission Line Gaussian Velocity)
+# Line-of-Sight Velocity of Ionized Gas
+# km/s
+##############################################################################
+# EMLINE_GVEL_IVAR (Emission Line Gaussian Velocity Inverse Variance)
+##############################################################################
 # Emission Line Gaussian Velocity (EMLINE_GVEL) extension
 # channel_name: 'Ha' for Hα, 'OIII' for [O III], etc.
-def get_spin_vel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str]:
+def get_gvel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str, np.ndarray]:
     try:
         with fits.open(maps_file_path) as hdu:
             hdr = hdu['EMLINE_GVEL'].header
@@ -31,10 +38,6 @@ def get_spin_vel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str
             gas_mask_data = hdu['EMLINE_GVEL_MASK'].data
             gas_mask_channel = gas_mask_data[channel_index, :, :]
             
-            # Extract IVAR data (not used in this function, but extracted for completeness)
-            gas_ivar_data = hdu['EMLINE_GVEL_IVAR'].data
-            gas_ivar_channel = gas_ivar_data[channel_index, :, :]
-            
             # Get velocity unit
             velocity_unit = hdu['EMLINE_GVEL'].header['BUNIT']
             
@@ -47,8 +50,18 @@ def get_spin_vel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str
             # Mask bad pixels with NaN
             masked_velocity_map = gas_vel_channel.copy()
             masked_velocity_map[~good_data_mask] = np.nan
+
+            # Extract IVAR data
+            gas_ivar_data = hdu['EMLINE_GVEL_IVAR'].data
+            gas_ivar_channel = gas_ivar_data[channel_index, :, :]
+
+            # IVAR is inverse variance: positive values indicate good measurements
+            good_ivar_mask = (gas_ivar_channel > 0)
+
+            masked_ivar_map = gas_ivar_channel.copy()
+            masked_ivar_map[~good_ivar_mask] = np.nan
             
-            return masked_velocity_map, velocity_unit
+            return masked_velocity_map, velocity_unit, masked_ivar_map
             
     except FileNotFoundError:
         raise FileNotFoundError(f"File not found: {maps_file_path}. Please check the path.")
@@ -58,5 +71,24 @@ def get_spin_vel_map(maps_file_path, channel_name='Ha') -> tuple[np.ndarray, str
         raise  # Re-raise the ValueError for channel not found
     except IndexError:
         raise IndexError(f"Channel index for {channel_name} out of range. Check the channel name.")
+    except Exception as e:
+        raise Exception(f"Unknown error: {e}")
+
+
+# get Spaxel Size
+def get_spaxel_size(maps_file_path) -> float:
+    """Return the spaxel size in arcseconds from the MAPS file header."""
+    try:
+        with fits.open(maps_file_path) as hdu:
+            hdr = hdu['SPX_SKYCOO'].header
+            cd1_1 = hdr.get('CDELT1', None)
+            if cd1_1 is None:
+                raise KeyError("CD1_1 keyword not found in SPX_SKYCOO header.")
+            spaxel_size = abs(cd1_1) * 3600.0  # degrees to arcseconds
+            return spaxel_size
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {maps_file_path}. Please check the path.")
+    except KeyError as e:
+        raise KeyError(f"MAPS file structure incorrect or missing required keywords: {e}")
     except Exception as e:
         raise Exception(f"Unknown error: {e}")

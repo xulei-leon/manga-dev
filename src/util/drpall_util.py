@@ -61,7 +61,7 @@ def select_target_galaxies(drpall: Table) -> Table:
     cond_b = (np.bitwise_and(mngtarg3, BIT_MASK_3_EXCLUDE) == 0)
 
     sel = cond_a & cond_b
-    log.info(f"筛选目标星系后剩余数量: {np.count_nonzero(sel)}")
+    log.info(f"Remaining galaxies after target selection: {np.count_nonzero(sel)}")
     return drpall[sel]
 
 
@@ -70,7 +70,7 @@ def select_high_quality(galaxies: Table) -> Table:
     nrows = len(galaxies)
     drp3qual = _get_col_as_int(galaxies, ['DRP3QUAL', 'drp3qual', 'DRP_3_QUAL'], nrows)
     sel = (np.bitwise_and(drp3qual, BIT_MASK_DRP_FAIL) == 0)
-    log.info(f"筛选高质量星系后剩余数量: {np.count_nonzero(sel)}")
+    log.info(f"Remaining galaxies after high-quality selection: {np.count_nonzero(sel)}")
     return galaxies[sel]
 
 
@@ -80,7 +80,7 @@ def unique_by_id(table: Table, id_candidates: Iterable[str]) -> Table:
     """
     id_col = _find_colname(table, id_candidates)
     if id_col is None:
-        log.warning("警告：未找到 'MANGAID' 列，跳过去重步骤。")
+        log.warning("Warning: 'MANGAID' column not found, skipping deduplication.")
         return table
 
     ids = np.asarray(table[id_col])
@@ -88,7 +88,7 @@ def unique_by_id(table: Table, id_candidates: Iterable[str]) -> Table:
     _, idx = np.unique(ids, return_index=True)
     idx_sorted = np.sort(idx)
     unique_table = table[idx_sorted]
-    log.info(f"最终唯一高质量星系数量: {len(unique_table)}")
+    log.info(f"Final count of unique high-quality galaxies: {len(unique_table)}")
     return unique_table
 
 
@@ -100,65 +100,54 @@ def get_all_fits(drpall_file: str):
     highqual = select_high_quality(galaxies)
     uniquegals = unique_by_id(highqual, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
 
-    log.info("--- 筛选完成 ---")
+    log.info("--- Selection completed ---")
     return uniquegals
 
 # get z_sys from drpall
-def get_z_sys(drpall_file, plateifu) -> float | None:
-    drpall_hdu = fits.open(drpall_file)
-    try:
-        drpall_data = drpall_hdu[1].data
-        match = drpall_data['plateifu'] == plateifu
+def _fetch_scalar_column_value(drpall_file: str, plateifu: str, candidates: Iterable[str]):
+    """Open drpall, find row matching plateifu and return first available candidate column value or None."""
+    with fits.open(drpall_file) as hdul:
+        # get original column names robustly
+        try:
+            orig_names = list(hdul[1].columns.names)
+        except Exception:
+            orig_names = list(getattr(hdul[1].data, "dtype").names or [])
+        lower_names = [n.lower() for n in orig_names]
+
+        # find plateifu column
+        if "plateifu" not in lower_names:
+            log.info("The 'plateifu' column was not found in the drpall file")
+            return None
+        plateifu_col = orig_names[lower_names.index("plateifu")]
+
+        data = hdul[1].data
+        match = data[plateifu_col] == plateifu
         if not np.any(match):
-            print(f"No match found for {plateifu} in drpall")
+            log.info(f"No match found for {plateifu} in drpall")
             return None
 
-        # determine available column names in a robust way (avoid comparing Column objects with strings)
-        try:
-            colnames = [n.lower() for n in drpall_hdu[1].columns.names]
-        except Exception:
-            # fallback for numpy recarray
-            colnames = [n.lower() for n in getattr(drpall_data, 'dtype').names] if getattr(drpall_data, 'dtype', None) else []
-
-        # find z_sys
-        z_sys = None
-        if 'nsa_z' in colnames:
-                        print("Using nsa_z for z_sys")
-                        z_sys = drpall_data['nsa_z'][match][0]
-        elif 'nsa_zdist' in colnames:
-            print("Using nsa_zdist for z_sys")
-            z_sys = drpall_data['nsa_zdist'][match][0]
-        elif 'z' in colnames:
-            print("Using z for z_sys")
-            z_sys = drpall_data['z'][match][0]
-
-        # find pa
-        pa_deg = None
-        if 'nsa_sersic_phi' in colnames:
-            print("Using nsa_sersic_phi for pa_deg")
-            pa_deg = drpall_data['nsa_sersic_phi'][match][0]
-        elif 'nsa_petro_phi' in colnames:
-            print("Using nsa_petro_phi for pa_deg")
-            pa_deg = drpall_data['nsa_petro_phi'][match][0]
-        elif 'elpetro_phi' in colnames:
-            print("Using elpetro_phi for pa_deg")
-            pa_deg = drpall_data['elpetro_phi'][match][0]
-
-        # find ba
-        ba = None
-        if 'nsa_sersic_ba' in colnames:
-            print("Using nsa_sersic_ba for ba")
-            ba = drpall_data['nsa_sersic_ba'][match][0]
-        elif 'nsa_petro_ba' in colnames:
-            print("Using nsa_petro_ba for ba")
-            ba = drpall_data['nsa_petro_ba'][match][0]
-        elif 'elpetro_ba' in colnames:
-            print("Using elpetro_ba for ba")
-            ba = drpall_data['elpetro_ba'][match][0]
-
-        return z_sys, pa_deg, ba
+        # find first existing candidate column and return its scalar value
+        for cand in candidates:
+            lc = cand.lower()
+            if lc in lower_names:
+                colname = orig_names[lower_names.index(lc)]
+                return data[colname][match][0]
+        return None
 
 
-    finally:
-        drpall_hdu.close()
+def get_z_sys(drpall_file: str, plateifu: str) -> float | None:
+    """Return z_sys for plateifu using available columns (nsa_z, nsa_zdist, z) or None."""
+    val = _fetch_scalar_column_value(drpall_file, plateifu, ["nsa_z", "nsa_zdist", "z"])
+    if val is not None:
+        log.info(f"Using z sys value: {val}")
+    return float(val) if val is not None else None
+
+def get_phi_ba(drpall_file: str, plateifu: str) -> tuple[float | None, float | None]:
+    """Return (position angle in degrees, axis ratio b/a) for plateifu using available columns or (None, None)."""
+    phi_val = _fetch_scalar_column_value(drpall_file, plateifu, ["nsa_elpetro_phi"])
+    ba_val = _fetch_scalar_column_value(drpall_file, plateifu, ["nsa_elpetro_ba"])
+
+    phi = float(phi_val) if phi_val is not None else None
+    ba = float(ba_val) if ba_val is not None else None
+    return (phi, ba)
 

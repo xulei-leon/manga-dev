@@ -94,7 +94,25 @@ class MapsUtil:
         """Return the SNR map from the MAPS file."""
         snr_data = self.hdu['BIN_SNR'].data
         return snr_data
+    
+    #  ECOOPA: Position angle for ellip. coo
+    #  ECOOELL: Ellipticity (1-b/a) for ellip. coo
+    def get_pa_inc(self) -> tuple[float | None, float | None]:
+        """Return (position angle in degrees, inclination in degrees) from MAPS header or (None, None)."""
+        hdr = self.hdu['PRIMARY'].header
+        pa_val = hdr.get('ECOOPA', None)
+        ellip_val = hdr.get('ECOOELL', None)
+        return pa_val, ellip_val
+    
 
+    # SPX_ELLCOO
+    # Elliptical polar coordinates of each spaxel from the galaxy center based on the on-sky coordinates in SPX_SKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
+    def get_r_map(self) -> np.ndarray:
+        """Return the radial map from the MAPS file."""
+        r_data = self.hdu['SPX_ELLCOO'].data
+        r_map = r_data[0, :, :]
+        azimuth_map = r_data[3, :, :]
+        return r_map, azimuth_map
 
     def dump_info(self):
         """Print basic information about the MAPS file."""

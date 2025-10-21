@@ -144,303 +144,158 @@ def calc_r_map(vel_map):
     return r_map_signed
 
 # Geometric correction for the MaNGA velocity map
-# def vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0):
-#     """
-#     对观测到的速度场进行严格几何校正，并结合信噪比和方位角过滤。
-#     同时生成对应的校正后半径图。
-
-#     参数:
-#         vel_map (np.ndarray): 校准后的视向速度图 (V_internal) (km/s)。
-#         pa_rad (float): 星系的方位角 (PA)，单位为弧度 (Radians)。
-#         inc_rad (float): 星系的倾角 (i)，单位为弧度 (Radians)。
-#         snr_map (np.ndarray): 对应 vel_map 的中值信噪比图 (S/N)。
-#         phi_limit_deg (float): 运动主轴两侧允许的最大方位角（度）。默认 60.0。
-
-#     返回:
-#         tuple[np.ndarray, np.ndarray]:
-#         - vel_map_corrected (np.ndarray): 校正后的真实旋转速度 V_rot 场 (km/s)。
-#         - r_map_corrected (np.ndarray): 对应的带符号的真实径向距离 R 场 (spaxel)。
-#         不符合过滤条件的点在两个数组中均为 NaN。
-#     """
-#     vel_map = np.asarray(vel_map, dtype=float)
-#     snr_map = np.asarray(snr_map, dtype=float)
-    
-#     # 1. 倾角参数准备
-#     sin_inc = np.sin(inc_rad)
-#     cos_inc = np.cos(inc_rad)
-#     if np.isclose(sin_inc, 0.0):
-#         nan_map = np.full_like(vel_map, np.nan, dtype=float)
-#         return nan_map, nan_map
-
-#     # 2. 坐标计算
-#     ny, nx = vel_map.shape
-#     y, x = np.indices((ny, nx))
-#     x_c = (nx - 1) / 2.0
-#     y_c = (ny - 1) / 2.0
-#     x_rel = x - x_c
-#     y_rel = y - y_c
-
-#     # 3. 坐标旋转 (对齐到星系主轴)
-#     cos_pa = np.cos(pa_rad)
-#     sin_pa = np.sin(pa_rad)
-#     x_rot = x_rel * cos_pa + y_rel * sin_pa
-#     y_rot = -x_rel * sin_pa + y_rel * cos_pa
-
-#     # 4. 去投影和计算 cos(phi)
-#     if np.isclose(cos_inc, 0.0):
-#         cos_inc = 1e-6 
-        
-#     y_deproj = y_rot / cos_inc
-#     radius = np.hypot(x_rot, y_deproj)
-#     cos_theta = np.divide(x_rot, radius, out=np.zeros_like(x_rot), where=radius > 0)
-    
-#     # 5. 投影因子
-#     projection = sin_inc * cos_theta
-
-#     # 6. 确定过滤阈值
-#     cos_phi_threshold = np.cos(np.radians(phi_limit_deg))
-#     snr_threshold = 10.0
-
-#     # 7. 应用联合过滤掩码
-#     valid = (
-#         np.isfinite(vel_map) &
-#         (radius > 0) &
-#         (snr_map >= snr_threshold) &
-#         (np.abs(cos_theta) >= cos_phi_threshold)
-#     )
-    
-#     # 8. 计算校正后的速度图
-#     vel_map_corrected = np.full_like(vel_map, np.nan, dtype=float)
-#     vel_map_corrected[valid] = vel_map[valid] / projection[valid]
-    
-#     # 9. 计算校正后的半径图
-#     # 半径的符号由原始速度图的符号决定
-#     signs = np.sign(np.nan_to_num(vel_map, nan=0.0))
-#     r_map_signed = radius * signs
-    
-#     # 对半径图应用相同的过滤掩码
-#     r_map_corrected = np.full_like(r_map_signed, np.nan, dtype=float)
-#     r_map_corrected[valid] = r_map_signed[valid]
-    
-#     return vel_map_corrected, r_map_corrected
-
-
-
-def vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, snr_min=3.0):
+def vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, center_x=None, center_y=None):
     """
-    对观测到的速度场进行几何校正，并生成与旋转方向一致的带符号半径图。
+    对观测到的速度场进行严格几何校正，并结合信噪比和方位角过滤。
+    同时生成对应的校正后半径图。
+
+    参数:
+        vel_map (np.ndarray): 校准后的视向速度图 (V_internal) (km/s)。
+        pa_rad (float): 星系的方位角 (PA)，单位为弧度 (Radians)。
+        inc_rad (float): 星系的倾角 (i)，单位为弧度 (Radians)。
+        snr_map (np.ndarray): 对应 vel_map 的中值信噪比图 (S/N), 阈值为10。
+        phi_limit_deg (float): 运动主轴两侧允许的最大方位角（度）。默认 60.0。
+        center_x (float, optional): 图像中心的 X 坐标。如果为 None，则默认为 (nx - 1) / 2.0。
+        center_y (float, optional): 图像中心的 Y 坐标。如果为 None，则默认为 (ny - 1) / 2.0。
+
+    返回:
+        tuple[np.ndarray, np.ndarray]:
+        - vel_map_corrected (np.ndarray): 校正后的真实旋转速度 V_rot 场 (km/s)。
+        - r_map_corrected (np.ndarray): 对应的带符号的真实径向距离 R 场 (spaxel)。
+        不符合过滤条件的点在两个数组中均为 NaN。
     """
+    vel_map = np.asarray(vel_map, dtype=float)
+    snr_map = np.asarray(snr_map, dtype=float)
+    
+    # 1. 倾角参数准备
+    sin_inc = np.sin(inc_rad)
+    cos_inc = np.cos(inc_rad)
+
+    if np.isclose(sin_inc, 0.0):
+        # 面对面观测（Face-on），无法进行去投影
+        print("Warning: Inclination is close to 0 (face-on). Cannot deproject velocity field.")
+        nan_map = np.full_like(vel_map, np.nan, dtype=float)
+        return nan_map, nan_map
+
+    # 2. 坐标计算
+    ny, nx = vel_map.shape
+    y, x = np.indices((ny, nx))
+    
+    # 使用提供的中心坐标，否则使用几何中心
+    x_c = center_x if center_x is not None else (nx - 1) / 2.0
+    y_c = center_y if center_y is not None else (ny - 1) / 2.0
+    
+    x_rel = x - x_c
+    y_rel = y - y_c
+
+    # 3. 坐标旋转 (对齐到星系主轴)
+    cos_pa = np.cos(pa_rad)
+    sin_pa = np.sin(pa_rad)
+    # x_rot 沿着星系动力学长轴（运动主轴）
+    x_rot = x_rel * cos_pa + y_rel * sin_pa
+    # y_rot 沿着星系短轴
+    y_rot = -x_rel * sin_pa + y_rel * cos_pa
+
+    # 4. 去投影和计算 cos(phi)
+    # 对于侧向观测 (edge-on)，cos_inc 接近 0，y_deproj 会变得非常大
+    y_deproj = y_rot / cos_inc 
+    radius = np.hypot(x_rot, y_deproj) # 真实的、去投影后的径向距离
+
+    # cos(phi) 是运动方向与视线方向夹角的余弦值，这里使用 x_rot / radius
+    # 使用 np.divide 避免除以零的警告
+    cos_phi = np.divide(x_rot, radius, out=np.zeros_like(x_rot), where=radius > 0)
+    
+    # 5. 投影因子 (V_obs = V_rot * projection)
+    projection = sin_inc * cos_phi
+
+    # 6. 确定过滤阈值
+    cos_phi_threshold = np.cos(np.radians(phi_limit_deg))
+    snr_threshold = 10.0
+
+    # 7. 应用联合过滤掩码
+    valid = (
+        np.isfinite(vel_map) &            # 确保输入速度有效
+        (radius > 0) &                     # 排除中心点
+        (snr_map >= snr_threshold) &       # 应用信噪比阈值
+        (np.abs(cos_phi) >= cos_phi_threshold) # 应用方位角阈值 (运动主轴 ± 60度)
+    )
+    
+    # 8. 计算校正后的速度图 (V_rot = V_obs / projection)
+    vel_map_corrected = np.full_like(vel_map, np.nan, dtype=float)
+    # 仅对有效数据点进行除法操作
+    vel_map_corrected[valid] = vel_map[valid] / projection[valid]
+    
+    # 9. 计算校正后的半径图（带符号）
+    # 半径的符号取决于观测速度的方向（假设速度场已中心化）
+    # 使用 nan_to_num(nan=0.0) 避免 np.sign 遇到 NaN 报错
+    signs = np.sign(np.nan_to_num(vel_map, nan=0.0))
+    r_map_signed = radius * signs
+    
+    # 对带符号的半径图应用相同的过滤掩码
+    r_map_corrected = np.full_like(r_map_signed, np.nan, dtype=float)
+    r_map_corrected[valid] = r_map_signed[valid]
+    
+    return vel_map_corrected, r_map_corrected
+
+import numpy as np
+
+def vel_map_correct_FIXED(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, center_x=None, center_y=None):
+    """
+    对观测到的速度场进行严格几何校正，并结合信噪比和方位角过滤。
+    同时生成对应的校正后半径图。
+    """
+    vel_map = np.asarray(vel_map, dtype=float)
+    snr_map = np.asarray(snr_map, dtype=float)
+    
+    sin_inc = np.sin(inc_rad)
+    cos_inc = np.cos(inc_rad)
+
+    if np.isclose(sin_inc, 0.0):
+        print("Warning: Inclination is close to 0 (face-on). Cannot deproject velocity field.")
+        nan_map = np.full_like(vel_map, np.nan, dtype=float)
+        return nan_map, nan_map
 
     ny, nx = vel_map.shape
     y, x = np.indices((ny, nx))
-    x_cen = (nx - 1) / 2.0
-    y_cen = (ny - 1) / 2.0
+    x_c = center_x if center_x is not None else (nx - 1) / 2.0
+    y_c = center_y if center_y is not None else (ny - 1) / 2.0
+    x_rel = x - x_c
+    y_rel = y - y_c
 
-    # ---------------- Step 1: 坐标旋转 ----------------
-    x_rel = x - x_cen
-    y_rel = y - y_cen
+    cos_pa = np.cos(pa_rad)
+    sin_pa = np.sin(pa_rad)
+    x_rot = x_rel * cos_pa + y_rel * sin_pa
+    y_rot = -x_rel * sin_pa + y_rel * cos_pa
 
-    # 注意 FITS 坐标通常 y 轴反向，若你的 vel_map 显示上下颠倒，可尝试 y_rel = -(y - y_cen)
-    x_rot = x_rel * np.cos(pa_rad) + y_rel * np.sin(pa_rad)
-    y_rot = -x_rel * np.sin(pa_rad) + y_rel * np.cos(pa_rad)
+    y_deproj = y_rot / cos_inc 
+    radius_physical = np.hypot(x_rot, y_deproj) # 真实的、去投影后的物理距离 (总是正值)
 
-    # ---------------- Step 2: 倾角修正 ----------------
-    y_disk = y_rot / np.cos(inc_rad)
-    r_map = np.sqrt(x_rot**2 + y_disk**2)
-    phi = np.arctan2(y_disk, x_rot)
+    cos_phi = np.divide(x_rot, radius_physical, out=np.zeros_like(x_rot), where=radius_physical > 0)
+    
+    projection = sin_inc * cos_phi
 
-    phi_limit_rad = np.deg2rad(phi_limit_deg)
-    valid_mask = (
-        (np.abs(phi) <= phi_limit_rad) &
-        (snr_map >= snr_min) &
-        np.isfinite(vel_map)
+    cos_phi_threshold = np.cos(np.radians(phi_limit_deg))
+    snr_threshold = 10.0
+
+    valid = (
+        np.isfinite(vel_map) &
+        (radius_physical > 0) &
+        (snr_map >= snr_threshold) &
+        (np.abs(cos_phi) >= cos_phi_threshold)
     )
-
-    # ---------------- Step 3: 几何速度校正 ----------------
-    vel_map_corrected = np.full_like(vel_map, np.nan)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        vel_map_corrected[valid_mask] = vel_map[valid_mask] / (
-            np.sin(inc_rad) * np.cos(phi[valid_mask])
-        )
-
-    # ---------------- Step 4: 通过速度方向确定符号 ----------------
-    # 用速度场的符号定义左右区域
-    mask_pos = (vel_map_corrected > 0)
-    mask_neg = (vel_map_corrected < 0)
-
-    # 初步定义为无符号半径
-    r_signed = np.copy(r_map)
-
-    # 判断哪一侧是红移（正速度），哪一侧是蓝移（负速度）
-    if np.nanmean(x_rot[mask_pos]) > np.nanmean(x_rot[mask_neg]):
-        # 正速度在右 → 正半径在右
-        r_signed = np.sign(x_rot) * r_map
-    else:
-        # 正速度在左 → 反转符号
-        r_signed = -np.sign(x_rot) * r_map
-
-    # 屏蔽无效点
-    vel_map_corrected[~valid_mask] = np.nan
-    r_signed[~valid_mask] = np.nan
-
-    return vel_map_corrected, r_signed
-
-
-# def vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, snr_min=3.0):
-#     """
-#     对观测到的速度场进行严格几何校正，并结合信噪比和方位角过滤。
-#     同时生成对应的校正后半径图。
-
-#     此函数假设 vel_map 已经减去了系统速度 (V_sys = 0)，
-#     并且星系中心位于图像 (ny/2, nx/2) 处。
-
-#     几何推导:
-#     1.  观测到的视向速度 V_los = V_rot(R) * sin(i) * cos(phi)
-#         其中 i 是倾角, R 是在星系盘上的真实半径, phi 是在星系盘上的方位角
-#         (phi=0 对应星系盘的主轴)。
-#     2.  V_rot(R) = V_los / (sin(i) * cos(phi))
-#     3.  我们需要计算 R 和 phi。
-#         -   (x, y) 是图像坐标 (相对于中心)。
-#         -   (x_rot, y_rot) 是在天球平面上旋转 PA 后的坐标：
-#             x_rot = x*cos(PA) + y*sin(PA)  (沿天球主轴)
-#             y_rot = -x*sin(PA) + y*cos(PA) (沿天球短轴)
-#         -   (x', y') 是在星系盘平面上的真实坐标：
-#             x' = x_rot
-#             y' = y_rot / cos(i)
-#         -   真实半径 R = sqrt(x'^2 + y'^2)
-#         -   真实方位角 phi = arctan2(y', x')
-#     4.  代入 V_rot 公式:
-#         cos(phi) = x' / R = x_rot / R
-#         V_rot(R) = V_los / (sin(i) * (x_rot / R))
-#         V_rot(R) = (V_los * R) / (sin(i) * x_rot)
-#     5.  我们返回 V_rot (作为速度图) 和 R_signed = R * sign(x_rot) (作为半径图)。
-
-#     参数:
-#         vel_map (np.ndarray): 校准后的视向速度图 (km/s)，shape (ny, nx)。
-#         pa_rad (float): 星系的方位角 (Position Angle, PA)，单位弧度。
-#         (PA=0 沿+y轴, PA=pi/2 沿+x轴)
-#         inc_rad (float): 星系的倾角 (Inclination Angle, i)，单位弧度。
-#         (i=0 为 face-on, i=pi/2 为 edge-on)
-#         snr_map (np.ndarray): 对应 vel_map 的信噪比图。
-#         phi_limit_deg (float): 运动主轴允许的最大方位角 (度)，默认 ±60°。
-#         (过滤掉靠近短轴的区域，因为 cos(phi) -> 0 会放大噪声)
-#         snr_min (float): S/N 阈值，低于此值的像素剔除。默认 3.0。
-
-#     返回:
-#         tuple[np.ndarray, np.ndarray]:
-#         - vel_map_corrected (np.ndarray): 校正后的旋转速度图 (km/s)，
-#             即 V_rot。不满足条件的像素为 np.nan。
-#         - r_map_corrected (np.ndarray): 对应的带符号半径图 (以像素或 spaxel 计)，
-#             即 R * sign(x_rot)。不满足条件的像素为 np.nan。
-#     """
     
-#     # --- 1. 处理数值稳定性和常量 ---
+    vel_map_corrected = np.full_like(vel_map, np.nan, dtype=float)
+    # V_rot = V_obs / projection. 这个速度V_rot现在带有正确的旋转方向符号（正负）
+    vel_map_corrected[valid] = vel_map[valid] / projection[valid]
     
-#     # 抑制在计算 phi 和 R 时遇到的除零警告 (例如 i=90度 或 x_rot=0)。
-#     # 这些情况会产生 Inf 或 NaN，但会被后续的 phi 掩码正确处理。
-#     with np.errstate(divide='ignore', invalid='ignore'):
-        
-#         sin_i = np.sin(inc_rad)
-#         cos_i = np.cos(inc_rad)
-        
-#         # 如果星系是 face-on (i=0)，sin(i)=0，无法进行反投影。
-#         # 返回两个填充了 NaN 的图。
-#         if np.abs(sin_i) < 1e-9:
-#             nan_map = np.full_like(vel_map, np.nan)
-#             return nan_map, nan_map
+    r_map_corrected = np.full_like(radius_physical, np.nan, dtype=float)
+    
+    # 核心修复点：使用几何信息（x_rot的符号）来定义带符号的半径，或者直接使用物理半径
+    # 如果要生成用于绘图旋转曲线的 R vs V 数据（即 R>0, V_rot有正负）：
+    r_map_corrected[valid] = radius_physical[valid] # 保持半径为正值
+    
+    return vel_map_corrected, r_map_corrected
 
-#         # 将 phi 限制从度转换为弧度
-#         phi_limit_rad = np.deg2rad(phi_limit_deg)
-        
-#         # --- 2. 创建相对于中心的坐标网格 ---
-#         ny, nx = vel_map.shape
-#         # 假设中心在 (ny-1)/2, (nx-1)/2
-#         y_c = (ny - 1) / 2.0
-#         x_c = (nx - 1) / 2.0
-        
-#         # y_idx, x_idx 是像素索引
-#         y_idx, x_idx = np.indices((ny, nx))
-        
-#         # y_rel, x_rel 是相对于中心的坐标
-#         # 注意：PA 是从+y轴 (North) 转向+x轴 (East)
-#         y_rel = y_idx - y_c
-#         x_rel = x_idx - x_c
-        
-#         # --- 3. 旋转天球平面坐标 (x, y) -> (x_rot, y_rot) ---
-#         # x_rot 是沿天球平面主轴的距离
-#         # y_rot 是沿天球平面短轴的距离
-#         sin_pa = np.sin(pa_rad)
-#         cos_pa = np.cos(pa_rad)
-        
-#         # 标准2D旋转矩阵 (逆时针旋转 -PA)
-#         # x_rot = x_rel * cos(-PA) - y_rel * sin(-PA) = x_rel * cos(PA) + y_rel * sin(PA)
-#         # y_rot = x_rel * sin(-PA) + y_rel * cos(-PA) = -x_rel * sin(PA) + y_rel * cos(PA)
-#         # 修正：天文学 PA 是从 N(+y) 向 E(+x) 旋转。
-#         # 所以旋转 -PA 应该是：
-#         x_rot = x_rel * cos_pa + y_rel * sin_pa
-#         y_rot = -x_rel * sin_pa + y_rel * cos_pa
-        
-#         # --- 4. 反投影坐标到星系盘平面 (x', y') ---
-#         # x' 是沿真实主轴的距离
-#         # y' 是沿真实短轴的距离
-#         x_prime = x_rot
-#         # 如果 i = 90度 (edge-on), cos_i = 0, y_prime 会是 Inf (这是正确的)
-#         y_prime = y_rot / cos_i
-        
-#         # --- 5. 计算星系盘平面半径 (R) 和方位角 (phi) ---
-        
-#         # r_in_plane = R (真实半径)
-#         # 如果 i = 90度, y_prime=Inf, R 也会是 Inf
-#         r_in_plane = np.sqrt(x_prime**2 + y_prime**2)
-        
-#         # phi_in_plane = phi (真实方位角)
-#         # np.arctan2 正确处理 x_prime=0 (短轴, phi= +/- 90度)
-#         # 和 y_prime=Inf (edge-on, phi= +/- 90度)
-#         phi_in_plane = np.arctan2(y_prime, x_prime)
-        
-#         # --- 6. 创建过滤掩码 (Masks) ---
-        
-#         # a) S/N 掩码
-#         mask_snr = (snr_map >= snr_min)
-        
-#         # b) 方位角掩码
-#         # 过滤掉 phi > limit (即靠近短轴的区域)
-#         # 这会自动过滤掉 i=90度 (edge-on) 的大部分区域 (phi= +/- 90)
-#         # 和 i!=90度 时的短轴 (phi= +/- 90)
-#         mask_phi = (np.abs(phi_in_plane) <= phi_limit_rad)
-        
-#         # c) 总掩码
-#         mask_total = mask_snr & mask_phi
-        
-#         # --- 7. 计算校正后的速度和半径 ---
-        
-#         # V_rot = (V_los * R) / (sin(i) * x_rot)
-#         # V_los = vel_map
-#         # R = r_in_plane
-#         numerator = vel_map * r_in_plane
-#         denominator = sin_i * x_rot
-        
-#         # 计算 V_rot。
-#         # mask_phi 已经排除了 x_rot 接近 0 的情况，因此避免了除零。
-#         # V_rot 物理上应为正值 (速度大小)。
-#         # 如果 V_los 和 x_rot 符号相反 (例如，本应后退的区域在接近)，
-#         # v_rot_raw 会是负值，反映了非圆周运动或噪声。
-#         # 我们返回其绝对值，即旋转 *速率* (speed)。
-#         v_rot_raw = numerator / denominator
-#         v_rot_speed = np.abs(v_rot_raw)
-        
-#         # 计算带符号的半径 R_signed = R * sign(x_rot)
-#         # sign(x_rot) = +1 表示在主轴的一侧，-1 表示在另一侧
-#         r_signed = r_in_plane * np.sign(x_rot)
-        
-#         # --- 8. 应用掩码，生成最终图像 ---
-        
-#         # 使用 np.where，只在 mask_total 为 True 的地方填充计算值，
-#         # 其他地方填充 np.nan。
-#         vel_map_corrected = np.where(mask_total, v_rot_speed, np.nan)
-#         r_map_corrected = np.where(mask_total, r_signed, np.nan)
-
-#     return vel_map_corrected, r_map_corrected
 
 def arctan_model(r, Vc, Rt, Vsys=0):
     """Arctangent rotation curve model."""
@@ -542,7 +397,10 @@ def main():
     #
     # plot r-v curve without correction
     #
-    r_map = calc_r_map(vel_map)
+    r_map, azimuth_map = map_util.get_r_map()
+    print(f"r_map: [{np.nanmin(r_map):.3f}, {np.nanmax(r_map):.3f}] spaxel,", f"shape: {r_map.shape}")
+    print(f"Azimuth map: [{np.nanmin(azimuth_map):.3f}, {np.nanmax(azimuth_map):.3f}] deg,", f"shape: {azimuth_map.shape}")
+
     plot_rv_curve(r_map.flatten(), vel_map.flatten())
 
 
@@ -555,21 +413,26 @@ def main():
 
     # phi: The position angle of the major axis of the galaxy, measured from north to east.
     # ba: The axis ratio (b/a) of the galaxy
-    phi, ba = drpall_util.get_phi_ba(plateifu)
-    print(f"Position Angle PA from DRPALL: {phi:.2f} deg,", f"Axial Ratio b/a from DRPALL: {ba:.3f}")
+    phi, ba_1 = map_util.get_pa_inc()
+    print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination (1-b/a) from MAPS header: {ba_1:.3f}")
+    if ba_1 is not None:
+        ba = 1 - ba_1  # convert to b/a
+    if phi is None or ba is None:
+        phi, ba = drpall_util.get_phi_ba(plateifu)
+        print(f"Position Angle PA from DRPALL: {phi:.2f} deg,", f"Axial Ratio b/a from DRPALL: {ba:.3f}")
 
-    pa_rad = np.radians(phi)
+
+    pa_rad = np.radians(phi) + np.pi 
     inc_rad = calc_inc(ba)
     print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
 
     # FIXME: vel_map_correct does not work well
-    vel_map_corr, r_map_corr = vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0)
+    vel_map_corr, __r = vel_map_correct(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0)
     print(f"vel_map_corrected: [{np.nanmin(vel_map_corr):.3f}, {np.nanmax(vel_map_corr):.3f}] km/s", f"size: {len(vel_map_corr)}")
-    print(f"r_map_corrected: [{np.nanmin(r_map_corr):.3f}, {np.nanmax(r_map_corr):.3f}] arcsec", f"size: {len(r_map_corr)}")
 
     # plot r-v curve
-    valid_idx = ~np.isnan(vel_map_corr) & ~np.isnan(r_map_corr)
-    r_flat = r_map_corr[valid_idx]
+    valid_idx = ~np.isnan(vel_map_corr) & ~np.isnan(r_map)
+    r_flat = r_map[valid_idx]
     v_flat = vel_map_corr[valid_idx]
     plot_rv_curve(r_flat, v_flat)
 

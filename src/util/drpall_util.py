@@ -140,12 +140,12 @@ class DrpallUtil:
             log.info(f"Using z sys value: {val}")
         return float(val) if val is not None else None
 
-    # phi: The position angle of the major axis of the galaxy, measured from north to east.
+    # phi: photometric major axis. The position angle of the major axis of the galaxy, measured from north to east.
     # ba: The axis ratio (b/a) of the galaxy, where 'b' is the length of the minor axis and 'a' is the length of the major axis.
     def get_phi_ba(self, plateifu: str) -> tuple[float | None, float | None]:
         """Return (position angle in degrees, axis ratio b/a) for plateifu using available columns or (None, None)."""
-        phi_val = self._fetch_scalar_column_value(plateifu, ["nsa_elpetro_phi"])
-        ba_val = self._fetch_scalar_column_value(plateifu, ["nsa_elpetro_ba"])
+        phi_val = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_PHI","nsa_elpetro_phi"])
+        ba_val = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_BA","nsa_elpetro_ba"])
 
         phi = float(phi_val) if phi_val is not None else None
         ba = float(ba_val) if ba_val is not None else None

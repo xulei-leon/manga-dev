@@ -24,19 +24,11 @@ class MapsUtil:
         if self.hdu:
             self.hdu.close()
 
-    # get velocity map from MAPS file
     ##############################################################################
-    # EMLINE_GVEL (Emission Line Gaussian Velocity)
-    # Line-of-Sight Velocity of Ionized Gas
-    # km/s
-    # EMLINE_GVEL provides the line-of-sight velocity determined from a Gaussian fit to the emission line profile in each spaxel.
-    # No geometric or inclination correction has been applied.
-    # — Westfall et al. 2019, AJ, 158, 231 (MaNGA DAP Paper)
-    ##############################################################################
+    # EMLINE_GVEL: Line-of-sight velocity in km/s of the ionized gas relative to the input guess redshift
     # EMLINE_GVEL_IVAR (Emission Line Gaussian Velocity Inverse Variance)
-    ##############################################################################
-    # Emission Line Gaussian Velocity (EMLINE_GVEL) extension
     # channel_name: 'Ha' for Hα, 'OIII' for [O III], etc.
+    ##############################################################################
     def get_gvel_map(self, channel_name='Ha') -> tuple[np.ndarray, str, np.ndarray]:
         hdr = self.hdu['EMLINE_GVEL'].header
         channel_index = None
@@ -81,6 +73,41 @@ class MapsUtil:
 
         return masked_velocity_map, velocity_unit, masked_ivar_map
 
+
+    # STELLAR_VEL
+    # Line-of-sight stellar velocity in km/s, relative to the input guess redshift
+    def get_stellar_vel_map(self) -> tuple[np.ndarray, str, np.ndarray]:
+        """Return the stellar velocity map from the MAPS file."""
+        # Extract velocity data
+        stellar_vel_data = self.hdu['STELLAR_VEL'].data
+        stellar_vel_map = stellar_vel_data[:, :]
+
+        # Extract mask data
+        stellar_mask_data = self.hdu['STELLAR_VEL_MASK'].data
+        stellar_mask_map = stellar_mask_data[:, :]
+
+        # Get velocity unit
+        velocity_unit = self.hdu['STELLAR_VEL'].header['BUNIT']
+
+        # Apply mask: True for good data (mask == 0)
+        good_data_mask = (stellar_mask_map == 0)
+
+        # Mask bad pixels with NaN
+        masked_velocity_map = stellar_vel_map.copy()
+        masked_velocity_map[~good_data_mask] = np.nan
+
+        # Extract IVAR data
+        stellar_ivar_data = self.hdu['STELLAR_VEL_IVAR'].data
+        stellar_ivar_map = stellar_ivar_data[:, :]
+
+        # IVAR is inverse variance: positive values indicate good measurements
+        good_ivar_mask = (stellar_ivar_map > 0)
+
+        masked_ivar_map = stellar_ivar_map.copy()
+        masked_ivar_map[~good_ivar_mask] = np.nan
+
+        return masked_velocity_map, velocity_unit, masked_ivar_map
+
     # get Spaxel Size
     def get_spaxel_size(self) -> tuple[float, float]:
         """Return the spaxel size in arcseconds from the MAPS file header."""
@@ -105,14 +132,17 @@ class MapsUtil:
         return pa_val, ellip_val
     
 
+    # BIN_LWELLCOO
+    # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
     # SPX_ELLCOO
     # Elliptical polar coordinates of each spaxel from the galaxy center based on the on-sky coordinates in SPX_SKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
     def get_r_map(self) -> np.ndarray:
         """Return the radial map from the MAPS file."""
-        r_data = self.hdu['SPX_ELLCOO'].data
+        r_data = self.hdu['BIN_LWELLCOO'].data
         r_map = r_data[0, :, :]
-        azimuth_map = r_data[3, :, :]
-        return r_map, azimuth_map
+        azimuth = r_data[3, :, :]
+
+        return r_map, azimuth
 
     def dump_info(self):
         """Print basic information about the MAPS file."""

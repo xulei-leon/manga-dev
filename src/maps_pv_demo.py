@@ -327,11 +327,11 @@ def main():
     print(f"Internal Velocity map shape: {v_internal_map.shape}, Unit: {v_unit}")
     print(f"Internal Velocity: [{np.nanmin(v_internal_map):.3f}, {np.nanmax(v_internal_map):.3f}] {v_unit}")
 
+    pa_rad = np.radians(phi) + np.pi/2  # Convert to radians and adjust
     inc_rad = calc_inc(ba)
-    pa_rad = np.radians(phi)
     print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
 
-    v_rot_map, _r = calc_vel_rot(v_internal_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0)
+    v_rot_map, r_rot_map = calc_vel_rot(v_internal_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0)
     print(f"v_rot_map: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}] km/s", f"size: {len(v_rot_map)}")
     v_rot_abs = vel_map_abs(v_rot_map)
 
@@ -346,11 +346,12 @@ def main():
     # 2. plot velocity map
     plot_velocity_map(v_internal_map, v_unit)
     plot_velocity_map(v_rot_map, v_unit)
+    plot_velocity_map(v_rot_abs, v_unit)
 
 
     # 3. plot r-v curve
-    valid_idx = ~np.isnan(v_rot_map) & ~np.isnan(r_map)
-    r_flat = r_map[valid_idx]
+    valid_idx = ~np.isnan(v_rot_map) & ~np.isnan(r_rot_map)
+    r_flat = r_rot_map[valid_idx]
     v_flat = v_rot_map[valid_idx]
     plot_rv_curve(r_flat, v_flat)
 

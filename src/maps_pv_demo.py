@@ -13,6 +13,7 @@ from scipy.optimize import curve_fit
 from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
+from matplotlib import colors
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -261,6 +262,29 @@ def plot_rv_curve(r_flat, v_flat):
     plt.show()
 
 
+# Plots the binned velocity map using unique bin indices.
+def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ra_flat, dec_flat, vel_flat = ra_map.ravel(), dec_map.ravel(), vel_map.ravel()
+    ra_u, dec_u, vel_u = ra_flat[uindx], dec_flat[uindx], vel_flat[uindx]
+    vel_u_clean = vel_u[np.isfinite(vel_u)]
+    if vel_u_clean.size == 0:
+        vmin, vmax = -1.0, 1.0
+    else:
+        p_low, p_high = np.nanpercentile(vel_u_clean, [2, 98])
+        vmax = max(abs(p_low), abs(p_high))
+        vmin = -vmax
+    norm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    sc = ax.scatter(ra_u, dec_u, c=vel_u, cmap='RdBu_r', norm=norm, s=30, edgecolors='face', alpha=0.9)
+    cbar = fig.colorbar(sc, ax=ax, label="Velocity (km/s)")
+    cbar.set_ticks([vmin, 0, vmax])
+    ax.set_title("Binned Velocity Map")
+    ax.set_xlabel("RA (deg)")
+    ax.set_ylabel("Dec (deg)")
+    ax.invert_xaxis()
+    fig.tight_layout()
+    plt.show()
+
 ################################################################################
 # main function
 ################################################################################
@@ -303,29 +327,47 @@ def main():
         print(f"Position Angle PA from DRPALL: {phi:.2f} deg,", f"Axial Ratio b/a from DRPALL: {ba:.3f}")
 
 
+    ra_map, dec_map = map_util.get_skycoo_map()
+    print(f"RA map: [{np.nanmin(ra_map):.6f}, {np.nanmax(ra_map):.6f}] deg,", f"Dec map: [{np.nanmin(dec_map):.6f}, {np.nanmax(dec_map):.6f}] deg")
+
     ########################################################
     # Galaxy spin velocity map
     ########################################################
 
     # Get the gas velocity map (H-alpha)
-    _gv_map, _gv_unit, _gv_ivar = map_util.get_gvel_map()
+    gas_vel_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
     _gv_disp = calc_vel_dispersion(_gv_ivar)
-    print(f"Velocity map shape: {_gv_map.shape}, Unit: {_gv_unit}")
-    print(f"Velocity: [{np.nanmin(_gv_map):.3f}, {np.nanmax(_gv_map):.3f}] {_gv_unit}")
+    print(f"Velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}")
+    print(f"Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
+    _, eml_uindx = map_util.get_emli_uindx()
+    print(f"Unique bin indices count: {len(eml_uindx)}")
 
-    _sv_map, _sv_unit, _sv_ivar = map_util.get_stellar_vel_map()
-    print(f"Stellar velocity map shape: {_sv_map.shape}, Unit: {_sv_unit}")
-    print(f"Stellar Velocity: [{np.nanmin(_sv_map):.3f}, {np.nanmax(_sv_map):.3f}] {_sv_unit}")
+    
+    # Get the stellar velocity map
+    stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
+    print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}")
+    print(f"Stellar Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
+    _, stellar_uindx = map_util.get_stellar_uindx()
+    print(f"Unique bin indices count: {len(stellar_uindx)}")
 
-    _v_sys = calc_v_sys(_sv_map, size=3)
-    print(f"Estimated Systemic Velocity V_sys: {_v_sys:.3f} {_sv_unit}")
+    # No need to subtract system velocity
+    # plot gas velocity map
+    plot_bin_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map)
+    # plot stellar velocity map
+    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map)
+    return
+
+    vel_sys = calc_v_sys(stellar_vel_map, size=3)
+    print(f"Estimated Systemic Velocity V_sys: {vel_sys:.3f} {_sv_unit}")
 
     # Velocity Field Centering
-    v_obs_map = _gv_map
-    v_internal_map = v_obs_map - _v_sys
+    v_obs_map = stellar_vel_map
+    v_internal_map = v_obs_map - vel_sys
     v_unit = _gv_unit
     print(f"Internal Velocity map shape: {v_internal_map.shape}, Unit: {v_unit}")
     print(f"Internal Velocity: [{np.nanmin(v_internal_map):.3f}, {np.nanmax(v_internal_map):.3f}] {v_unit}")
+
+
 
     pa_rad = np.radians(phi) + np.pi/2  # Convert to radians and adjust
     inc_rad = calc_inc(ba)

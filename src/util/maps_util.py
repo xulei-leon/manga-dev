@@ -3,7 +3,6 @@ from astropy.utils.exceptions import AstropyWarning
 from astropy.io import fits
 import numpy as np
 
-
 class MapsUtil:
     def __init__(self, maps_file_path: str):
         self.maps_file_path = maps_file_path
@@ -29,7 +28,7 @@ class MapsUtil:
     # EMLINE_GVEL_IVAR (Emission Line Gaussian Velocity Inverse Variance)
     # channel_name: 'Ha' for Hα, 'OIII' for [O III], etc.
     ##############################################################################
-    def get_gvel_map(self, channel_name='Ha') -> tuple[np.ndarray, str, np.ndarray]:
+    def get_eml_vel_map(self, channel_name='Ha') -> tuple[np.ndarray, str, np.ndarray]:
         hdr = self.hdu['EMLINE_GVEL'].header
         channel_index = None
         naxis3 = int(hdr.get('NAXIS3', 0))
@@ -107,6 +106,7 @@ class MapsUtil:
         masked_ivar_map[~good_ivar_mask] = np.nan
 
         return masked_velocity_map, velocity_unit, masked_ivar_map
+    
 
     # get Spaxel Size
     def get_spaxel_size(self) -> tuple[float, float]:
@@ -144,8 +144,77 @@ class MapsUtil:
 
         return r_map, azimuth
 
+    # BIN_LWSKYCOO
+    def get_skycoo_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the sky coordinate maps (RA, Dec) from the MAPS file."""
+        skycoo_data = self.hdu['BIN_LWSKYCOO'].data
+        ra_map = skycoo_data[0, :, :]
+        dec_map = skycoo_data[1, :, :]
+
+        return ra_map, dec_map
+
+    def _get_unique_bins(self, layer_index: int) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Internal helper function to get unique bins and their indices from BINID data.
+        """
+        bin_id_map = self.hdu['BINID'].data[layer_index]
+        flat = bin_id_map.ravel()
+
+        # Exclude invalid bins (-1)
+        valid_mask = flat >= 0
+        flat_valid = flat[valid_mask]
+
+        ubins, uindx_valid = np.unique(flat_valid, return_index=True)
+        # Map back to the original array indices
+        uindx = np.nonzero(valid_mask)[0][uindx_valid]
+
+        return ubins, uindx
+
+    def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._get_unique_bins(2)
+
+    def get_stellar_uindx(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._get_unique_bins(1)
+
     def dump_info(self):
         """Print basic information about the MAPS file."""
         print(f"MAPS File: {self.maps_file_path}")
         print("HDU List:")
         self.hdu.info()
+
+    ###############################################################################
+    # internal utility functions for channel handling
+    ###############################################################################
+
+    # Declare a function that creates a dictionary for the columns in the
+    # multi-channel extensions
+    def channel_dictionary(hdu, ext, prefix='C'):
+        """
+        Construct a dictionary of the channels in a MAPS file.
+        """
+        channel_dict = {}
+        for k, v in hdu[ext].header.items():
+            if k[:len(prefix)] == prefix:
+                try:
+                    i = int(k[len(prefix):])-1
+                except ValueError:
+                    continue
+                channel_dict[v] = i
+        return channel_dict
+
+    def channel_units(hdu, ext, prefix='U'):
+        """
+        Construct an array with the channel units.
+        """
+        cu = {}
+        for k, v in hdu[ext].header.items():
+            if k[:len(prefix)] == prefix:
+                try:
+                    i = int(k[len(prefix):])-1
+                except ValueError:
+                    continue
+                cu[i] = v.strip()
+        channel_units = numpy.empty(max(cu.keys())+1, dtype=object)
+        for k, v in cu.items():
+            channel_units[k] = v
+        return channel_units.astype(str)

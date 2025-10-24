@@ -19,12 +19,13 @@ root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
 
 
-plateifu = "8723-12705"
-# plateifu = "8723-12703"
+# PLATE_IFU = "8723-12705"
+PLATE_IFU = "8723-12703"
 
+# constants definitions
+SNR_THRESHOLD = 10.0
+PHI_LIMIT_DEG = 50.0
 
-
-  # Intrinsic Axial Ratio for edge-on galaxies, it is assumed value.
 
 ################################################################################
 # calculate functions
@@ -118,7 +119,7 @@ def calc_v_sys(v_map, size=3):
 
 
 # Geometric correction for the MaNGA velocity map
-def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, center_x=None, center_y=None):
+def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, snr_threshold=10.0, phi_limit_deg=60.0, center_x=None, center_y=None, apply_projection=True):
     """
     Performs geometric correction on the observed velocity field, combined with
     signal-to-noise and azimuthal angle filtering.
@@ -134,74 +135,73 @@ def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0, center_x
                                     Defaults to (nx - 1) / 2.0.
         center_y (float, optional): The Y coordinate of the galaxy center.
                                     Defaults to (ny - 1) / 2.0.
+        apply_projection (bool): If True, perform geometric deprojection of velocities
+                                 (V_rot = V_obs / (sin(i)*cos(phi))). If False, do not
+                                 deproject; only apply SNR and phi filtering and return
+                                 the filtered observed velocities. Default True.
 
     Returns:
         tuple[np.ndarray, np.ndarray]:
         - vel_map_corrected (np.ndarray): The corrected true rotation velocity
-          (V_rot) map (km/s). Points not meeting filter criteria are NaN.
-        - radius_map (np.ndarray): The deprojected radial distance map (in spaxels).
+          (V_rot) map (km/s) if apply_projection=True; otherwise the filtered
+          observed velocity map. Points not meeting filter criteria are NaN.
+        - radius_map (np.ndarray): The radial distance map (in spaxels). This is
+          deprojected radius if apply_projection=True, otherwise projected radius.
     """
     vel_map = np.asarray(vel_map, dtype=float)
     snr_map = np.asarray(snr_map, dtype=float)
     
-    # 1. Prepare inclination parameters
     sin_inc = np.sin(inc_rad)
     cos_inc = np.cos(inc_rad)
 
-    if np.isclose(sin_inc, 0.0):
-        # Face-on view, cannot deproject
-        print("Warning: Inclination is close to 0 (face-on). Cannot deproject velocity field.")
-        nan_map = np.full_like(vel_map, np.nan, dtype=float)
-        return nan_map, nan_map
-
-    # 2. Calculate coordinates
     ny, nx = vel_map.shape
     y, x = np.indices((ny, nx))
     
-    # Use provided center or geometric center
     x_c = center_x if center_x is not None else (nx - 1) / 2.0
     y_c = center_y if center_y is not None else (ny - 1) / 2.0
     
     x_rel = x - x_c
     y_rel = y - y_c
 
-    # 3. Rotate coordinates to align with the galaxy's major axis
+    # Rotate to align with major axis
     cos_pa = np.cos(pa_rad)
     sin_pa = np.sin(pa_rad)
-    # x_rot is along the kinematic major axis
-    x_rot = x_rel * cos_pa + y_rel * sin_pa
-    # y_rot is along the kinematic minor axis
-    y_rot = -x_rel * sin_pa + y_rel * cos_pa
+    x_rot = x_rel * sin_pa - y_rel * cos_pa  # along major axis
+    y_rot = x_rel * cos_pa + y_rel * sin_pa  # along minor axis
 
-    # 4. Deproject and calculate cos(phi)
-    # For edge-on, cos_inc is near 0, and y_deproj becomes very large
-    y_deproj = y_rot / cos_inc 
-    radius_map = np.hypot(x_rot, y_deproj) # True, deprojected radial distance
+    # When not deprojecting, use projected radius; otherwise use deprojected radius
+    if apply_projection:
+        if np.isclose(sin_inc, 0.0) or np.isclose(cos_inc, 0.0):
+            # Face-on or nearly so; cannot deproject
+            nan_map = np.full_like(vel_map, np.nan, dtype=float)
+            return nan_map, nan_map
+        y_deproj = y_rot / cos_inc
+        radius_map = np.hypot(x_rot, y_deproj)
+        cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
+        projection = sin_inc * cos_phi
+    else:
+        # 仅进行SNR与phi过滤，不对速度做几何投影/去投影
+        radius_map = np.hypot(x_rot, y_rot)
+        cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
+        projection = None  # not used
 
-    # cos(phi) is the cosine of the angle between the velocity vector and the line of sight
-    # Use np.divide to avoid division by zero warnings
-    cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
-    
-    # 5. Projection factor (V_obs = V_rot * projection)
-    projection = sin_inc * cos_phi
-
-    # 6. Determine filtering thresholds
+    # Thresholds
     cos_phi_threshold = np.cos(np.radians(phi_limit_deg))
-    snr_threshold = 10.0
+    
 
-    # 7. Apply combined filter mask
     valid = (
-        np.isfinite(vel_map) &            # Ensure input velocity is valid
-        (radius_map > 0) &                # Exclude the central point
-        (snr_map >= snr_threshold) &      # Apply SNR threshold
-        (np.abs(cos_phi) >= cos_phi_threshold) # Apply azimuthal angle threshold
+        np.isfinite(vel_map) &
+        (radius_map > 0) &
+        (snr_map >= snr_threshold) &
+        (np.abs(cos_phi) >= cos_phi_threshold)
     )
-    
-    # 8. Calculate the corrected velocity map (V_rot = V_obs / projection)
+
     vel_map_corrected = np.full_like(vel_map, np.nan, dtype=float)
-    # Perform division only on valid data points
-    vel_map_corrected[valid] = vel_map[valid] / projection[valid]
-    
+    if apply_projection:
+        vel_map_corrected[valid] = vel_map[valid] / projection[valid]
+    else:
+        vel_map_corrected[valid] = vel_map[valid]
+
     return vel_map_corrected, radius_map
 
 ################################################################################
@@ -234,23 +234,18 @@ def plot_galaxy_image(plateifu):
     plt.show()
 
 
-
-# plot velocity map
-def plot_velocity_map(vel_map, unit):
-    fig, ax = plt.subplots(figsize=(7, 6))
-    im0 = ax.imshow(vel_map, origin="lower", cmap="coolwarm")
-    fig.colorbar(im0, ax=ax, label=f"H-alpha Line-of-Sight Velocity ({unit})")
-    ax.set_title("Galaxy Velocity Map")
-    ax.set_xlabel("X Spaxel")
-    ax.set_ylabel("Y Spaxel")
-    fig.tight_layout()
-    plt.show()
-
-
 # plot r-v curve
-def plot_rv_curve(r_flat, v_flat):
+def plot_rv_curve(r_rot_map, v_rot_map):
+    # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
+    r_rot_map = np.asarray(r_rot_map, dtype=float)
+    v_rot_map = np.asarray(v_rot_map, dtype=float)
+    r_signed = np.where(v_rot_map < 0, -np.abs(r_rot_map), np.abs(r_rot_map))
+
+    # Mask invalid values
+    valid = np.isfinite(r_signed) & np.isfinite(v_rot_map)
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(r_flat, v_flat, s=2, color='red', alpha=0.2, label='Data Points')
+    ax.scatter(r_signed[valid], v_rot_map[valid], s=2, color='red', alpha=0.2, label='Data Points')
 
     ax.set_title("Galaxy Rotation Curve (R-V)")
     ax.set_xlabel("Radius R (spaxel)")
@@ -263,11 +258,30 @@ def plot_rv_curve(r_flat, v_flat):
 
 
 # Plots the binned velocity map using unique bin indices.
-def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map):
+def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
+    """
+    Plots the binned velocity map using unique bin indices.
+
+    Args:
+        vel_map (np.ndarray): The 2D velocity map.
+        uindx (np.ndarray): 1D array of unique indices to flatten the maps.
+        ra_map (np.ndarray): The 2D Right Ascension map.
+        dec_map (np.ndarray): The 2D Declination map.
+        pa_rad (float, optional): Position Angle in radians, measured from North to East.
+                                  If provided, a line indicating the major axis is drawn.
+        title (str, optional): The title for the plot.
+    """
     fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Flatten maps and select unique binned data
     ra_flat, dec_flat, vel_flat = ra_map.ravel(), dec_map.ravel(), vel_map.ravel()
     ra_u, dec_u, vel_u = ra_flat[uindx], dec_flat[uindx], vel_flat[uindx]
-    vel_u_clean = vel_u[np.isfinite(vel_u)]
+    
+    # Filter out non-finite velocity values for color scaling
+    valid_vel_mask = np.isfinite(vel_u)
+    vel_u_clean = vel_u[valid_vel_mask]
+    
+    # Set color normalization based on velocity percentiles
     if vel_u_clean.size == 0:
         vmin, vmax = -1.0, 1.0
     else:
@@ -275,13 +289,59 @@ def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map):
         vmax = max(abs(p_low), abs(p_high))
         vmin = -vmax
     norm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    
+    # Create the scatter plot for the binned velocity data
     sc = ax.scatter(ra_u, dec_u, c=vel_u, cmap='RdBu_r', norm=norm, s=30, edgecolors='face', alpha=0.9)
+    
+    # Add a colorbar
     cbar = fig.colorbar(sc, ax=ax, label="Velocity (km/s)")
     cbar.set_ticks([vmin, 0, vmax])
-    ax.set_title("Binned Velocity Map")
+    
+    # Draw the major axis line if pa_rad is provided
+    if pa_rad is not None and ra_u[valid_vel_mask].size > 1:
+        pa_rad = pa_rad % (2 * np.pi)  # Normalize PA to [0, 2π]
+        # Calculate the center of the galaxy from the valid data points
+        ra_center = np.mean(ra_u[valid_vel_mask])
+        dec_center = np.mean(dec_u[valid_vel_mask])
+        
+        # Determine the line length based on the data extent
+        ra_range = np.ptp(ra_u[valid_vel_mask])
+        dec_range = np.ptp(dec_u[valid_vel_mask])
+        line_length = 0.6 * np.hypot(ra_range, dec_range)
+        
+        # Calculate line endpoints. PA is from North (+Dec) to East (-RA, as axis is inverted).
+        # This corresponds to a clockwise angle from the positive y-axis.
+        dx = -line_length * np.sin(pa_rad)
+        dy = line_length * np.cos(pa_rad)
+        
+        # Plot the line representing the major axis
+        ax.plot([ra_center - dx, ra_center + dx], 
+                [dec_center - dy, dec_center + dy], 
+                color='black', linestyle='--', linewidth=1.5, label='Major Axis (PA)')
+        ax.legend()
+
+    # Set plot labels and title
+    ax.set_title(f"{title} Binned Velocity Map")
     ax.set_xlabel("RA (deg)")
     ax.set_ylabel("Dec (deg)")
+    
+    # Invert RA axis for standard astronomical orientation (East to the left)
     ax.invert_xaxis()
+    ax.set_aspect('equal', adjustable='box')
+    
+    fig.tight_layout()
+    plt.show()
+
+def plot_rotation_curve(r_map, v_map, title: str=""):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(r_map, v_map, s=2, color='blue', alpha=0.3, label='Data Points')
+
+    ax.set_title(f"{title} Galaxy Rotation Curve")
+    ax.set_xlabel("Radius R (spaxel)")
+    ax.set_ylabel("Rotation Velocity V_rot (km/s)")
+    ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
+    ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
+    ax.legend()
     fig.tight_layout()
     plt.show()
 
@@ -289,10 +349,10 @@ def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map):
 # main function
 ################################################################################
 def main():
-    print(f"Plate-IFU {plateifu} MAPS")
+    print(f"Plate-IFU {PLATE_IFU} MAPS")
 
     # get fits files
-    maps_file = fits_util.get_maps_file(plateifu)
+    maps_file = fits_util.get_maps_file(PLATE_IFU)
     drpall_file = fits_util.get_drpall_file()
     drpall_util = DrpallUtil(drpall_file)
     # print(f"DRPALL Info for {plateifu}: {drpall_util.dump_info()}")
@@ -319,13 +379,16 @@ def main():
     # PA: The position angle of the major axis of the galaxy, measured from north to east.
     # b/a: The axis ratio (b/a) of the galaxy
     phi, ba_1 = map_util.get_pa_inc()
-    print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination (1-b/a) from MAPS header: {ba_1:.3f}")
-    if ba_1 is not None:
-        ba = 1 - ba_1  # convert to b/a
-    if phi is None or ba is None:
-        phi, ba = drpall_util.get_phi_ba(plateifu)
-        print(f"Position Angle PA from DRPALL: {phi:.2f} deg,", f"Axial Ratio b/a from DRPALL: {ba:.3f}")
+    print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {1-ba_1:.3f}")
 
+    ba = 1 - ba_1
+    pa_rad = np.radians(phi)  # convert to radians, from North to East, then to major axis
+    inc_rad = calc_inc(ba)
+    print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
+
+    ra_map, dec_map = map_util.get_skycoo_map()
+    inc_rad = calc_inc(ba)
+    print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
 
     ra_map, dec_map = map_util.get_skycoo_map()
     print(f"RA map: [{np.nanmin(ra_map):.6f}, {np.nanmax(ra_map):.6f}] deg,", f"Dec map: [{np.nanmin(dec_map):.6f}, {np.nanmax(dec_map):.6f}] deg")
@@ -334,68 +397,58 @@ def main():
     # Galaxy spin velocity map
     ########################################################
 
-    # Get the gas velocity map (H-alpha)
+    ## Get the gas velocity map (H-alpha)
     gas_vel_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
     _gv_disp = calc_vel_dispersion(_gv_ivar)
     print(f"Velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}")
     print(f"Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
     _, eml_uindx = map_util.get_emli_uindx()
-    print(f"Unique bin indices count: {len(eml_uindx)}")
-
+    # print(f"Unique bin indices count: {len(eml_uindx)}")
     
-    # Get the stellar velocity map
+    ## Get the stellar velocity map
     stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
     print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}")
     print(f"Stellar Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
     _, stellar_uindx = map_util.get_stellar_uindx()
-    print(f"Unique bin indices count: {len(stellar_uindx)}")
+    # print(f"Unique bin indices count: {len(stellar_uindx)}")
 
-    # No need to subtract system velocity
-    # plot gas velocity map
-    plot_bin_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map)
-    # plot stellar velocity map
-    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map)
-    return
-
+    # Estimate Systemic Velocity V_sys from stellar velocity map
     vel_sys = calc_v_sys(stellar_vel_map, size=3)
     print(f"Estimated Systemic Velocity V_sys: {vel_sys:.3f} {_sv_unit}")
 
     # Velocity Field Centering
-    v_obs_map = stellar_vel_map
+    v_obs_map = gas_vel_map
     v_internal_map = v_obs_map - vel_sys
     v_unit = _gv_unit
+    v_uindx = eml_uindx
     print(f"Internal Velocity map shape: {v_internal_map.shape}, Unit: {v_unit}")
     print(f"Internal Velocity: [{np.nanmin(v_internal_map):.3f}, {np.nanmax(v_internal_map):.3f}] {v_unit}")
 
 
 
-    pa_rad = np.radians(phi) + np.pi/2  # Convert to radians and adjust
-    inc_rad = calc_inc(ba)
-    print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
-
-    v_rot_map, r_rot_map = calc_vel_rot(v_internal_map, pa_rad, inc_rad, snr_map, phi_limit_deg=60.0)
+    v_rot_map, r_rot_map = calc_vel_rot(v_internal_map, pa_rad, inc_rad, snr_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG, apply_projection=False)
     print(f"v_rot_map: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}] km/s", f"size: {len(v_rot_map)}")
-    v_rot_abs = vel_map_abs(v_rot_map)
-
 
     ########################################################
-    # plot
+    ## plot velocity map
     ########################################################
 
-    # 1. plot plateifu map
-    plot_galaxy_image(plateifu)
+    # 1. plot galaxy image
+    plot_galaxy_image(PLATE_IFU)
 
-    # 2. plot velocity map
-    plot_velocity_map(v_internal_map, v_unit)
-    plot_velocity_map(v_rot_map, v_unit)
-    plot_velocity_map(v_rot_abs, v_unit)
+    ## 2. plot binned velocity maps (No need to subtract system velocity)
+    # plot gas velocity map
+    plot_bin_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
+    # plot stellar velocity map
+    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, title="Stellar")
 
+    # 3. plot internal velocity map
+    plot_bin_vel_map(v_internal_map, v_uindx, ra_map, dec_map, pa_rad=pa_rad, title="Internal")
+    # 4. plot rotated velocity map
+    plot_bin_vel_map(v_rot_map, v_uindx, ra_map, dec_map, title="Rotated")
 
-    # 3. plot r-v curve
-    valid_idx = ~np.isnan(v_rot_map) & ~np.isnan(r_rot_map)
-    r_flat = r_rot_map[valid_idx]
-    v_flat = v_rot_map[valid_idx]
-    plot_rv_curve(r_flat, v_flat)
+    # 5. plot r-v curve
+    plot_rv_curve(r_rot_map, v_rot_map)
 
 
 # main entry

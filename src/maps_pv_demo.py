@@ -49,74 +49,9 @@ def calc_inc(ba, BA_0=0.13):
     inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
     return inc_rad
 
-# 将v_map 的值进行绝对值处理
-def vel_map_abs(vel_map):
-    vel_map = np.asarray(vel_map, dtype=float)
-    vel_map_abs = np.abs(vel_map)
-    return vel_map_abs
-
-# SNR filtering for velocity map
-def vel_snr_filter(vel_map, snr_map, snr_threshold=10.0):
-    """
-    Filters the velocity map based on a signal-to-noise ratio (SNR) threshold.
-
-    Args:
-        vel_map (np.ndarray): The observed velocity map.
-        snr_map (np.ndarray): The corresponding SNR map.
-        snr_threshold (float): The minimum SNR required to keep a velocity value.
-
-    Returns:
-        np.ndarray: The filtered velocity map, with invalid points set to NaN.
-    """
-    vel_map = np.asarray(vel_map, dtype=float)
-    snr_map = np.asarray(snr_map, dtype=float)
-
-    # Create a mask for valid data points
-    valid_mask = snr_map >= snr_threshold
-
-    # Initialize the output array with NaNs
-    filtered_vel_map = np.full_like(vel_map, np.nan, dtype=float)
-
-    # Keep only the valid points
-    filtered_vel_map[valid_mask] = vel_map[valid_mask]
-
-    return filtered_vel_map
-
-
-def arctan_model(r, Vc, Rt, Vsys=0):
-    """Arctangent rotation curve model."""
-    return Vsys + (2 / np.pi) * Vc * np.arctan(r / Rt)
-
-# calculate velocity dispersion
 def calc_vel_dispersion(ivar_map):
     v_disp = np.sqrt(1 / np.sum(ivar_map, axis=0))
     return v_disp
-
-def calc_v_sys(v_map, size=3):
-    """
-    Estimate systemic velocity V_sys as the median of the central size x size spaxel box
-    from the provided velocity map. `size` should be an odd positive integer
-    (commonly 3 or 5). NaN values are ignored; returns np.nan if no valid pixels.
-    """
-    v_map = np.asarray(v_map, dtype=float)
-    if size % 2 == 0 or size < 1:
-        raise ValueError("size must be an odd positive integer (e.g., 3 or 5)")
-
-    ny, nx = v_map.shape
-    # center indices (rounded in the same spirit as previous code)
-    x_c = int(round((nx - 1) / 2.0))
-    y_c = int(round((ny - 1) / 2.0))
-
-    half = size // 2
-    x0 = max(0, x_c - half)
-    x1 = min(nx, x_c + half + 1)
-    y0 = max(0, y_c - half)
-    y1 = min(ny, y_c + half + 1)
-
-    core = v_map[y0:y1, x0:x1]
-    v_sys = np.nanmedian(core)
-    return float(v_sys)
-
 
 # Geometric correction for the MaNGA velocity map
 def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, snr_threshold=10.0, phi_limit_deg=60.0, center_x=None, center_y=None, apply_projection=True):
@@ -180,7 +115,7 @@ def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, snr_threshold=10.0, phi_limi
         cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
         projection = sin_inc * cos_phi
     else:
-        # 仅进行SNR与phi过滤，不对速度做几何投影/去投影
+        # Only perform SNR and phi filtering; do not perform geometric projection/deprojection of velocities
         radius_map = np.hypot(x_rot, y_rot)
         cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
         projection = None  # not used
@@ -234,27 +169,6 @@ def plot_galaxy_image(plateifu):
     plt.show()
 
 
-# plot r-v curve
-def plot_rv_curve(r_rot_map, v_rot_map):
-    # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
-    r_rot_map = np.asarray(r_rot_map, dtype=float)
-    v_rot_map = np.asarray(v_rot_map, dtype=float)
-    r_signed = np.where(v_rot_map < 0, -np.abs(r_rot_map), np.abs(r_rot_map))
-
-    # Mask invalid values
-    valid = np.isfinite(r_signed) & np.isfinite(v_rot_map)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(r_signed[valid], v_rot_map[valid], s=2, color='red', alpha=0.2, label='Data Points')
-
-    ax.set_title("Galaxy Rotation Curve (R-V)")
-    ax.set_xlabel("Radius R (spaxel)")
-    ax.set_ylabel("Rotation Velocity V_rot (km/s)")
-    ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
-    ax.axvline(0, color='black', linestyle='--', linewidth=0.8)
-    ax.legend()
-    fig.tight_layout()
-    plt.show()
 
 
 # Plots the binned velocity map using unique bin indices.
@@ -317,7 +231,7 @@ def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""
         # Plot the line representing the major axis
         ax.plot([ra_center - dx, ra_center + dx], 
                 [dec_center - dy, dec_center + dy], 
-                color='black', linestyle='--', linewidth=1.5, label='Major Axis (PA)')
+                color='gray', linestyle='--', linewidth=1.5, label='Major Axis (PA)')
         ax.legend()
 
     # Set plot labels and title
@@ -332,11 +246,20 @@ def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""
     fig.tight_layout()
     plt.show()
 
-def plot_rotation_curve(r_map, v_map, title: str=""):
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(r_map, v_map, s=2, color='blue', alpha=0.3, label='Data Points')
+# plot r-v curve
+def plot_rv_curve(r_rot_map, v_rot_map):
+    # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
+    r_rot_map = np.asarray(r_rot_map, dtype=float)
+    v_rot_map = np.asarray(v_rot_map, dtype=float)
+    r_signed = np.where(v_rot_map < 0, -np.abs(r_rot_map), np.abs(r_rot_map))
 
-    ax.set_title(f"{title} Galaxy Rotation Curve")
+    # Mask invalid values
+    valid = np.isfinite(r_signed) & np.isfinite(v_rot_map)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(r_signed[valid], v_rot_map[valid], s=2, color='red', alpha=0.2, label='Data Points')
+
+    ax.set_title("Galaxy Rotation Curve (R-V)")
     ax.set_xlabel("Radius R (spaxel)")
     ax.set_ylabel("Rotation Velocity V_rot (km/s)")
     ax.axhline(0, color='black', linestyle='--', linewidth=0.8)
@@ -412,21 +335,15 @@ def main():
     _, stellar_uindx = map_util.get_stellar_uindx()
     # print(f"Unique bin indices count: {len(stellar_uindx)}")
 
-    # Estimate Systemic Velocity V_sys from stellar velocity map
-    vel_sys = calc_v_sys(stellar_vel_map, size=3)
-    print(f"Estimated Systemic Velocity V_sys: {vel_sys:.3f} {_sv_unit}")
 
-    # Velocity Field Centering
+    # Velocity correction
     v_obs_map = gas_vel_map
-    v_internal_map = v_obs_map - vel_sys
     v_unit = _gv_unit
     v_uindx = eml_uindx
-    print(f"Internal Velocity map shape: {v_internal_map.shape}, Unit: {v_unit}")
-    print(f"Internal Velocity: [{np.nanmin(v_internal_map):.3f}, {np.nanmax(v_internal_map):.3f}] {v_unit}")
+    print(f"Internal Velocity map shape: {v_obs_map.shape}, Unit: {v_unit}")
+    print(f"Internal Velocity: [{np.nanmin(v_obs_map):.3f}, {np.nanmax(v_obs_map):.3f}] {v_unit}")
 
-
-
-    v_rot_map, r_rot_map = calc_vel_rot(v_internal_map, pa_rad, inc_rad, snr_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG, apply_projection=False)
+    v_rot_map, r_rot_map = calc_vel_rot(v_obs_map, pa_rad, inc_rad, snr_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG, apply_projection=False)
     print(f"v_rot_map: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}] km/s", f"size: {len(v_rot_map)}")
 
     ########################################################
@@ -440,10 +357,8 @@ def main():
     # plot gas velocity map
     plot_bin_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
     # plot stellar velocity map
-    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, title="Stellar")
+    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, pa_rad=pa_rad, title="Stellar")
 
-    # 3. plot internal velocity map
-    plot_bin_vel_map(v_internal_map, v_uindx, ra_map, dec_map, pa_rad=pa_rad, title="Internal")
     # 4. plot rotated velocity map
     plot_bin_vel_map(v_rot_map, v_uindx, ra_map, dec_map, title="Rotated")
 

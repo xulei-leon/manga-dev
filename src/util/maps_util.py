@@ -106,15 +106,14 @@ class MapsUtil:
         masked_ivar_map[~good_ivar_mask] = np.nan
 
         return masked_velocity_map, velocity_unit, masked_ivar_map
-    
 
-    # get Spaxel Size
-    def get_spaxel_size(self) -> tuple[float, float]:
-        """Return the spaxel size in arcseconds from the MAPS file header."""
-        hdr = self.hdu['SPX_SKYCOO'].header
-        x = abs(float(hdr.get('CDELT1')))
-        y = abs(float(hdr.get('CDELT2')))
-        return x, y
+    # SPX_SKYCOO
+    # Sky-right offsets in arcsec
+    def get_sky_offsets(self) -> tuple[np.ndarray, np.ndarray]:
+        data_skycoo = self.hdu['SPX_SKYCOO'].data
+        offset_x = data_skycoo[0, :, :]  # X offset in arcsec
+        offset_y = data_skycoo[1, :, :]  # Y offset in arcsec
+        return offset_x, offset_y
 
     #BIN_SNR
     def get_snr_map(self) -> np.ndarray:

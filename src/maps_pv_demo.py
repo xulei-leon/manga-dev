@@ -1,4 +1,4 @@
-
+from operator import le
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -24,7 +24,8 @@ PLATE_IFU = "8723-12703"
 
 # constants definitions
 SNR_THRESHOLD = 10.0
-PHI_LIMIT_DEG = 50.0
+PHI_LIMIT_DEG = 60.0
+BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 
 
 ################################################################################
@@ -35,9 +36,9 @@ PHI_LIMIT_DEG = 50.0
 # Formula for inclination i
 # The inclination is the angle between the galaxy disk normal and the observer's line of sight.
 # ba: The axis ratio (b/a) of the galaxy, where 'b' is the length of the minor axis and 'a' is the length of the major axis.
-def calc_inc(ba, BA_0=0.13):
+def calc_inc(ba, ba_0=0.2):
     ba_sq = ba**2
-    BA_0_sq = BA_0**2
+    BA_0_sq = ba_0**2
     
     # Compute the numerator part of cos^2(i)
     numerator = ba_sq - BA_0_sq
@@ -49,95 +50,92 @@ def calc_inc(ba, BA_0=0.13):
     inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
     return inc_rad
 
-def calc_vel_dispersion(ivar_map):
-    v_disp = np.sqrt(1 / np.sum(ivar_map, axis=0))
-    return v_disp
-
-# Geometric correction for the MaNGA velocity map
-def calc_vel_rot(vel_map, pa_rad, inc_rad, snr_map, snr_threshold=10.0, phi_limit_deg=60.0, center_x=None, center_y=None, apply_projection=True):
+def vel_map_filter(
+    vel_map: np.ndarray, 
+    pa_rad: float, 
+    snr_map: np.ndarray, 
+    offset_x: np.ndarray, 
+    offset_y: np.ndarray, 
+    snr_threshold: float = 10.0, 
+    phi_limit_deg: float = 60.0) -> tuple[np.ndarray, np.ndarray]:
     """
-    Performs geometric correction on the observed velocity field, combined with
-    signal-to-noise and azimuthal angle filtering.
-
-    Args:
-        vel_map (np.ndarray): The observed line-of-sight velocity map (km/s).
-        pa_rad (float): The position angle (PA) of the galaxy in radians.
-        inc_rad (float): The inclination (i) of the galaxy in radians.
-        snr_map (np.ndarray): The corresponding signal-to-noise ratio (S/N) map.
-        phi_limit_deg (float): The maximum allowed azimuthal angle from the major
-                               axis in degrees. Default is 60.0.
-        center_x (float, optional): The X coordinate of the galaxy center.
-                                    Defaults to (nx - 1) / 2.0.
-        center_y (float, optional): The Y coordinate of the galaxy center.
-                                    Defaults to (ny - 1) / 2.0.
-        apply_projection (bool): If True, perform geometric deprojection of velocities
-                                 (V_rot = V_obs / (sin(i)*cos(phi))). If False, do not
-                                 deproject; only apply SNR and phi filtering and return
-                                 the filtered observed velocities. Default True.
+    Filter the velocity map:
+    Keep only pixels with SNR above the threshold and within ±phi_limit of the major axis.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]:
-        - vel_map_corrected (np.ndarray): The corrected true rotation velocity
-          (V_rot) map (km/s) if apply_projection=True; otherwise the filtered
-          observed velocity map. Points not meeting filter criteria are NaN.
-        - radius_map (np.ndarray): The radial distance map (in spaxels). This is
-          deprojected radius if apply_projection=True, otherwise projected radius.
+        vel_map_filtered: The masked/filtered velocity map
+        phi_rad: The azimuthal angle for each pixel (radians)
     """
-    vel_map = np.asarray(vel_map, dtype=float)
-    snr_map = np.asarray(snr_map, dtype=float)
+    vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
+    phi_rad = np.full_like(vel_map, np.nan, dtype=float)
+
+    # Calculated at valid coordinates only
+    finite_mask = np.isfinite(offset_x) & np.isfinite(offset_y)
+    x_rot = np.zeros_like(offset_x)
+    y_rot = np.zeros_like(offset_y)
     
-    sin_inc = np.sin(inc_rad)
-    cos_inc = np.cos(inc_rad)
-
-    ny, nx = vel_map.shape
-    y, x = np.indices((ny, nx))
+    x_rot[finite_mask] = offset_x[finite_mask] * np.cos(pa_rad) + offset_y[finite_mask] * np.sin(pa_rad)
+    y_rot[finite_mask] = -offset_x[finite_mask] * np.sin(pa_rad) + offset_y[finite_mask] * np.cos(pa_rad)
     
-    x_c = center_x if center_x is not None else (nx - 1) / 2.0
-    y_c = center_y if center_y is not None else (ny - 1) / 2.0
+    phi_rad[finite_mask] = np.arctan2(y_rot[finite_mask], x_rot[finite_mask])
     
-    x_rel = x - x_c
-    y_rel = y - y_c
-
-    # Rotate to align with major axis
-    cos_pa = np.cos(pa_rad)
-    sin_pa = np.sin(pa_rad)
-    x_rot = x_rel * sin_pa - y_rel * cos_pa  # along major axis
-    y_rot = x_rel * cos_pa + y_rel * sin_pa  # along minor axis
-
-    # When not deprojecting, use projected radius; otherwise use deprojected radius
-    if apply_projection:
-        if np.isclose(sin_inc, 0.0) or np.isclose(cos_inc, 0.0):
-            # Face-on or nearly so; cannot deproject
-            nan_map = np.full_like(vel_map, np.nan, dtype=float)
-            return nan_map, nan_map
-        y_deproj = y_rot / cos_inc
-        radius_map = np.hypot(x_rot, y_deproj)
-        cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
-        projection = sin_inc * cos_phi
-    else:
-        # Only perform SNR and phi filtering; do not perform geometric projection/deprojection of velocities
-        radius_map = np.hypot(x_rot, y_rot)
-        cos_phi = np.divide(x_rot, radius_map, out=np.zeros_like(x_rot), where=radius_map > 0)
-        projection = None  # not used
-
-    # Thresholds
-    cos_phi_threshold = np.cos(np.radians(phi_limit_deg))
-    
-
-    valid = (
-        np.isfinite(vel_map) &
-        (radius_map > 0) &
+    # Effective mask
+    phi_limit_rad = np.radians(phi_limit_deg)
+    valid_mask = (
         (snr_map >= snr_threshold) &
-        (np.abs(cos_phi) >= cos_phi_threshold)
+        (np.abs(phi_rad) <= phi_limit_rad) &
+        np.isfinite(vel_map)
     )
+    
+    vel_map_filtered[valid_mask] = vel_map[valid_mask]
+    return vel_map_filtered, phi_rad
 
-    vel_map_corrected = np.full_like(vel_map, np.nan, dtype=float)
-    if apply_projection:
-        vel_map_corrected[valid] = vel_map[valid] / projection[valid]
-    else:
-        vel_map_corrected[valid] = vel_map[valid]
 
-    return vel_map_corrected, radius_map
+def rotate_to_major_axis(delta_x, delta_y, pa_rad):
+    x_prime = delta_x * np.cos(pa_rad) + delta_y * np.sin(pa_rad)
+    y_prime = -delta_x * np.sin(pa_rad) + delta_y * np.cos(pa_rad)
+    return x_prime, y_prime
+
+def deproject_to_galactic_plane(x_prime, y_prime, inc_rad):
+    cos_i = np.cos(inc_rad)
+    if np.isclose(cos_i, 0.0):
+        cos_i = 1e-6  # Preventing de-zeroing
+    x_gal = x_prime
+    y_gal = y_prime / cos_i
+    return x_gal, y_gal
+
+def calc_rot_angle_phi(x_gal: np.ndarray, y_gal: np.ndarray) -> np.ndarray:
+    """
+    Calculates the azimuth φ (in radians) in the intrinsic plane of the galaxy relative to the long axis.
+    φ = 0 in the range [-π, π] along the positive direction of the long axis.
+    """
+    x = np.asarray(x_gal, dtype=float)
+    y = np.asarray(y_gal, dtype=float)
+    phi_array = np.arctan2(y, x)
+    invalid_mask = (~np.isfinite(x)) | (~np.isfinite(y)) | ((x == 0.0) & (y == 0.0))
+    if np.any(invalid_mask):
+        phi_array = np.array(phi_array, dtype=float, copy=True)
+        phi_array[invalid_mask] = np.nan
+
+    return phi_array
+
+
+# Calculate the true rotational velocity V_rot from observed line-of-sight velocity V_obs
+# using the inclination i and azimuthal angle phi.
+def calc_v_rot(v_obs, phi_array, incl_rad):
+    """
+    Calculate the true rotational velocity V_rot from the inclination and azimuth angles.
+    Formula: V_rot = V_obs / (sin(i) * cos(phi))
+    """
+    sin_i = np.sin(incl_rad)
+    correction = sin_i * np.cos(phi_array)
+    
+    # Avoid division by zero, mask invalid regions
+    valid = np.abs(correction) > 1e-3
+    v_rot = np.full_like(v_obs, np.nan, dtype=float)
+    v_rot[valid] = v_obs[valid] / correction[valid]
+    
+    return v_rot
 
 ################################################################################
 # plot functions
@@ -169,7 +167,7 @@ def plot_galaxy_image(plateifu):
     plt.show()
 
 # Plots the binned velocity map using unique bin indices.
-def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
+def plot_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
     """
     Plots the binned velocity map using unique bin indices.
 
@@ -283,8 +281,9 @@ def main():
     ########################################################
     # get parameters from FITS files
     ########################################################
-    spaxel_x, spaxel_y = map_util.get_spaxel_size()
-    print(f"Spaxel Size: {spaxel_x:.3f} arcsec (X), {spaxel_y:.3f} arcsec (Y)")
+    offset_x, offset_y = map_util.get_sky_offsets()
+    print(f"Sky offsets shape: {offset_x.shape}, X offset: [{np.nanmin(offset_x):.3f}, {np.nanmax(offset_x):.3f}] arcsec")
+    print(f"Sky offsets shape: {offset_y.shape}, Y offset: [{np.nanmin(offset_y):.3f}, {np.nanmax(offset_y):.3f}] arcsec")
 
     # R: radial distance map
     r_map, azimuth_map = map_util.get_r_map()
@@ -299,15 +298,11 @@ def main():
     # PA: The position angle of the major axis of the galaxy, measured from north to east.
     # b/a: The axis ratio (b/a) of the galaxy
     phi, ba_1 = map_util.get_pa_inc()
-    print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {1-ba_1:.3f}")
-
     ba = 1 - ba_1
-    pa_rad = np.radians(phi)  # convert to radians, from North to East, then to major axis
-    inc_rad = calc_inc(ba)
-    print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
+    print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {ba:.3f}")
 
-    ra_map, dec_map = map_util.get_skycoo_map()
-    inc_rad = calc_inc(ba)
+    pa_rad = np.radians(phi)  # convert to radians, from North to East, then to major axis
+    inc_rad = calc_inc(ba, ba_0=BA_0)
     print(f"pa_rad: {pa_rad:.3f}, inc_rad = {inc_rad:.3f} ({np.degrees(inc_rad):.2f} deg)")
 
     ra_map, dec_map = map_util.get_skycoo_map()
@@ -319,29 +314,32 @@ def main():
 
     ## Get the gas velocity map (H-alpha)
     gas_vel_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
-    _gv_disp = calc_vel_dispersion(_gv_ivar)
     print(f"Velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}")
     print(f"Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
     _, eml_uindx = map_util.get_emli_uindx()
-    # print(f"Unique bin indices count: {len(eml_uindx)}")
     
     ## Get the stellar velocity map
     stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
     print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}")
     print(f"Stellar Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
     _, stellar_uindx = map_util.get_stellar_uindx()
-    # print(f"Unique bin indices count: {len(stellar_uindx)}")
 
 
     # Velocity correction
     v_obs_map = gas_vel_map
     v_unit = _gv_unit
     v_uindx = eml_uindx
-    print(f"Internal Velocity map shape: {v_obs_map.shape}, Unit: {v_unit}")
-    print(f"Internal Velocity: [{np.nanmin(v_obs_map):.3f}, {np.nanmax(v_obs_map):.3f}] {v_unit}")
+    print(f"Obs Velocity map shape: {v_obs_map.shape}, Unit: {v_unit}")
+    print(f"Obs Velocity: [{np.nanmin(v_obs_map):.3f}, {np.nanmax(v_obs_map):.3f}] {v_unit}")
 
-    v_rot_map, r_rot_map = calc_vel_rot(v_obs_map, pa_rad, inc_rad, snr_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG, apply_projection=False)
-    print(f"v_rot_map: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}] km/s", f"size: {len(v_rot_map)}")
+    vel_map_filtered, phi_array = vel_map_filter(v_obs_map, pa_rad, snr_map, offset_x, offset_y, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
+    # x_p, y_p = rotate_to_major_axis(offset_x, offset_y, pa_rad)
+    # x_gal, y_gal = deproject_to_galactic_plane(x_p, y_p, inc_rad)
+    # phi_array = calc_rot_angle_phi(x_gal, y_gal)
+
+    v_rot_map = calc_v_rot(vel_map_filtered, phi_array, inc_rad)
+    print(f"Rotated Velocity map shape: {v_rot_map.shape}, Unit: {v_unit}")
+    print(f"Rotated Velocity: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}] {v_unit}")
 
     ########################################################
     ## plot velocity map
@@ -352,16 +350,15 @@ def main():
 
     ## 2. plot binned velocity maps (No need to subtract system velocity)
     # plot gas velocity map
-    plot_bin_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
+    plot_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
     # plot stellar velocity map
-    plot_bin_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, pa_rad=pa_rad, title="Stellar")
+    plot_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, pa_rad=pa_rad, title="Stellar")
 
     # 4. plot rotated velocity map
-    plot_bin_vel_map(v_rot_map, v_uindx, ra_map, dec_map, title="Rotated")
+    plot_vel_map(v_rot_map, v_uindx, ra_map, dec_map, title="Rotated")
 
     # 5. plot r-v curve
-    plot_rv_curve(r_rot_map, v_rot_map)
-
+    plot_rv_curve(r_map, v_rot_map)
 
 # main entry
 if __name__ == "__main__":

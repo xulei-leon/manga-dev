@@ -158,18 +158,15 @@ def plot_galaxy_image(plateifu):
 
     fig, ax = plt.subplots(figsize=(7, 6))
     if img.ndim == 2:
-        ax.imshow(img, origin="lower", cmap="gray")
+        ax.imshow(img, origin="upper", cmap="gray")
     else:
-        ax.imshow(img, origin="lower")
+        ax.imshow(img, origin="upper")
 
     ax.set_title(f"Galaxy Image ({plateifu})")
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     fig.tight_layout()
     plt.show()
-
-
-
 
 # Plots the binned velocity map using unique bin indices.
 def plot_bin_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):

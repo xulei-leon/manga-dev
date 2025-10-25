@@ -134,8 +134,8 @@ class MapsUtil:
 
     # BIN_LWELLCOO
     # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
-    # SPX_ELLCOO
-    # Elliptical polar coordinates of each spaxel from the galaxy center based on the on-sky coordinates in SPX_SKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
+    # r: Lum. weighted elliptical radius
+    # azimuth: Lum. weighted elliptical azimuth
     def get_r_map(self) -> np.ndarray:
         """Return the radial map from the MAPS file."""
         r_data = self.hdu['BIN_LWELLCOO'].data

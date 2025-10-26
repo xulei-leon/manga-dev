@@ -50,46 +50,6 @@ def calc_inc(ba, ba_0=0.2):
     inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
     return inc_rad
 
-def vel_map_filter(
-    vel_map: np.ndarray, 
-    pa_rad: float, 
-    snr_map: np.ndarray, 
-    offset_x: np.ndarray, 
-    offset_y: np.ndarray, 
-    snr_threshold: float = 10.0, 
-    phi_limit_deg: float = 60.0) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Filter the velocity map:
-    Keep only pixels with SNR above the threshold and within ±phi_limit of the major axis.
-
-    Returns:
-        vel_map_filtered: The masked/filtered velocity map
-        phi_rad: The azimuthal angle for each pixel (radians)
-    """
-    vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
-    phi_rad = np.full_like(vel_map, np.nan, dtype=float)
-
-    # Calculated at valid coordinates only
-    finite_mask = np.isfinite(offset_x) & np.isfinite(offset_y)
-    x_rot = np.zeros_like(offset_x)
-    y_rot = np.zeros_like(offset_y)
-    
-    x_rot[finite_mask] = offset_x[finite_mask] * np.cos(pa_rad) + offset_y[finite_mask] * np.sin(pa_rad)
-    y_rot[finite_mask] = -offset_x[finite_mask] * np.sin(pa_rad) + offset_y[finite_mask] * np.cos(pa_rad)
-    
-    phi_rad[finite_mask] = np.arctan2(y_rot[finite_mask], x_rot[finite_mask])
-    
-    # Effective mask
-    phi_limit_rad = np.radians(phi_limit_deg)
-    valid_mask = (
-        (snr_map >= snr_threshold) &
-        (np.abs(phi_rad) <= phi_limit_rad) &
-        np.isfinite(vel_map)
-    )
-    
-    vel_map_filtered[valid_mask] = vel_map[valid_mask]
-    return vel_map_filtered, phi_rad
-
 
 def rotate_to_major_axis(delta_x, delta_y, pa_rad):
     x_prime = delta_x * np.cos(pa_rad) + delta_y * np.sin(pa_rad)
@@ -119,6 +79,31 @@ def calc_rot_angle_phi(x_gal: np.ndarray, y_gal: np.ndarray) -> np.ndarray:
 
     return phi_array
 
+
+def vel_map_filter(
+    vel_map: np.ndarray,
+    snr_map: np.ndarray,
+    phi_array: np.ndarray,
+    snr_threshold: float = 10.0,
+    phi_limit_deg: float = 60.0) -> np.ndarray:
+    """
+    Filter the velocity map:
+    Keep only pixels with SNR above the threshold and within ±phi_limit of the major axis.
+
+    Returns:
+        vel_map_filtered: The masked/filtered velocity map
+    """
+    vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
+    # Effective mask
+    phi_limit_rad = np.radians(phi_limit_deg)
+    valid_mask = (
+        (snr_map >= snr_threshold) &
+        (np.abs(phi_array) <= phi_limit_rad) &
+        np.isfinite(vel_map)
+    )
+
+    vel_map_filtered[valid_mask] = vel_map[valid_mask]
+    return vel_map_filtered
 
 # Calculate the true rotational velocity V_rot from observed line-of-sight velocity V_obs
 # using the inclination i and azimuthal angle phi.
@@ -332,10 +317,10 @@ def main():
     print(f"Obs Velocity map shape: {v_obs_map.shape}, Unit: {v_unit}")
     print(f"Obs Velocity: [{np.nanmin(v_obs_map):.3f}, {np.nanmax(v_obs_map):.3f}] {v_unit}")
 
-    vel_map_filtered, phi_array = vel_map_filter(v_obs_map, pa_rad, snr_map, offset_x, offset_y, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
-    # x_p, y_p = rotate_to_major_axis(offset_x, offset_y, pa_rad)
-    # x_gal, y_gal = deproject_to_galactic_plane(x_p, y_p, inc_rad)
-    # phi_array = calc_rot_angle_phi(x_gal, y_gal)
+    x_p, y_p = rotate_to_major_axis(offset_x, offset_y, pa_rad)
+    x_gal, y_gal = deproject_to_galactic_plane(x_p, y_p, inc_rad)
+    phi_array = calc_rot_angle_phi(x_gal, y_gal)
+    vel_map_filtered = vel_map_filter(v_obs_map, snr_map, phi_array=phi_array, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
 
     v_rot_map = calc_v_rot(vel_map_filtered, phi_array, inc_rad)
     print(f"Rotated Velocity map shape: {v_rot_map.shape}, Unit: {v_unit}")

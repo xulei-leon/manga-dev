@@ -1,20 +1,25 @@
+from argparse import FileType
+from fileinput import filename
 from pathlib import Path
 import requests
 
-BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2"
-REDUX_URL_PREFIX = "https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1"
+MAPS_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2"
+REDUX_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1"
+FIREFLY_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/firefly/v3_1_1"
 
 class FitsUtil:
     data_dir: Path
     drp_dir: Path
     dap_dir: Path
     images_dir: Path
+    firefly_dir: Path
 
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         self.drp_dir = self.data_dir / "redux"
         self.dap_dir = self.data_dir / "analysis"
         self.images_dir = self.data_dir / "images"
+        self.firefly_dir = self.data_dir / "firefly"
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.drp_dir.mkdir(parents=True, exist_ok=True)
@@ -42,10 +47,19 @@ class FitsUtil:
     # drpall file is always the same name
     # drpall-v3_1_1.fits
     def get_drpall_file(self) -> Path:
-        ret_path = Path(self.drp_dir / "drpall-v3_1_1.fits")
+        filename = "drpall-v3_1_1.fits"
+        ret_path = Path(self.drp_dir / filename)
         if not (ret_path).exists():
-            print(f"Warning: file drpall-v3_1_1.fits does not exist; it may need to be downloaded first.")
-            self.dl_drpall()
+            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
+            self.dl_drpall(filename)
+        return ret_path
+    
+    def get_firefly_file(self) -> Path:
+        filename = "manga-firefly-v3_1_1-mastar.fits"
+        ret_path = Path(self.firefly_dir / filename)
+        if not (ret_path).exists():
+            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
+            self.dl_firefly_mastar(filename)
         return ret_path
     
     # get image file path
@@ -62,44 +76,52 @@ class FitsUtil:
 
         if not (ret_path).exists():
             print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
-            dl_success = self.dl_image(plateifu)
+            dl_success = self.dl_image(plateifu, filename)
             if not dl_success:
                 raise FileNotFoundError(f"Unable to obtain image file: {filename}")
         return ret_path
 
     # single file, always the same name
     # https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1/drpall-v3_1_1.fits
-    def dl_drpall(self) -> bool:
-        url = f"{REDUX_URL_PREFIX}/drpall-v3_1_1.fits"
-        target_path = self.drp_dir / "drpall-v3_1_1.fits"
-        return self._download_file(url, target_path)
+    def dl_drpall(self, filename: str) -> bool:
+        url = f"{REDUX_BASE_URL}/{filename}"
+        target_path = self.drp_dir / filename
+        return self._download_file(url, target_path, file_type_str="DRPALL")
 
+    # https://data.sdss.org/sas/dr17/manga/spectro/firefly/v3_1_1/manga-firefly-v3_1_1-mastar.fits
+    def dl_firefly_mastar(self, filename: str) -> bool:
+        url = f"{FIREFLY_BASE_URL}/{filename}"
+        target_path = self.firefly_dir / filename
+        return self._download_file(url, target_path, file_type_str="FIREFLY MASTAR")
 
     # example plateifu:
     # "7957-3701"
     # https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1/7957/images/3701.png
-    def dl_image(self, plateifu: str) -> bool:
+    def dl_image(self, plateifu: str, filename: str) -> bool:
         plateifu = plateifu.strip()
         if "-" not in plateifu:
             raise ValueError("plateifu must be in 'plate-ifu' format, e.g. '7957-3701'")
         plate, ifu = plateifu.split("-", 1)
-        filename = f"manga-{plate}-{ifu}.png"
-        url = f"{REDUX_URL_PREFIX}/{plate}/images/{ifu}.png"
+        if not filename:
+            filename = f"manga-{plate}-{ifu}.png"
+        url = f"{REDUX_BASE_URL}/{plate}/images/{ifu}.png"
         target_path = self.images_dir / filename
         return self._download_file(url, target_path, file_type_str="image")
 
     # example plateifu:
     # "87443-12703"
     # https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/7443/12703/manga-7443-12703-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz 
-    def dl_maps(self, plateifu: str) -> bool:
+    def dl_maps(self, plateifu: str, filename: str) -> bool:
         plateifu = plateifu.strip()
         if "-" not in plateifu:
             raise ValueError("plateifu must be in 'plate-ifu' format, e.g. '7443-12703'")
         plate, ifu = plateifu.split("-", 1)
-        filename = f"manga-{plate}-{ifu}-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz"
-        url = f"{BASE_URL}/{plate}/{ifu}/{filename}"
+        if not filename:
+            filename = f"manga-{plate}-{ifu}-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz"
+        url = f"{MAPS_BASE_URL}/{plate}/{ifu}/{filename}"
         target_path = self.dap_dir / filename
-        return self._download_file(url, target_path)
+        return self._download_file(url, target_path, file_type_str="MAPS")
+
 
     ##############################################################################
     # Private methods

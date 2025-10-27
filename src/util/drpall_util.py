@@ -158,6 +158,14 @@ class DrpallUtil:
         sersic = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
         elpetro = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
         return sersic , elpetro
+    
+    # NSA_ELPETRO_TH50_R 
+    # Elliptical Petrosian 50% light radius in SDSS r-band
+    # arcsec
+    def get_effective_radius(self, plateifu: str) -> float | None:
+        """Return effective radius (in arcsec) for plateifu using available columns or None."""
+        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_R50_R")
+        return reff
 
     # find all columns containing the keywords
     def search_columns(self, plateifu: str, keywords: str) -> list[str]:

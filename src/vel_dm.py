@@ -17,6 +17,7 @@ from scipy.special import gamma, gammainc
 from util.fits_util import FitsUtil
 from util.drpall_util import DrpallUtil
 from util.firefly_util import FireflyUtil
+from util.maps_util import MapsUtil
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -40,17 +41,24 @@ def calc_vel_stellar(density_stellar, radius_map):
 def main():
     drpall_file = fits_util.get_drpall_file()
     firefly_file = fits_util.get_firefly_file()
+    maps_file = fits_util.get_maps_file(PLATE_IFU)
 
     drpall_util = DrpallUtil(drpall_file)
     firefly_util = FireflyUtil(firefly_file)
+    maps_util = MapsUtil(maps_file)
 
-    stellar_mass_1, stellar_mass_2 = drpall_util.get_stellar_mass(PLATE_IFU)
-    print(f"Stellar Mass: (Sersic) {stellar_mass_1:,} M solar, (Elpetro) {stellar_mass_2:,} M solar")
+    # stellar_mass_1, stellar_mass_2 = drpall_util.get_stellar_mass(PLATE_IFU)
+    # print(f"Stellar Mass: (Sersic) {stellar_mass_1:,} M solar, (Elpetro) {stellar_mass_2:,} M solar")
 
-    # TODO: get radius from MPAS SPX_ELLCOO
 
     density_stellar, density_stellar_err = firefly_util.get_stellar_density(PLATE_IFU)
     print(f"Stellar Surface Mass Density shape: {density_stellar.shape}")
+
+
+    # TODO: get radius from MPAS BIN_LWELLCOO
+    radius, r_h_kpc, azimuth = maps_util.get_radius_map()
+    print(f"Radius shape: {radius.shape}, r_h_kpc shape: {r_h_kpc.shape}, azimuth shape: {azimuth.shape}")
+
 
     return
 

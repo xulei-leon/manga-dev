@@ -19,8 +19,8 @@ root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
 
 
-# PLATE_IFU = "8723-12705"
-PLATE_IFU = "8723-12703"
+PLATE_IFU = "8723-12705"
+# PLATE_IFU = "8723-12703"
 
 # constants definitions
 SNR_THRESHOLD = 10.0
@@ -98,7 +98,7 @@ def vel_map_filter(
     phi_limit_rad = np.radians(phi_limit_deg)
     valid_mask = (
         (snr_map >= snr_threshold) &
-        (np.abs(phi_array) <= phi_limit_rad) &
+        # (np.abs(phi_array) <= phi_limit_rad) &
         np.isfinite(vel_map)
     )
 
@@ -271,7 +271,7 @@ def main():
     print(f"Sky offsets shape: {offset_y.shape}, Y offset: [{np.nanmin(offset_y):.3f}, {np.nanmax(offset_y):.3f}] arcsec")
 
     # R: radial distance map
-    r_map, azimuth_map = map_util.get_r_map()
+    r_map, r_h_kpc_map, azimuth_map = map_util.get_radius_map()
     phi_rad_map = np.radians(azimuth_map) 
     print(f"r_map: [{np.nanmin(r_map):.3f}, {np.nanmax(r_map):.3f}] spaxel,", f"shape: {r_map.shape}")
 
@@ -343,7 +343,8 @@ def main():
     plot_vel_map(v_rot_map, v_uindx, ra_map, dec_map, title="Rotated")
 
     # 5. plot r-v curve
-    plot_rv_curve(r_map, v_rot_map)
+    # plot_rv_curve(r_map, v_rot_map)
+    plot_rv_curve(r_map, vel_map_filtered)
 
 # main entry
 if __name__ == "__main__":

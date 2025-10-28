@@ -164,7 +164,7 @@ class DrpallUtil:
     # arcsec
     def get_effective_radius(self, plateifu: str) -> float | None:
         """Return effective radius (in arcsec) for plateifu using available columns or None."""
-        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_R50_R")
+        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_R50_R"])
         return reff
 
     # find all columns containing the keywords

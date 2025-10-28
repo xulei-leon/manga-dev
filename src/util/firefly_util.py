@@ -39,47 +39,37 @@ class FireflyUtil:
     # Load FITS table
     ##############################################################################
         
-    def load_table(self, ext: int = 1) -> Table:
-        """Load FITS table from the specified extension and return an astropy Table."""
-        return Table(self.hdu[ext].data)
-        
-    def _fetch_scalar_column_value(self, plateifu: str, candidates: Iterable[str]):
-        """Return the scalar value from the first matching column name for the given plateifu."""
-        table = self.load_table()
-        row = table[table['PLATEIFU'] == plateifu]
-        if len(row) == 0:
-            raise ValueError(f"plateifu {plateifu} not found in Firefly data.")
-        for name in candidates:
-            if name in row.colnames:
-                return row[name][0]
-        raise ValueError(f"No matching column found for candidates: {candidates}")
+    def _find_row_index(self, plateifu: str):
+        """Return the integer row index that matches plateifu.
+        If `columns` is provided, return the value(s) for those column(s) at the found row.
+        """
+        table = Table(self.hdu[1].data)
+        matches = np.where(table['PLATEIFU'] == plateifu)[0]
+        if matches.size == 0:
+            raise ValueError(f"plateifu not found: {plateifu}")
+        if matches.size > 1:
+            log.warning("Multiple matches for plateifu %s; using the first match", plateifu)
+        idx = int(matches[0])
+        return idx
 
 
-    # key: STELLAR_MASS_VORONOI
-    # HDU11: STELLAR MASS
-    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass. 
-    # The first two channels give the stellar mass and error per spaxel, the last two channels give the total stellar mass and error of the Voronoi cell.
-    # Units of log(M⊙/spaxel), log(M⊙). Dimensions (4, 2800, 10735).
-    def get_stellar_mass(self, plateifu: str) -> float:
-        """Get the stellar mass (in solar masses) for the given plateifu."""
-        return self._fetch_scalar_column_value(plateifu, ['STELLAR_MASS_VORONOI'])
+    ##############################################################################
+    # interface methods
+    ##############################################################################
 
-
-    # key: SURFACE_MASS_DENSITY_VORONOI
     # HDU13: SURFACE MASS DENSITY
     # Surface Mass Density, and associated error, derived from the full spectral fit for each Voronoi cell.
-    # Units of log(M⊙/kpc^2). Dimensions (2, 2800, 10735).
-    def get_stellar_surface_mass_density(self, plateifu: str) -> float:
+    # shape: (10735, 2800, 2)
+    def get_stellar_density(self, plateifu: str):
         """Get the surface mass density (in solar masses per kpc^2) for the given plateifu."""
-        return self._fetch_scalar_column_value(plateifu, ['SURFACE_MASS_DENSITY_VORONOI'])
+        hdu_index = 13
+        row_idx = self._find_row_index(plateifu)  # boolean mask for galaxies
 
-    # key: SPATIAL_INFO
-    # Contains the spatial information, such as bin number, x-position, y-position and, in elliptical polar coordinates, radius (in units of effective radius) and azimuth for each Voronoi cell.
-    def get_spatial_info(self, plateifu: str) -> np.ndarray:
-        """Get the 2D spatial info map for the given plateifu."""
-        spatial_info = self._fetch_scalar_column_value(plateifu, ['SPATIAL_INFO'])
-        radius = spatial_info['RADIUS'] # radius (in units of effective radius) 
-        x_pos = spatial_info['X_POS']
-        y_pos = spatial_info['Y_POS']
-        return radius, x_pos, y_pos
+        data = self.hdu[hdu_index].data  # shape: (10735, 2800, 2)
+        data_row = data[row_idx, :, :]  # shapes (2800, 2)
+
+        density = data_row[:, 0]  # log(M⊙/kpc^2)
+        density_err = data_row[:, 1]  # error in log(M⊙/kpc^2)
+        return density, density_err
+
 

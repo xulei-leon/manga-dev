@@ -49,9 +49,8 @@ def main():
 
     # TODO: get radius from MPAS SPX_ELLCOO
 
-    density_stellar = firefly_util.get_stellar_surface_mass_density(PLATE_IFU)
+    density_stellar, density_stellar_err = firefly_util.get_stellar_density(PLATE_IFU)
     print(f"Stellar Surface Mass Density shape: {density_stellar.shape}")
-
 
     return
 

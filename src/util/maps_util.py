@@ -153,7 +153,7 @@ class MapsUtil:
 
         return ra_map, dec_map
 
-    def _get_unique_bins(self, layer_index: int) -> tuple[np.ndarray, np.ndarray]:
+    def _get_unique_bins(self, layer_index: int) -> np.ndarray:
         """
         Internal helper function to get unique bins and their indices from BINID data.
         """
@@ -164,21 +164,18 @@ class MapsUtil:
         valid_mask = flat >= 0
         flat_valid = flat[valid_mask]
 
-        ubins, uindx_valid = np.unique(flat_valid, return_index=True)
+        _, uindx_valid = np.unique(flat_valid, return_index=True)
         # Map back to the original array indices
         uindx = np.nonzero(valid_mask)[0][uindx_valid]
 
-        return ubins, uindx
+        return uindx
 
-
-    def get_binned(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_unique_bins(0)
 
     def get_stellar_uindx(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_unique_bins(1)
 
     def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_unique_bins(2)
+        return self._get_unique_bins(3)
 
 
     def dump_info(self):

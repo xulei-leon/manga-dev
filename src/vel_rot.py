@@ -270,12 +270,14 @@ def main():
     ## Get the gas velocity map (H-alpha)
     gas_vel_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
     print(f"Gas velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
-    _, eml_uindx = map_util.get_emli_uindx()
+    eml_uindx = map_util.get_emli_uindx()
+    print(f"Gas Unique indices shape: {eml_uindx.shape}")
     
     ## Get the stellar velocity map
     stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
     print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
-    _, stellar_uindx = map_util.get_stellar_uindx()
+    stellar_uindx = map_util.get_stellar_uindx()
+    print(f"Stellar Unique indices shape: {stellar_uindx.shape}")
 
 
     print("")

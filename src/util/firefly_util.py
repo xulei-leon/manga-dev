@@ -63,11 +63,11 @@ class FireflyUtil:
     def get_stellar_density(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the surface mass density (in solar masses per kpc^2) for the given plateifu."""
         hdu_index = 13
-        row_idx = self._find_row_index(plateifu)  # boolean mask for galaxies
-        if not np.any(row_idx):
+        row_idx = self._find_row_index(plateifu)  # integer row index for galaxy
+        data = self.hdu[hdu_index].data  # shape: (10735, 2800, 2)
+        if not (0 <= row_idx < data.shape[0]):
             raise ValueError(f"Row index {row_idx} out of bounds for HDU{hdu_index} with shape {data.shape}")
         
-        data = self.hdu[hdu_index].data  # shape: (10735, 2800, 2)
         data_row = data[row_idx, :, :]  # shapes (2800, 2)
 
         density = data_row[:, 0]  # log(M⊙/kpc^2)
@@ -76,3 +76,55 @@ class FireflyUtil:
         linear_density = 10**density  # convert log(M⊙/kpc^2) to M⊙/kpc^2
         linear_density_err = linear_density * np.log(10) * density_err  # propagate error
         return linear_density, linear_density_err
+    
+    # HDU11: STELLAR MASS
+    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass. The first two channels give the stellar mass and error per spaxel, the last two channels give the total stellar mass and error of the Voronoi cell.
+    # shape: (10735, 2800, 4)
+    def get_stellar_mass(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
+        """Get the stellar mass (in solar masses) for the given plateifu."""
+        hdu_index = 11
+        row_idx = self._find_row_index(plateifu)
+        data = self.hdu[hdu_index].data  # shape: (10735, 2800, 4)
+        if not (0 <= row_idx < data.shape[0]):
+            raise ValueError(f"Row index {row_idx} out of bounds for HDU{hdu_index} with shape {data.shape}")
+        
+        data_row = data[row_idx, :, :]  # shape: (2800, 4)
+
+        mass = data_row[:, 2]  # total stellar mass of Voronoi cell in log(M⊙)
+        mass_err = data_row[:, 3]  # error in log(M⊙)
+
+        linear_mass = 10**mass  # convert log(M⊙) to M⊙
+        linear_mass_err = linear_mass * np.log(10) * mass_err  # propagate error
+        return linear_mass, linear_mass_err
+
+    
+    # HDU4: SPATIAL INFORMATION (VORONOI CELL)
+    # bin number, x-position, y-position and, in elliptical polar coordinates, radius (in units of effective radius) and azimuth f
+    # shape: (10735, 2800, 5)
+    def get_voronoi_info(self, plateifu: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Get the Voronoi cell information for the given plateifu."""
+        hdu_index = 4
+        row_idx = self._find_row_index(plateifu)
+        data = self.hdu[hdu_index].data  # shape: (10735, 2800, 5)
+        if not (0 <= row_idx < data.shape[0]):
+            raise ValueError(f"Row index {row_idx} out of bounds for HDU{hdu_index} with shape {data.shape}")
+        
+        data_row = data[row_idx, :, :]  # shape: (2800, 5)
+
+        bin_number = data_row[:, 0]
+        x_pos = data_row[:, 1]
+        y_pos = data_row[:, 2]
+        radius_eff = data_row[:, 3]
+        azimuth = data_row[:, 4]
+
+        return bin_number, x_pos, y_pos, radius_eff, azimuth
+
+    def get_voronoi_binid(self, plateifu: str) -> np.ndarray:
+        """Get the bin ID map for the given plateifu."""
+        binid, _, _, _, _ = self.get_voronoi_info(plateifu)
+        return binid
+
+    def get_radius_eff(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
+        """Get the effective radius map for the given plateifu."""
+        _, _, _, radius_eff, azimuth = self.get_voronoi_info(plateifu)
+        return radius_eff, azimuth

@@ -151,6 +151,22 @@ class DrpallUtil:
         ba = float(ba_val) if ba_val is not None else None
         return (phi, ba)
 
+    # NSA_SERSIC_MASS	float64		Stellar mass from K-correction fit (use with caution) for Sersic fluxes (Ωm=0.3, ΩΛ=0.7, h=1)
+    # NSA_ELPETRO_MASS	float64		Stellar mass from K-correction fit (use with caution) for elliptical Petrosian fluxes (Ωm=0.3, ΩΛ=0.7, h=1)
+    def get_stellar_mass(self, plateifu: str) -> tuple[float | None, float | None]:
+        """Return stellar mass for plateifu using available columns or None."""
+        sersic = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
+        elpetro = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
+        return sersic , elpetro
+    
+    # NSA_ELPETRO_TH50_R 
+    # Elliptical Petrosian 50% light radius in SDSS r-band
+    # arcsec
+    def get_effective_radius(self, plateifu: str) -> float | None:
+        """Return effective radius (in arcsec) for plateifu using available columns or None."""
+        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_R50_R"])
+        return reff
+
     # find all columns containing the keywords
     def search_columns(self, plateifu: str, keywords: str) -> list[str]:
         """Return a list of column names in drpall that contain the specified keywords for the given plateifu."""

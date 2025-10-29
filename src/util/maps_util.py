@@ -135,13 +135,14 @@ class MapsUtil:
     # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
     # r: Lum. weighted elliptical radius
     # azimuth: Lum. weighted elliptical azimuth
-    def get_r_map(self) -> np.ndarray:
+    def get_radius_map(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the radial map from the MAPS file."""
-        r_data = self.hdu['BIN_LWELLCOO'].data
-        r_map = r_data[0, :, :]
-        azimuth = r_data[3, :, :]
+        data = self.hdu['BIN_LWELLCOO'].data
+        radius = data[0, :, :]
+        r_h_kpc = data[2, :, :]
+        azimuth = data[3, :, :]
 
-        return r_map, azimuth
+        return radius, r_h_kpc, azimuth
 
     # BIN_LWSKYCOO
     def get_skycoo_map(self) -> tuple[np.ndarray, np.ndarray]:
@@ -169,11 +170,16 @@ class MapsUtil:
 
         return ubins, uindx
 
-    def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_unique_bins(2)
+
+    def get_binned(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._get_unique_bins(0)
 
     def get_stellar_uindx(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_unique_bins(1)
+
+    def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._get_unique_bins(2)
+
 
     def dump_info(self):
         """Print basic information about the MAPS file."""

@@ -230,7 +230,7 @@ def main():
     ########################################################
     print("")
     print("#######################################################")
-    print("Galaxy Parameters")
+    print("# Galaxy Parameters")
     print("#######################################################")
 
     offset_x, offset_y = map_util.get_sky_offsets()
@@ -251,7 +251,8 @@ def main():
     phi, ba_1 = map_util.get_pa_inc()
     ba = 1 - ba_1
     print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {ba:.3f}")
-    galaxy_pa_rad = np.radians(phi)
+    # convert PA to radians
+    galaxy_pa_rad = np.radians(phi) + np.pi/2  # North is in 90 deg position
     inc_rad = calc_inc(ba, ba_0=BA_0)
     print(f"Calculated Inclination i: {np.degrees(inc_rad):.2f} deg from b/a={ba:.3f}")
 
@@ -264,7 +265,7 @@ def main():
 
     print("")
     print("#######################################################")
-    print("Galaxy Velocity")
+    print("# Galaxy Velocity")
     print("#######################################################")
 
     ## Get the gas velocity map (H-alpha)
@@ -282,7 +283,7 @@ def main():
 
     print("")
     print("#######################################################")
-    print("Correct Velocity Processing")
+    print("# Correct Velocity Processing")
     print("#######################################################")
     # Velocity correction
     v_obs_map = gas_vel_map

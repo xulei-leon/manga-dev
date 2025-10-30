@@ -8,12 +8,14 @@ from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
 from scipy import stats
 from scipy.optimize import curve_fit
+from matplotlib import colors
 
 # my imports
 from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
-from matplotlib import colors
+from util.firefly_util import FireflyUtil
+from stellar_mass import StellarMass
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -217,12 +219,15 @@ def main():
     print(f"Plate-IFU {PLATE_IFU} MAPS")
 
     # get fits files
-    maps_file = fits_util.get_maps_file(PLATE_IFU)
     drpall_file = fits_util.get_drpall_file()
+    firefly_file = fits_util.get_firefly_file()
+    maps_file = fits_util.get_maps_file(PLATE_IFU)
+
     drpall_util = DrpallUtil(drpall_file)
     # print(f"DRPALL Info for {plateifu}: {drpall_util.dump_info()}")
     map_util = MapsUtil(maps_file)
     # print(f"MAPS Info for {plateifu}: {map_util.dump_info()}")
+    firefly_util = FireflyUtil(firefly_file)
 
 
     ########################################################
@@ -269,14 +274,14 @@ def main():
     print("#######################################################")
 
     ## Get the gas velocity map (H-alpha)
-    gas_vel_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
-    print(f"Gas velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
+    v_obs_gas_map, _gv_unit, _gv_ivar = map_util.get_eml_vel_map()
+    print(f"Gas velocity map shape: {v_obs_gas_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(v_obs_gas_map):.3f}, {np.nanmax(v_obs_gas_map):.3f}] {_gv_unit}")
     eml_uindx = map_util.get_emli_uindx()
     print(f"Gas Unique indices shape: {eml_uindx.shape}")
 
     ## Get the stellar velocity map
-    stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
-    print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
+    v_obs_stellar_map, _sv_unit, _ = map_util.get_stellar_vel_map()
+    print(f"Stellar velocity map shape: {v_obs_stellar_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(v_obs_stellar_map):.3f}, {np.nanmax(v_obs_stellar_map):.3f}] {_sv_unit}")
     stellar_uindx = map_util.get_stellar_uindx()
     print(f"Stellar Unique indices shape: {stellar_uindx.shape}")
 
@@ -286,7 +291,7 @@ def main():
     print("# Correct Velocity Processing")
     print("#######################################################")
     # Velocity correction
-    v_obs_map = gas_vel_map
+    v_obs_map = v_obs_gas_map
     v_unit = _gv_unit
     v_uindx = eml_uindx
     azimuth_rad_map = np.radians(azimuth_map)
@@ -299,6 +304,13 @@ def main():
     print(f"Rotated Velocity map shape: {v_rot_map.shape}, Unit: {v_unit}, Range: [{np.nanmin(v_rot_map):.3f}, {np.nanmax(v_rot_map):.3f}]")
 
     ########################################################
+    ## Stellar Velocity
+    ########################################################
+    stellar = StellarMass(drpall_util, firefly_util, map_util)
+    stellar_vel_map, stellar_r_map = stellar.calc_stellar_vel(PLATE_IFU)
+
+
+    ########################################################
     ## plot velocity map
     ########################################################
 
@@ -307,9 +319,9 @@ def main():
 
     ## 2. plot binned velocity maps (No need to subtract system velocity)
     # plot gas velocity map
-    plot_vel_map(gas_vel_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
+    plot_vel_map(v_obs_gas_map, eml_uindx, ra_map, dec_map, title="H-alpha Emission Line")
     # plot stellar velocity map
-    plot_vel_map(stellar_vel_map, stellar_uindx, ra_map, dec_map, pa_rad=galaxy_pa_rad, title="Stellar")
+    plot_vel_map(v_obs_stellar_map, stellar_uindx, ra_map, dec_map, pa_rad=galaxy_pa_rad, title="Stellar")
 
     # 4. plot rotated velocity map
     # plot_vel_map(filtered_vel_map, v_uindx, ra_map, dec_map, title="Filtered Observed")
@@ -318,6 +330,7 @@ def main():
     # 5. plot rotational radius-velocity curve
     plot_rv_curve(radius_map, filtered_vel_map, title="Filtered Observed")
     plot_rv_curve(radius_map, v_rot_map, title="Total Rotational")
+
 
 
 # main entry

@@ -133,7 +133,8 @@ class MapsUtil:
 
     # BIN_LWELLCOO
     # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header.
-    # r: Lum. weighted elliptical radius
+    # r: Lum. weighted elliptical radius (arcsec)
+    # R: R h/kpc (kpc/h)
     # azimuth: Lum. weighted elliptical azimuth
     def get_radius_map(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return the radial map from the MAPS file."""
@@ -176,13 +177,6 @@ class MapsUtil:
 
     def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_unique_bins(3)
-
-
-    def dump_info(self):
-        """Print basic information about the MAPS file."""
-        print(f"MAPS File: {self.maps_file_path}")
-        print("HDU List:")
-        self.hdu.info()
 
     ###############################################################################
     # internal utility functions for channel handling

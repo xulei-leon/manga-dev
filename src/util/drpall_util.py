@@ -164,45 +164,5 @@ class DrpallUtil:
     # arcsec
     def get_effective_radius(self, plateifu: str) -> float | None:
         """Return effective radius (in arcsec) for plateifu using available columns or None."""
-        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_R50_R"])
+        reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_TH50_R"])
         return reff
-
-    # find all columns containing the keywords
-    def search_columns(self, plateifu: str, keywords: str) -> list[str]:
-        """Return a list of column names in drpall that contain the specified keywords for the given plateifu."""
-        with fits.open(self.drpall_file) as hdul:
-            # get original column names robustly
-            try:
-                orig_names = list(hdul[1].columns.names)
-            except Exception:
-                orig_names = list(getattr(hdul[1].data, "dtype").names or [])
-            lower_names = [n.lower() for n in orig_names]
-
-            # find plateifu column
-            if "plateifu" not in lower_names:
-                log.info("The 'plateifu' column was not found in the drpall file")
-                return []
-            plateifu_col = orig_names[lower_names.index("plateifu")]
-
-            data = hdul[1].data
-            match = data[plateifu_col] == plateifu
-            if not np.any(match):
-                log.info(f"No match found for {plateifu} in drpall")
-                return []
-
-            # find all columns containing the keywords
-            keywords_lower = keywords.lower()
-            matching_cols = [name for name in orig_names if keywords_lower in name.lower()]
-            return matching_cols
-
-    def dump_info(self) -> str:
-        """Return a string summary of the DRPALL file."""
-        try:
-            drpall = self._load_table(self.drpall_file)
-            nrows = len(drpall)
-            info = f"DRPALL file: {self.drpall_file}\n"
-            info += f"Number of entries: {nrows}\n"
-            info += f"Columns: {', '.join(drpall.colnames)}\n"
-            return info
-        except Exception as e:
-            raise Exception(f"Error dumping DRPALL info: {e}")

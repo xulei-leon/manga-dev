@@ -53,7 +53,7 @@ def main():
     mass_stellar, mass_stellar_err = firefly_util.get_stellar_mass(PLATE_IFU)
     print(f"Stellar Mass shape: {mass_stellar.shape}")
     print(f"Stellar Mass (FIREFLY) total: {np.nansum(mass_stellar):,.1f} M solar")
-    
+
     density_stellar, density_stellar_err = firefly_util.get_stellar_density(PLATE_IFU)
     print(f"Stellar Surface Mass Density shape: {density_stellar.shape}")
 

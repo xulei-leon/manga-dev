@@ -39,14 +39,14 @@ BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 def calc_inc(ba, ba_0=0.2):
     ba_sq = ba**2
     BA_0_sq = ba_0**2
-    
+
     # Compute the numerator part of cos^2(i)
     numerator = ba_sq - BA_0_sq
     denominator = 1.0 - BA_0_sq
 
     cos_i_sq = numerator / denominator
     cos_i_sq_clipped = np.clip(cos_i_sq, 0.0, 1.0)
-    
+
     inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
     return inc_rad
 
@@ -76,12 +76,12 @@ def calc_vel_rot(vel_map: np.ndarray, azimuth_map: np.ndarray, incl_rad: float) 
     """
     phi_delta = _calc_phi_delta(azimuth_map)
     correction = np.sin(incl_rad) * np.cos(phi_delta)
-    
+
     # Avoid division by zero, mask invalid regions
     valid = np.abs(correction) > 1e-3
     v_rot = np.full_like(vel_map, np.nan, dtype=float)
     v_rot[valid] = vel_map[valid] / correction[valid]
-    
+
     return v_rot
 
 ################################################################################
@@ -128,15 +128,15 @@ def plot_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
         title (str, optional): The title for the plot.
     """
     fig, ax = plt.subplots(figsize=(8, 6))
-    
+
     # Flatten maps and select unique binned data
     ra_flat, dec_flat, vel_flat = ra_map.ravel(), dec_map.ravel(), vel_map.ravel()
     ra_u, dec_u, vel_u = ra_flat[uindx], dec_flat[uindx], vel_flat[uindx]
-    
+
     # Filter out non-finite velocity values for color scaling
     valid_vel_mask = np.isfinite(vel_u)
     vel_u_clean = vel_u[valid_vel_mask]
-    
+
     # Set color normalization based on velocity percentiles
     if vel_u_clean.size == 0:
         vmin, vmax = -1.0, 1.0
@@ -145,34 +145,34 @@ def plot_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
         vmax = max(abs(p_low), abs(p_high))
         vmin = -vmax
     norm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
-    
+
     # Create the scatter plot for the binned velocity data
     sc = ax.scatter(ra_u, dec_u, c=vel_u, cmap='RdBu_r', norm=norm, s=30, edgecolors='face', alpha=0.9)
-    
+
     # Add a colorbar
     cbar = fig.colorbar(sc, ax=ax, label="Velocity (km/s)")
     cbar.set_ticks([vmin, 0, vmax])
-    
+
     # Draw the major axis line if pa_rad is provided
     if pa_rad is not None and ra_u[valid_vel_mask].size > 1:
         pa_rad = pa_rad % (2 * np.pi)  # Normalize PA to [0, 2π]
         # Calculate the center of the galaxy from the valid data points
         ra_center = np.mean(ra_u[valid_vel_mask])
         dec_center = np.mean(dec_u[valid_vel_mask])
-        
+
         # Determine the line length based on the data extent
         ra_range = np.ptp(ra_u[valid_vel_mask])
         dec_range = np.ptp(dec_u[valid_vel_mask])
         line_length = 0.6 * np.hypot(ra_range, dec_range)
-        
+
         # Calculate line endpoints. PA is from North (+Dec) to East (-RA, as axis is inverted).
         # This corresponds to a clockwise angle from the positive y-axis.
         dx = -line_length * np.sin(pa_rad)
         dy = line_length * np.cos(pa_rad)
-        
+
         # Plot the line representing the major axis
-        ax.plot([ra_center - dx, ra_center + dx], 
-                [dec_center - dy, dec_center + dy], 
+        ax.plot([ra_center - dx, ra_center + dx],
+                [dec_center - dy, dec_center + dy],
                 color='gray', linestyle='--', linewidth=1.5, label='Major Axis (PA)')
         ax.legend()
 
@@ -180,11 +180,11 @@ def plot_vel_map(vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
     ax.set_title(f"{title} Binned Velocity Map")
     ax.set_xlabel("RA (deg)")
     ax.set_ylabel("Dec (deg)")
-    
+
     # Invert RA axis for standard astronomical orientation (East to the left)
     ax.invert_xaxis()
     ax.set_aspect('equal', adjustable='box')
-    
+
     fig.tight_layout()
     plt.show()
 
@@ -272,7 +272,7 @@ def main():
     print(f"Gas velocity map shape: {gas_vel_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(gas_vel_map):.3f}, {np.nanmax(gas_vel_map):.3f}] {_gv_unit}")
     eml_uindx = map_util.get_emli_uindx()
     print(f"Gas Unique indices shape: {eml_uindx.shape}")
-    
+
     ## Get the stellar velocity map
     stellar_vel_map, _sv_unit, _ = map_util.get_stellar_vel_map()
     print(f"Stellar velocity map shape: {stellar_vel_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(stellar_vel_map):.3f}, {np.nanmax(stellar_vel_map):.3f}] {_sv_unit}")
@@ -288,7 +288,7 @@ def main():
     v_obs_map = gas_vel_map
     v_unit = _gv_unit
     v_uindx = eml_uindx
-    azimuth_rad_map = np.radians(azimuth_map) 
+    azimuth_rad_map = np.radians(azimuth_map)
 
     filtered_vel_map = vel_map_filter(v_obs_map, snr_map, azimuth_rad_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
     print(f"Filtered Velocity map shape: {filtered_vel_map.shape}, Unit: {v_unit}, Range: [{np.nanmin(filtered_vel_map):.3f}, {np.nanmax(filtered_vel_map):.3f}]")

@@ -53,7 +53,7 @@ class FitsUtil:
             print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
             self.dl_drpall(filename)
         return ret_path
-    
+
     def get_firefly_file(self) -> Path:
         filename = "manga-firefly-v3_1_1-mastar.fits"
         ret_path = Path(self.firefly_dir / filename)
@@ -61,7 +61,7 @@ class FitsUtil:
             print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
             self.dl_firefly_mastar(filename)
         return ret_path
-    
+
     # get image file path
     # example plateifu:
     # "7957-3701"
@@ -110,7 +110,7 @@ class FitsUtil:
 
     # example plateifu:
     # "87443-12703"
-    # https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/7443/12703/manga-7443-12703-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz 
+    # https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/7443/12703/manga-7443-12703-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz
     def dl_maps(self, plateifu: str, filename: str) -> bool:
         plateifu = plateifu.strip()
         if "-" not in plateifu:

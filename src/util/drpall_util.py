@@ -158,8 +158,8 @@ class DrpallUtil:
         sersic = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
         elpetro = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
         return sersic , elpetro
-    
-    # NSA_ELPETRO_TH50_R 
+
+    # NSA_ELPETRO_TH50_R
     # Elliptical Petrosian 50% light radius in SDSS r-band
     # arcsec
     def get_effective_radius(self, plateifu: str) -> float | None:
@@ -194,7 +194,7 @@ class DrpallUtil:
             keywords_lower = keywords.lower()
             matching_cols = [name for name in orig_names if keywords_lower in name.lower()]
             return matching_cols
-        
+
     def dump_info(self) -> str:
         """Return a string summary of the DRPALL file."""
         try:

@@ -120,7 +120,7 @@ class MapsUtil:
         """Return the SNR map from the MAPS file."""
         snr_data = self.hdu['BIN_SNR'].data
         return snr_data
-    
+
     #  ECOOPA: Position angle for ellip. coo
     #  ECOOELL: Ellipticity (1-b/a) for ellip. coo
     def get_pa_inc(self) -> tuple[float | None, float | None]:
@@ -129,10 +129,10 @@ class MapsUtil:
         pa_val = hdr.get('ECOOPA', None)
         ellip_val = hdr.get('ECOOELL', None)
         return pa_val, ellip_val
-    
+
 
     # BIN_LWELLCOO
-    # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header. 
+    # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header.
     # r: Lum. weighted elliptical radius
     # azimuth: Lum. weighted elliptical azimuth
     def get_radius_map(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

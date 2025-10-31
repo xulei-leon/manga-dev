@@ -23,7 +23,7 @@ from util.maps_util import MapsUtil
 
 RADIUS_MIN_KPC = 0.1  # kpc
 
-class StellarMass:
+class Stellar:
     drpall_util = None
     firefly_util = None
     maps_util = None
@@ -72,12 +72,6 @@ class StellarMass:
 
         return mass_r, r_bins
 
-    def conver_hkpc_to_kpc(self, radius_h_kpc: np.ndarray) -> np.ndarray:
-        # MaNGA uses h as 1.0
-        h = 1.0
-        radius_kpc = radius_h_kpc / h
-        return radius_kpc
-
     @staticmethod
     # Orbital Velocity Formula
     # V(r) = sqrt( G * M(r) / r )
@@ -98,7 +92,7 @@ class StellarMass:
         velocity = np.sqrt(G * mass_r / radius)
         return velocity
 
-    def calc_stellar_vel(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+    def get_vel_star(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
         print("# 1. calculate stellar M(r)")
@@ -167,15 +161,14 @@ class StellarMass:
         print("#######################################################")
         print("# 3. calculate stellar rotation velocity V(r)")
         print("#######################################################")
-        radius_kpc_map = self.conver_hkpc_to_kpc(radius_h_kpc_map) 
-        vel_r = self.calc_velocity_r(mass_map, radius_kpc_map, r_min=RADIUS_MIN_KPC)
+        vel_r = self.calc_velocity_r(mass_map, radius_h_kpc_map, r_min=RADIUS_MIN_KPC)
         print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
 
         return vel_r, radius_h_kpc_map
 
 
 def main() -> None:
-    PLATE_IFU = "8723-12703"
+    PLATE_IFU = "8723-12705"
 
     root_dir = Path(__file__).resolve().parent.parent
     fits_util = FitsUtil(root_dir / "data")
@@ -187,7 +180,7 @@ def main() -> None:
     firefly_util = FireflyUtil(firefly_file)
     maps_util = MapsUtil(maps_file)
 
-    _, _ = StellarMass(drpall_util, firefly_util, maps_util).calc_stellar_vel(PLATE_IFU)
+    _, _ = Stellar(drpall_util, firefly_util, maps_util).get_vel_star(PLATE_IFU)
 
 if __name__ == "__main__":
     main()

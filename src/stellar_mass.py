@@ -21,6 +21,7 @@ from util.drpall_util import DrpallUtil
 from util.firefly_util import FireflyUtil
 from util.maps_util import MapsUtil
 
+RADIUS_MIN_KPC = 0.1  # kpc
 
 class StellarMass:
     drpall_util = None
@@ -33,7 +34,7 @@ class StellarMass:
         self.maps_util = maps_util
 
     @staticmethod
-    def calc_ratio_r(r_arcsec: np.ndarray, r_h_kpc: np.ndarray) -> float:
+    def calc_r_ratio_to_h_kpc(r_arcsec: np.ndarray, r_h_kpc: np.ndarray) -> float:
         r_arcsec = np.asarray(r_arcsec)
         r_h_kpc = np.asarray(r_h_kpc)
         if r_arcsec.shape != r_h_kpc.shape:
@@ -71,16 +72,28 @@ class StellarMass:
 
         return mass_r, r_bins
 
+    def conver_hkpc_to_kpc(self, radius_h_kpc: np.ndarray) -> np.ndarray:
+        # MaNGA uses h as 1.0
+        h = 1.0
+        radius_kpc = radius_h_kpc / h
+        return radius_kpc
+
     @staticmethod
-    def calc_velocity_r(mass_r: np.ndarray, radius: np.ndarray) -> np.ndarray:
+    # Orbital Velocity Formula
+    # V(r) = sqrt( G * M(r) / r )
+    # mass_r unit: M_sun
+    # radius unit: kpc
+    # velocity unit: km/s
+    def calc_velocity_r(mass_r: np.ndarray, radius: np.ndarray, r_min: float=0.1) -> np.ndarray:
         mass_r = np.asarray(mass_r)
         radius = np.asarray(radius)
         if mass_r.shape != radius.shape:
             raise ValueError("mass_r and radius must have the same shape")
-        radius = np.where(radius == 0, np.nan, radius)
+        radius = np.where(radius < r_min, np.nan, radius)
         mass_r = np.where(mass_r < 0, np.nan, mass_r)
 
-        G = 4.302e-6
+        G = const.G.to('kpc km2 / (Msun s2)').value  # gravitational constant in kpc km^2 / (M_sun s^2)
+        print(f"G constant value: {G} kpc km2 / (Msun s2)")
 
         velocity = np.sqrt(G * mass_r / radius)
         return velocity
@@ -92,49 +105,73 @@ class StellarMass:
         print("#######################################################")
 
         mass_stellar_cell, mass_stellar_cell_err = self.firefly_util.get_stellar_mass_cell(PLATE_IFU)
-        print(f"Stellar Mass shape: {mass_stellar_cell.shape}, Stellar Mass (FIREFLY) total: {np.nansum(mass_stellar_cell):,.1f} M solar")
+        print(f"Stellar Mass shape: {mass_stellar_cell.shape}, Unit: M solar, total: {np.nansum(mass_stellar_cell):,.1f} M solar")
 
-        _radius_eff, azimuth = self.firefly_util.get_radius_eff(PLATE_IFU)
-        print(f"Radius Eff shape: {_radius_eff.shape}, Radius (eff) min: {np.nanmin(_radius_eff[azimuth>=0]):.3f}, max: {np.nanmax(_radius_eff):.3f}")
-        print(f"Azimuth shape: {azimuth.shape}, Azimuth (degrees) min: {np.nanmin(azimuth[azimuth>=0]):.3f}, max: {np.nanmax(azimuth):.3f}")
-
-        mass_map, radius_eff_map = self.calc_mass_r(mass_stellar_cell, _radius_eff)
-        print(f"Cumulative Mass shape: {mass_map.shape}, min: {np.nanmin(mass_map):.3f}, max: {np.nanmax(mass_map):,.1f} M solar")
-        print(f"Radius bins shape: {radius_eff_map.shape}, min: {np.nanmin(radius_eff_map):.3f}, max: {np.nanmax(radius_eff_map):.3f} eff")
-
+        # This mass use h = 1
         total_stellar_mass_1, total_stellar_mass_2 = self.drpall_util.get_stellar_mass(PLATE_IFU)
         print("Verification with DRPALL stellar mass:")
-        print(f"Stellar Mass (DRPALL): (Sersic) {total_stellar_mass_1:,} M solar, (Elpetro) {total_stellar_mass_2:,} M solar")
+        _mass_err2_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_2) / total_stellar_mass_2
+        _mass_err1_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_1) / total_stellar_mass_1
+        if abs(_mass_err2_percent) < 0.03:
+            print(f"  FIREFLY total stellar mass matches DRPALL Elpetro stellar mass within {abs(_mass_err2_percent):.1%}")
+        elif abs(_mass_err1_percent) < 0.03:
+            print(f"  FIREFLY total stellar mass matches DRPALL Sersic stellar mass within {abs(_mass_err1_percent):.1%}")
+        else:
+            print("  WARNING: FIREFLY total stellar mass does not match DRPALL stellar masses within 3%")
+            print(f"  Stellar Mass (DRPALL): (Sersic) {total_stellar_mass_1:,} M solar, (Elpetro) {total_stellar_mass_2:,} M solar")
+
+        _radius_eff, azimuth = self.firefly_util.get_radius_eff(PLATE_IFU)
+        print(f"Radius Eff shape: {_radius_eff.shape}, Unit: effective radius, range [{np.nanmin(_radius_eff[azimuth>=0]):.3f}, {np.nanmax(_radius_eff):.3f}]")
+        print(f"Azimuth shape: {azimuth.shape}, Unit: degrees, range [{np.nanmin(azimuth[azimuth>=0]):.3f}, {np.nanmax(azimuth):.3f}]")
+
+        mass_map, radius_eff_map = self.calc_mass_r(mass_stellar_cell, _radius_eff)
+        print(f"Cumulative Mass shape: {mass_map.shape}, Unit: M solar, range [{np.nanmin(mass_map):.3f}, {np.nanmax(mass_map):,.1f}]")
+        print(f"Radius bins shape: {radius_eff_map.shape}, Unit: effective radius, range [{np.nanmin(radius_eff_map):.3f}, {np.nanmax(radius_eff_map):.3f}]")
 
         print("")
         print("#######################################################")
         print("# 2. calculate stellar r")
         print("#######################################################")
 
+        _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
+        print(f"Radius (MAPS) shape: {_r_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(_r_arcsec_map[_r_arcsec_map>=0]):.3f}, {np.nanmax(_r_arcsec_map):.3f}]")
+        print(f"Radius (MAPS) shape: {_r_h_kpc_map.shape}, Unit: kpc/h, range [{np.nanmin(_r_h_kpc_map[_r_h_kpc_map>=0]):.3f}, {np.nanmax(_r_h_kpc_map):.3f}]")
+
+
         effective_radius = self.drpall_util.get_effective_radius(PLATE_IFU)
         print(f"Effective Radius (DRPALL): {effective_radius:.3f} arcsec")
 
-        radius_arcsec = radius_eff_map * effective_radius
-        print(f"Radius (arcsec) shape: {radius_arcsec.shape}, min: {np.nanmin(radius_arcsec[radius_arcsec>=0]):.3f}, max: {np.nanmax(radius_arcsec):.3f}")
+        radius_arcsec_map = radius_eff_map * effective_radius
+        print(f"Radius (arcsec) shape: {radius_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(radius_arcsec_map[radius_arcsec_map>=0]):.3f}, {np.nanmax(radius_arcsec_map):.3f}]")
 
-        _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
-        print(f"Radius (MAPS) shape: {_r_arcsec_map.shape}, r_h_kpc shape: {_r_h_kpc_map.shape}")
-        print(f"Radius (MAPS) min: {np.nanmin(_r_arcsec_map[_r_arcsec_map>=0]):.3f}, max: {np.nanmax(_r_arcsec_map):.3f} eff")
+        _r_err_percent = np.abs(np.nanmax(radius_arcsec_map) - np.nanmax(_r_arcsec_map)) / np.nanmax(_r_arcsec_map)
+        print(f"  Verification with MAPS radius:")
+        if np.nanmax(_r_err_percent) < 0.01:
+            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
+        else:
+            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
 
-        ratio_r = self.calc_ratio_r(_r_arcsec_map, _r_h_kpc_map)
-        print(f"Radius ratio (arcsec/h_kpc): {ratio_r:.3f} arcsec/h_kpc")
+        ratio_r = self.calc_r_ratio_to_h_kpc(_r_arcsec_map, _r_h_kpc_map)
+        print(f"Radius ratio (arcsec to kpc/h): {ratio_r:.3f}")
 
-        radius_h_kpc = radius_arcsec * ratio_r
-        print(f"Radius (kpc) shape: {radius_h_kpc.shape}, min: {np.nanmin(radius_h_kpc[radius_h_kpc>=0]):.3f}, max: {np.nanmax(radius_h_kpc):.3f}")
+        radius_h_kpc_map = radius_arcsec_map * ratio_r
+        print(f"Radius (kpc/h) shape: {radius_h_kpc_map.shape}, Unit: kpc/h, range [min: {np.nanmin(radius_h_kpc_map[radius_h_kpc_map>=0]):.3f}, max: {np.nanmax(radius_h_kpc_map):.3f}]")
+        _r_err_percent = np.abs(np.nanmax(radius_h_kpc_map) - np.nanmax(_r_h_kpc_map)) / np.nanmax(_r_h_kpc_map)
+        print(f"  Verification with MAPS radius:")
+        if np.nanmax(_r_err_percent) < 0.01:
+            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
+        else:
+            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
 
         print("")
         print("#######################################################")
         print("# 3. calculate stellar rotation velocity V(r)")
         print("#######################################################")
-        vel_r = self.calc_velocity_r(mass_map, radius_h_kpc)
+        radius_kpc_map = self.conver_hkpc_to_kpc(radius_h_kpc_map) 
+        vel_r = self.calc_velocity_r(mass_map, radius_kpc_map, r_min=RADIUS_MIN_KPC)
         print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
 
-        return vel_r, radius_h_kpc
+        return vel_r, radius_h_kpc_map
 
 
 def main() -> None:

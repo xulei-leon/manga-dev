@@ -108,6 +108,9 @@ class FitsUtil:
         target_path = self.images_dir / filename
         return self._download_file(url, target_path, file_type_str="image")
 
+    # DAPTYPE: HYB10-MILESHC-MASTARHC2
+    # https://sdss-mangadap.readthedocs.io/en/latest/gettingstarted.html#gettingstarted-daptype
+    # HYB10-MILESHC-MASTARHC2: Same as the above except the hierarchically clustered MaStar stellar spectra are used to fit the stellar continuum in the emission-line module.
     # example plateifu:
     # "87443-12703"
     # https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/7443/12703/manga-7443-12703-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz

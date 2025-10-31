@@ -78,7 +78,8 @@ class FireflyUtil:
         return linear_density, linear_density_err
 
     # HDU11: STELLAR MASS
-    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass. The first two channels give the stellar mass and error per spaxel, the last two channels give the total stellar mass and error of the Voronoi cell.
+    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass. 
+    # The first two channels give the stellar mass and error per spaxel, the last two channels give the total stellar mass and error of the Voronoi cell.
     # shape: (10735, 2800, 4)
     def get_stellar_mass_cell(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the stellar mass (in solar masses) for the given plateifu."""
@@ -103,7 +104,7 @@ class FireflyUtil:
     # x-position, y-position and, in elliptical polar coordinates, 
     # radius (in units of effective radius) and azimuth for each Voronoi cell.
     # shape: (10735, 2800, 5)
-    def get_voronoi_info(self, plateifu: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def get_spatial_info(self, plateifu: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Get the Voronoi cell information for the given plateifu."""
         hdu_index = 4
         row_idx = self._find_row_index(plateifu)
@@ -123,10 +124,10 @@ class FireflyUtil:
 
     def get_binid(self, plateifu: str) -> np.ndarray:
         """Get the bin ID map for the given plateifu."""
-        binid, _, _, _, _ = self.get_voronoi_info(plateifu)
+        binid, _, _, _, _ = self.get_spatial_info(plateifu)
         return binid
 
     def get_radius_eff(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the effective radius map for the given plateifu."""
-        _, _, _, radius_eff, azimuth = self.get_voronoi_info(plateifu)
+        _, _, _, radius_eff, azimuth = self.get_spatial_info(plateifu)
         return radius_eff, azimuth

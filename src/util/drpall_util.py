@@ -157,7 +157,7 @@ class DrpallUtil:
         """Return stellar mass for plateifu using available columns or None."""
         sersic = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
         elpetro = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
-        return sersic , elpetro
+        return sersic, elpetro
 
     # NSA_ELPETRO_TH50_R
     # Elliptical Petrosian 50% light radius in SDSS r-band

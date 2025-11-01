@@ -99,11 +99,42 @@ class VelRot:
         v_rot[valid] = vel_map[valid] / correction[valid]
 
         return v_rot
+    
+    # return smoothed values
+    @staticmethod
+    def _fit_vel(vel_map: np.ndarray, radius_h_kpc_map: np.ndarray):
+        """Get interpolation function for velocity map."""
+        from scipy.signal import savgol_filter
+
+        # Flatten the maps and remove NaN values
+        valid_mask = np.isfinite(vel_map) & np.isfinite(radius_h_kpc_map)
+        radius_valid = radius_h_kpc_map[valid_mask]
+        vel_valid = np.abs(vel_map[valid_mask])
+
+        if len(vel_valid) == 0:
+            return np.array([]), np.array([])
+
+        # Sort by radius
+        sorted_indices = np.argsort(radius_valid)
+        radius_sorted = radius_valid[sorted_indices]
+        vel_sorted = vel_valid[sorted_indices]
+
+        # Apply Savitzky-Golay filter to smooth the velocity data
+        # Window length must be odd and smaller than the number of data points.
+        window_length = min(51, len(vel_sorted))
+        if window_length % 2 == 0:
+            window_length -= 1
+        
+        vel_smoothed = vel_sorted
+        if window_length > 3: # polyorder must be less than window_length
+            vel_smoothed = savgol_filter(vel_sorted, window_length, polyorder=3, mode='nearest')
+
+        return vel_smoothed, radius_sorted
 
     ################################################################################
     # main function
     ################################################################################
-    def get_vel_rot(self, PLATE_IFU: str):
+    def get_vel_total(self, PLATE_IFU: str):
         print(f"Plate-IFU {PLATE_IFU} MAPS")
 
         ########################################################
@@ -190,6 +221,12 @@ class VelRot:
         return v_rot_map, radius_h_kpc_map
 
 
+    def fit_vel_total(self, PLATE_IFU: str):
+        vel_map, radius_map = self.get_vel_total(PLATE_IFU)
+        vel_total_fitted, radius_fitted = self._fit_vel(vel_map, radius_map)
+        print(f"Fitted Total Velocity length: {len(vel_total_fitted)}")
+        return vel_total_fitted, radius_fitted
+
 def main():
     PLATE_IFU = "8723-12705"
 
@@ -214,7 +251,7 @@ def main():
     print("# 3. calculate total rotation velocity V(r)")
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=plot_util)
-    v_total_map, r_total_map = vel_rot.get_vel_rot(PLATE_IFU)
+    v_total_map, r_total_map = vel_rot.get_vel_total(PLATE_IFU)
     print(f"Velocity shape: {v_total_map.shape}, range: [{np.nanmin(v_total_map):.3f}, {np.nanmax(v_total_map):.3f}]")
     print(f"Radius shape: {r_total_map.shape}, range: [{np.nanmin(r_total_map):.3f}, {np.nanmax(r_total_map):.3f}]")
 

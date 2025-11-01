@@ -10,6 +10,8 @@ from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
 from scipy import stats
 from scipy.optimize import curve_fit
+from scipy.signal import savgol_filter
+from scipy.interpolate import interp1d
 
 
 from matplotlib import colors
@@ -22,6 +24,7 @@ from util.firefly_util import FireflyUtil
 from util.maps_util import MapsUtil
 
 RADIUS_MIN_KPC = 0.1  # kpc
+G = const.G.to('kpc km2 / (Msun s2)').value  # gravitational constant in kpc km^2 / (M_sun s^2)
 
 class Stellar:
     drpall_util = None
@@ -72,13 +75,13 @@ class Stellar:
 
         return mass_r, r_bins
 
-    @staticmethod
     # Orbital Velocity Formula
     # V(r) = sqrt( G * M(r) / r )
     # mass_r unit: M_sun
     # radius unit: kpc
     # velocity unit: km/s
-    def calc_velocity_r(mass_r: np.ndarray, radius: np.ndarray, r_min: float=0.1) -> np.ndarray:
+    @staticmethod
+    def calc_V2_r(mass_r: np.ndarray, radius: np.ndarray, r_min: float=0.1) -> np.ndarray:
         mass_r = np.asarray(mass_r)
         radius = np.asarray(radius)
         if mass_r.shape != radius.shape:
@@ -86,13 +89,57 @@ class Stellar:
         radius = np.where(radius < r_min, np.nan, radius)
         mass_r = np.where(mass_r < 0, np.nan, mass_r)
 
-        G = const.G.to('kpc km2 / (Msun s2)').value  # gravitational constant in kpc km^2 / (M_sun s^2)
         print(f"G constant value: {G} kpc km2 / (Msun s2)")
+        V2 = G * mass_r / radius  # in (km/s)^2
+        return V2
 
-        velocity = np.sqrt(G * mass_r / radius)
-        return velocity
+    # Savitzky-Golay fitter for V^2(r) = G * M(r) / r
+    # return smoothed/interpolated values
+    @staticmethod
+    def _get_vel_sq_func(vel_sq: np.ndarray, radius: np.ndarray) -> interp1d:
+        polyorder = 3
+        # Filter out invalid data points
+        valid_mask = np.isfinite(vel_sq) & np.isfinite(radius)
+        radius_valid = radius[valid_mask]
+        V2_valid = vel_sq[valid_mask]
 
-    def get_vel_star(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        # Ensure data is sorted by radius for interpolation
+        sort_indices = np.argsort(radius_valid)
+        radius_valid = radius_valid[sort_indices]
+        V2_valid = V2_valid[sort_indices]
+
+        n = len(V2_valid)
+        
+        # If too few points, return a simple linear interpolation
+        if n < polyorder + 2:
+            print(f"Warning: Too few data points ({n}) for smoothing. Returning unsmoothed interpolation.")
+            return interp1d(radius_valid, V2_valid, bounds_error=False, fill_value=np.nan)
+
+        # Adjust window_length for Savitzky-Golay filter
+        # It must be an odd integer and greater than polyorder.
+        window_length = min(51, n)
+        if window_length % 2 == 0:
+            window_length -= 1
+        if window_length <= polyorder:
+            # This ensures window_length is odd and > polyorder
+            window_length = polyorder + 1 if polyorder % 2 == 0 else polyorder + 2
+        if window_length > n:
+            window_length = n
+            if window_length % 2 == 0:
+                window_length -= 1
+
+
+        # Apply Savitzky–Golay smoothing
+        smoothed_V2_valid = savgol_filter(V2_valid, window_length, polyorder, mode='nearest')
+
+        # Interpolate smoothed results
+        f_smooth = interp1d(radius_valid, smoothed_V2_valid,
+                            kind='cubic', bounds_error=False, fill_value=np.nan)
+
+        return f_smooth
+
+
+    def _get_vel_sq_stellar(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
         print("# 1. calculate stellar M(r)")
@@ -159,13 +206,28 @@ class Stellar:
 
         print("")
         print("#######################################################")
-        print("# 3. calculate stellar rotation velocity V(r)")
+        print("# 3. calculate stellar rotation velocity V(r)")  
         print("#######################################################")
-        vel_r = self.calc_velocity_r(mass_map, radius_h_kpc_map, r_min=RADIUS_MIN_KPC)
-        print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
+        vel_sq = self.calc_V2_r(mass_map, radius_h_kpc_map, r_min=RADIUS_MIN_KPC)
+        return vel_sq, radius_h_kpc_map
 
+    ################################################################################
+    # public methods
+    ################################################################################
+
+    def get_vel_stellar(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        vel_sq, radius_h_kpc_map = self._get_vel_sq_stellar(PLATE_IFU)
+        vel_r = np.sqrt(vel_sq)
+        print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
         return vel_r, radius_h_kpc_map
 
+    def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> np.ndarray:
+        vel_sq, radius_h_kpc_map = self._get_vel_sq_stellar(PLATE_IFU)
+        func = self._get_vel_sq_func(vel_sq, radius_h_kpc_map)
+
+        vel_sq_fitted = func(radius_fitted)
+        vel_fitted = np.sqrt(vel_sq_fitted)
+        return vel_fitted, radius_fitted
 
 def main() -> None:
     PLATE_IFU = "8723-12705"
@@ -180,7 +242,7 @@ def main() -> None:
     firefly_util = FireflyUtil(firefly_file)
     maps_util = MapsUtil(maps_file)
 
-    _, _ = Stellar(drpall_util, firefly_util, maps_util).get_vel_star(PLATE_IFU)
+    _, _ = Stellar(drpall_util, firefly_util, maps_util).get_vel_stellar(PLATE_IFU)
 
 if __name__ == "__main__":
     main()

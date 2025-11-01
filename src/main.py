@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import numpy as np
 
 # my imports
 from util.maps_util import MapsUtil
@@ -13,9 +13,7 @@ from vel_rot import VelRot
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
 
-################################################################################
-# plot functions
-################################################################################
+
 def main():
     PLATE_IFU = "8723-12705"
 
@@ -40,26 +38,33 @@ def main():
     print("# 3. calculate total rotation velocity V(r)")
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util)
-    v_total_map, r_total_map = vel_rot.get_vel_rot(PLATE_IFU)
+    V_total, r_total = vel_rot.get_vel_total(PLATE_IFU)
+    V_total_fitted, r_total_fitted = vel_rot.fit_vel_total(PLATE_IFU)
     
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
-    v_star_map, r_star_map = stellar.get_vel_star(PLATE_IFU)
+    V_stellar, r_stellar = stellar.get_vel_stellar(PLATE_IFU)
+    v_stellar_fitted, _ = stellar.fit_vel_stellar(PLATE_IFU, r_total_fitted)
 
     ########################################################
     ## plot velocity map
     ########################################################
 
     # plot galaxy image
-    plot_util.plot_galaxy_image(PLATE_IFU)
-
+    # plot_util.plot_galaxy_image(PLATE_IFU)
 
     # plot rotational radius-velocity curve
-    plot_util.plot_rv_curve(r_total_map, v_total_map, title="Total")
-    plot_util.plot_rv_curve(r_star_map, v_star_map, title="Stellar")
+    plot_util.plot_rv_curve(r_total, V_total, title="Total")
+
+    # plot_util.plot_rv_curve(r_total_fitted, V_total_fitted, title="Total")
+    # plot_util.plot_rv_curve(r_stellar, V_stellar, title="Stellar")
+
+    V_total_abs = np.abs(V_total_fitted)
+    plot_util.plot_rv_curve(r_total_fitted, V_total_abs, title="Total", v_rot2_map=v_stellar_fitted, title2="Stellar")
+
 
     return
 

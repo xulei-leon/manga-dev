@@ -47,7 +47,7 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     V_stellar, r_stellar = stellar.get_vel_stellar(PLATE_IFU)
-    v_stellar_fitted, _ = stellar.fit_vel_stellar(PLATE_IFU, r_total_fitted)
+    v_stellar_fitted, r_stellar_fitted = stellar.fit_vel_stellar(PLATE_IFU, r_total_fitted)
 
     ########################################################
     ## plot velocity map
@@ -57,13 +57,11 @@ def main():
     # plot_util.plot_galaxy_image(PLATE_IFU)
 
     # plot rotational radius-velocity curve
-    plot_util.plot_rv_curve(r_total, V_total, title="Total")
+    plot_util.plot_rv_curve(r_total, V_total, title="Total", r_rot2_map=r_total_fitted, v_rot2_map=V_total_fitted, title2="Total Fitted")
 
-    # plot_util.plot_rv_curve(r_total_fitted, V_total_fitted, title="Total")
-    # plot_util.plot_rv_curve(r_stellar, V_stellar, title="Stellar")
+    # plot_util.plot_rv_curve(r_total_fitted, V_total_fitted, title="Total Fitted")
 
-    V_total_abs = np.abs(V_total_fitted)
-    plot_util.plot_rv_curve(r_total_fitted, V_total_abs, title="Total", v_rot2_map=v_stellar_fitted, title2="Stellar")
+    plot_util.plot_rv_curve(r_total_fitted, np.abs(V_total_fitted), title="Total", r_rot2_map=r_stellar_fitted, v_rot2_map=v_stellar_fitted, title2="Stellar")
 
 
     return

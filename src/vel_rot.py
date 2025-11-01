@@ -102,13 +102,13 @@ class VelRot:
     
     # return smoothed values
     @staticmethod
-    def _fit_vel(vel_map: np.ndarray, radius_h_kpc_map: np.ndarray):
+    def _sg_fit_vel(vel_map: np.ndarray, radius_map: np.ndarray):
         """Get interpolation function for velocity map."""
         from scipy.signal import savgol_filter
 
         # Flatten the maps and remove NaN values
-        valid_mask = np.isfinite(vel_map) & np.isfinite(radius_h_kpc_map)
-        radius_valid = radius_h_kpc_map[valid_mask]
+        valid_mask = np.isfinite(vel_map) & np.isfinite(radius_map)
+        radius_valid = radius_map[valid_mask]
         vel_valid = np.abs(vel_map[valid_mask])
 
         if len(vel_valid) == 0:
@@ -130,6 +130,49 @@ class VelRot:
             vel_smoothed = savgol_filter(vel_sorted, window_length, polyorder=3, mode='nearest')
 
         return vel_smoothed, radius_sorted
+    
+    # used the minimum χ 2 method for the 2D fitting
+    # Experience curve fitting function: V(r) = Vc * tanh(r / Rt) + V_out
+    @staticmethod
+    def _rot_curve_func(r, Vc, Rt, V_out):
+        r = np.asarray(r, dtype=float)
+        if Rt == 0:
+            return np.full_like(r, np.nan)
+        
+        return Vc * np.tanh(r / Rt) + V_out
+
+    def _rot_curve_fit(self, vel_map: np.ndarray, radius_map: np.ndarray):
+        """Fit the rotation curve using the experience curve function."""
+        # Flatten the maps and remove NaN values
+        valid_mask = np.isfinite(vel_map) & np.isfinite(radius_map)
+        radius_valid = radius_map[valid_mask]
+        # vel_valid = np.abs(vel_map[valid_mask])
+        vel_valid = vel_map[valid_mask]
+        radius_valid = np.where(vel_valid < 0, -np.abs(radius_valid), np.abs(radius_valid))
+
+        if len(vel_valid) == 0:
+            return np.array([]), np.array([])
+
+        # Initial guess for parameters: Vc, Rt, V_out
+        sign_guess = np.sign(np.nanmedian(vel_valid)) or 1.0
+        Vc0 = sign_guess * np.nanmax(np.abs(vel_valid))
+        Rt0 = np.nanmedian(radius_valid) / 2.0
+        Vout0 = np.nanmedian(vel_valid)
+
+        initial_guess = [Vc0, Rt0, Vout0]
+
+        try:
+            popt, _ = curve_fit(self._rot_curve_func, radius_valid, vel_valid, p0=initial_guess,
+                                bounds=([-np.inf, 1e-6, -np.inf], [np.inf, np.inf, np.inf]))
+            Vc_fit, Rt_fit, V_out_fit = popt
+
+            # Generate fitted velocity values
+            vel_fitted = self._rot_curve_func(radius_valid, Vc_fit, Rt_fit, V_out_fit)
+
+            return vel_fitted, radius_valid
+        except RuntimeError:
+            print("Curve fitting failed.")
+            return np.array([]), np.array([])
 
     ################################################################################
     # main function
@@ -223,7 +266,7 @@ class VelRot:
 
     def fit_vel_total(self, PLATE_IFU: str):
         vel_map, radius_map = self.get_vel_total(PLATE_IFU)
-        vel_total_fitted, radius_fitted = self._fit_vel(vel_map, radius_map)
+        vel_total_fitted, radius_fitted = self._rot_curve_fit(vel_map, radius_map)
         print(f"Fitted Total Velocity length: {len(vel_total_fitted)}")
         return vel_total_fitted, radius_fitted
 

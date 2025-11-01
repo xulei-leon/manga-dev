@@ -3,6 +3,10 @@ from fileinput import filename
 from pathlib import Path
 import requests
 
+from astropy.io import fits
+from astropy.table import Table
+import numpy as np
+
 MAPS_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2"
 REDUX_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/redux/v3_1_1"
 FIREFLY_BASE_URL = "https://data.sdss.org/sas/dr17/manga/spectro/firefly/v3_1_1"
@@ -124,7 +128,19 @@ class FitsUtil:
         url = f"{MAPS_BASE_URL}/{plate}/{ifu}/{filename}"
         target_path = self.dap_dir / filename
         return self._download_file(url, target_path, file_type_str="MAPS")
+    
+    # TODO: only used galaxies with Rmax/Rt ≥ 3
+    def find_galaxies(self) -> list[str]:
+        """Find galaxies that meet criteria from DRPALL file."""
+        drpall_file = self.get_drpall_file()
+        selected_plateifus = []
 
+        with fits.open(drpall_file) as hdul:
+            table = Table(hdul[1].data)
+            plateifus = table['PLATEIFU']
+            # Placeholder: implement actual criteria check here
+            selected_plateifus = [str(pifu) for pifu in plateifus]
+        return selected_plateifus
 
     ##############################################################################
     # Private methods

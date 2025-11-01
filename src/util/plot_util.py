@@ -115,7 +115,7 @@ class PlotUtil:
         plt.show()
 
     # plot r-v curve
-    def plot_rv_curve(self, r_rot_map: np.ndarray, v_rot_map: np.ndarray, title: str="", v_rot2_map: np.ndarray=None, title2: str=""):
+    def plot_rv_curve(self, r_rot_map: np.ndarray, v_rot_map: np.ndarray, title: str="", r_rot2_map: np.ndarray=None, v_rot2_map: np.ndarray=None, title2: str=""):
         # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
         r_rot_map = np.asarray(r_rot_map, dtype=float)
         v_rot_map = np.asarray(v_rot_map, dtype=float)
@@ -128,11 +128,13 @@ class PlotUtil:
         ax.scatter(r_signed[valid_gas], v_rot_map[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Rotation Velocity')
 
         # Plot stellar velocity if provided
-        if v_rot2_map is not None:
+        if r_rot2_map is not None and v_rot2_map is not None:
+            r_rot2_map = np.asarray(r_rot2_map, dtype=float)
             v_rot2_map = np.asarray(v_rot2_map, dtype=float)
+            r2_signed = np.where(v_rot2_map < 0, -np.abs(r_rot2_map), np.abs(r_rot2_map))
             # Mask invalid values for stellar velocity
-            valid_stellar = np.isfinite(r_signed) & np.isfinite(v_rot2_map)
-            ax.scatter(r_signed[valid_stellar], v_rot2_map[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
+            valid_stellar = np.isfinite(r2_signed) & np.isfinite(v_rot2_map)
+            ax.scatter(r2_signed[valid_stellar], v_rot2_map[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
 
         ax.set_title(f"Galaxy Rotation Curve (R-V)")
         ax.set_xlabel("Radius R (kpc/h)")

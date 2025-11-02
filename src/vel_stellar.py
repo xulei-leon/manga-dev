@@ -81,7 +81,7 @@ class Stellar:
     # radius unit: kpc
     # velocity unit: km/s
     @staticmethod
-    def calc_V2_r(mass_r: np.ndarray, radius: np.ndarray, r_min: float=0.1) -> np.ndarray:
+    def calc_mass_to_V2(radius: np.ndarray, mass_r: np.ndarray, r_min: float=0.1) -> np.ndarray:
         mass_r = np.asarray(mass_r)
         radius = np.asarray(radius)
         if mass_r.shape != radius.shape:
@@ -96,7 +96,7 @@ class Stellar:
     # Savitzky-Golay fitter for V^2(r) = G * M(r) / r
     # return smoothed/interpolated values
     @staticmethod
-    def _get_vel_sq_func(vel_sq: np.ndarray, radius: np.ndarray) -> interp1d:
+    def _get_vel_sg_func(radius: np.ndarray, vel_sq: np.ndarray) -> interp1d:
         polyorder = 3
         # Filter out invalid data points
         valid_mask = np.isfinite(vel_sq) & np.isfinite(radius)
@@ -138,8 +138,7 @@ class Stellar:
 
         return f_smooth
 
-
-    def _get_vel_sq_stellar(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+    def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
         print("# 1. calculate stellar M(r)")
@@ -204,29 +203,46 @@ class Stellar:
         else:
             print("  WARNING: Calculated radius does not match MAPS radius within 1%")
 
-        print("")
-        print("#######################################################")
-        print("# 3. calculate stellar rotation velocity V(r)")  
-        print("#######################################################")
-        vel_sq = self.calc_V2_r(mass_map, radius_h_kpc_map, r_min=RADIUS_MIN_KPC)
-        return radius_h_kpc_map, vel_sq
+        return radius_h_kpc_map, mass_map
 
+    ################################################################################
+    # fitting methods
+    ################################################################################
+    def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
+        bulge_mass = MB * (r**2) / (r + a)**2
+        disk_mass = MD * (1 - (1 + r / rd) * np.exp(-r / rd))
+        total_mass = bulge_mass + disk_mass
+        return total_mass
+
+    # used the minimum χ 2 method for fitting
+    def _stellar_mass_fit(self, radius: np.ndarray, mass: np.ndarray, radius_fitted: np.ndarray) -> np.ndarray:
+        initial_guess = [1e10, 1.0, 1e10, 3.0]  # Initial guess for MB, a, MD, rd
+        popt, pcov = curve_fit(self._stellar_mass_model, radius, mass, p0=initial_guess, maxfev=10000)
+        fitted_mass = self._stellar_mass_model(radius_fitted, *popt)
+        print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
+        return radius_fitted, fitted_mass
+
+
+    def _get_stellar_V2(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
+        vel_sq = self.calc_mass_to_V2(r_map, mass_map, r_min=RADIUS_MIN_KPC)
+        return r_map, vel_sq
+    
     ################################################################################
     # public methods
     ################################################################################
-
-    def get_vel_stellar(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq = self._get_vel_sq_stellar(PLATE_IFU)
-        vel_r = np.sqrt(vel_sq)
-        print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
-        return r_map, vel_r
-
-    def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> np.ndarray:
-        r_map, vel_sq = self._get_vel_sq_stellar(PLATE_IFU)
-        f_V2 = self._get_vel_sq_func(vel_sq, r_map)
-
-        vel_sq_fitted = f_V2(radius_fitted)
+    def get_stellar_vel(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        r_map, vel_sq = self._get_stellar_V2(PLATE_IFU)
+        vel_map = np.sqrt(vel_sq)
+        print(f"Velocity shape: {vel_map.shape}, min: {np.nanmin(vel_map):.3f}, max: {np.nanmax(vel_map):,.1f} km/s")
+        return r_map, vel_map
+    
+    def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
+        _, mass_fitted = self._stellar_mass_fit(r_map, mass_map, radius_fitted)
+        vel_sq_fitted = self.calc_mass_to_V2(radius_fitted, mass_fitted, r_min=RADIUS_MIN_KPC)
         vel_fitted = np.sqrt(vel_sq_fitted)
+
         return radius_fitted, vel_fitted
 
 def main() -> None:
@@ -242,7 +258,15 @@ def main() -> None:
     firefly_util = FireflyUtil(firefly_file)
     maps_util = MapsUtil(maps_file)
 
-    _, _ = Stellar(drpall_util, firefly_util, maps_util).get_vel_stellar(PLATE_IFU)
+    r_map, vel_map = Stellar(drpall_util, firefly_util, maps_util).get_stellar_vel(PLATE_IFU)
+    r_fitted, vel_fitted = Stellar(drpall_util, firefly_util, maps_util).fit_vel_stellar(PLATE_IFU, radius_fitted=r_map)
+
+    print("#######################################################")
+    print("# calculate stellar rotation velocity V(r)")
+    print("#######################################################")
+    print(f"Calc Velocity shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
+    print(f"Fitted Velocity shape: {vel_fitted.shape}, range: [{np.nanmin(vel_fitted):.3f}, {np.nanmax(vel_fitted):.3f}]")
+    return
 
 if __name__ == "__main__":
     main()

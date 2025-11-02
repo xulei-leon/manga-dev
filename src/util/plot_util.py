@@ -40,7 +40,7 @@ class PlotUtil:
         plt.show()
 
     # Plots the binned velocity map using unique bin indices.
-    def plot_vel_map(self, vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
+    def plot_vel_map_bin(self, vel_map, uindx, ra_map, dec_map, pa_rad=None, title: str=""):
         """
         Plots the binned velocity map using unique bin indices.
 
@@ -110,6 +110,37 @@ class PlotUtil:
         # Invert RA axis for standard astronomical orientation (East to the left)
         ax.invert_xaxis()
         ax.set_aspect('equal', adjustable='box')
+
+        fig.tight_layout()
+        plt.show()
+
+    def plot_vel_map(self, vel_map, title: str=""):
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Filter out non-finite velocity values for color scaling
+        valid_vel_mask = np.isfinite(vel_map)
+        vel_clean = vel_map[valid_vel_mask]
+
+        # Set color normalization based on velocity percentiles
+        if vel_clean.size == 0:
+            vmin, vmax = -1.0, 1.0
+        else:
+            p_low, p_high = np.nanpercentile(vel_clean, [2, 98])
+            vmax = max(abs(p_low), abs(p_high))
+            vmin = -vmax
+        norm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+
+        # Create the imshow plot for the velocity map
+        im = ax.imshow(vel_map, origin='lower', cmap='RdBu_r', norm=norm)
+
+        # Add a colorbar
+        cbar = fig.colorbar(im, ax=ax, label="Velocity (km/s)")
+        cbar.set_ticks([vmin, 0, vmax])
+
+        # Set plot labels and title
+        ax.set_title(f"{title} Velocity Map")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
 
         fig.tight_layout()
         plt.show()

@@ -209,25 +209,25 @@ class Stellar:
         print("# 3. calculate stellar rotation velocity V(r)")  
         print("#######################################################")
         vel_sq = self.calc_V2_r(mass_map, radius_h_kpc_map, r_min=RADIUS_MIN_KPC)
-        return vel_sq, radius_h_kpc_map
+        return radius_h_kpc_map, vel_sq
 
     ################################################################################
     # public methods
     ################################################################################
 
     def get_vel_stellar(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        vel_sq, radius_h_kpc_map = self._get_vel_sq_stellar(PLATE_IFU)
+        r_map, vel_sq = self._get_vel_sq_stellar(PLATE_IFU)
         vel_r = np.sqrt(vel_sq)
         print(f"Velocity shape: {vel_r.shape}, min: {np.nanmin(vel_r):.3f}, max: {np.nanmax(vel_r):,.1f} km/s")
-        return vel_r, radius_h_kpc_map
+        return r_map, vel_r
 
     def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> np.ndarray:
-        vel_sq, radius_h_kpc_map = self._get_vel_sq_stellar(PLATE_IFU)
-        func = self._get_vel_sq_func(vel_sq, radius_h_kpc_map)
+        r_map, vel_sq = self._get_vel_sq_stellar(PLATE_IFU)
+        f_V2 = self._get_vel_sq_func(vel_sq, r_map)
 
-        vel_sq_fitted = func(radius_fitted)
+        vel_sq_fitted = f_V2(radius_fitted)
         vel_fitted = np.sqrt(vel_sq_fitted)
-        return vel_fitted, radius_fitted
+        return radius_fitted, vel_fitted
 
 def main() -> None:
     PLATE_IFU = "8723-12705"

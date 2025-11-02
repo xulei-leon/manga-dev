@@ -35,34 +35,30 @@ def main():
 
     print("")
     print("#######################################################")
-    print("# 3. calculate total rotation velocity V(r)")
+    print("# 3. calculate rot rotation velocity V(r)")
     print("#######################################################")
-    vel_rot = VelRot(drpall_util, firefly_util, maps_util)
-    V_total, r_total = vel_rot.get_vel_total(PLATE_IFU)
-    V_total_fitted, r_total_fitted = vel_rot.fit_vel_total(PLATE_IFU)
+    vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
+    r_obs_map, V_obs_map, _ = vel_rot.get_vel_obs(PLATE_IFU)
+    r_rot_fitted, V_rot_fitted, V_obs_fitted = vel_rot.fit_vel_rot(PLATE_IFU)
     
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
-    V_stellar, r_stellar = stellar.get_vel_stellar(PLATE_IFU)
-    v_stellar_fitted, r_stellar_fitted = stellar.fit_vel_stellar(PLATE_IFU, r_total_fitted)
+    r_stellar, V_stellar = stellar.get_vel_stellar(PLATE_IFU)
+    r_stellar_fitted, V_stellar_fitted = stellar.fit_vel_stellar(PLATE_IFU, r_rot_fitted)
 
     ########################################################
     ## plot velocity map
     ########################################################
 
     # plot galaxy image
-    # plot_util.plot_galaxy_image(PLATE_IFU)
+    plot_util.plot_galaxy_image(PLATE_IFU)
 
     # plot rotational radius-velocity curve
-    plot_util.plot_rv_curve(r_total, V_total, title="Total", r_rot2_map=r_total_fitted, v_rot2_map=V_total_fitted, title2="Total Fitted")
-
-    # plot_util.plot_rv_curve(r_total_fitted, V_total_fitted, title="Total Fitted")
-
-    plot_util.plot_rv_curve(r_total_fitted, np.abs(V_total_fitted), title="Total", r_rot2_map=r_stellar_fitted, v_rot2_map=v_stellar_fitted, title2="Stellar")
-
+    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=V_rot_fitted, title="Rotational Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fitted")
+    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Rotational Fitted abs", r_rot2_map=r_stellar_fitted, v_rot2_map=V_stellar_fitted, title2="Stellar")
 
     return
 

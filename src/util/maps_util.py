@@ -138,6 +138,13 @@ class MapsUtil:
     def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
         return self._get_unique_bins(3)
 
+    # EMLINE_GSIGMA
+    # EMLINE_INSTSIGMA
+    # \sigma_{\rm gas}^2 = \sigma_{\rm gas,obs}^2 - \sigma_{\rm inst}^2
+    # STELLAR_SIGMA: Raw line-of-sight stellar velocity dispersion measurements in km/s. 
+    # STELLAR_SIGMACORR: Quadrature correction for STELLAR_SIGMA to obtain the astrophysical velocity dispersion. 
+    # \sigma_\ast^2 = \sigma_{\ast,{\rm obs}}^2 - \delta\sigma_{\rm inst}^2
+
     ###############################################################################
     # internal utility functions for channel handling
     ###############################################################################

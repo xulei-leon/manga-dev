@@ -221,6 +221,14 @@ class VelRot:
             print("Curve fitting failed.")
             return np.array([]), np.array([]), np.array([])
 
+    # Jeans equations
+    # Strömberg equation
+    # Asymmetric drift correction
+    # \Delta V^2 = \sigma_{\rm gas}^2 - \sigma_{\ast}^2
+    def _vel_rot_adc(self, vel_rot_map: np.ndarray, sigma_stellar_map: np.ndarray) -> np.ndarray:
+        # TODO
+        return
+
 
     ################################################################################
     # public methods

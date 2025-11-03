@@ -231,6 +231,132 @@ class Stellar:
         r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
         vel_sq = self.calc_mass_to_V2(r_map, mass_map, r_min=RADIUS_MIN_KPC)
         return r_map, vel_sq
+
+
+    ################################################################################
+    # asymmetric drift correction
+    # V_drift^2(R) = - Sigma_R^2 * [ (d ln(Sigma_star * Sigma_R^2) / d ln R) + (1 - Sigma_phi^2 / Sigma_R^2) ]
+    ################################################################################
+
+    def _safe_dln_dlnR(self, y: np.ndarray, R: np.ndarray, smooth: bool=True,
+                    window: int=11, polyorder: int=3) -> np.ndarray:
+        """
+        Compute d ln y / d ln R robustly.
+        """
+        # avoid zero or negative values for log-derivative computation
+        y = np.asarray(y, dtype=float)
+        R = np.asarray(R, dtype=float)
+        eps = 1e-12
+        y = np.maximum(y, eps)
+
+        # optional smoothing to reduce noise amplification in derivative
+        if smooth and len(y) >= window and window % 2 == 1:
+            y_s = savgol_filter(y, window_length=window, polyorder=polyorder)
+        else:
+            y_s = y
+
+        dy_dR = np.gradient(y_s, R)
+        # d ln y / d ln R = (R / y) * (dy / dR)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            dln = (R / y_s) * dy_dR
+        # replace NaN/inf with zeros (happens at R=0 or y nearly const)
+        dln = np.nan_to_num(dln, nan=0.0, posinf=0.0, neginf=0.0)
+        return dln
+
+    def _estimate_sigma_phi2_over_sigmaR2(self, R: np.ndarray, Vc_guess: np.ndarray=None,
+                                        Vphi_guess: np.ndarray=None) -> np.ndarray:
+        """
+        Estimate sigma_phi^2 / sigma_R^2 using epicycle approx:
+        sigma_phi^2 / sigma_R^2 ≈ 0.5 * (1 + d ln Vc / d ln R)
+        Try to derive d ln Vc / d ln R from:
+        1) provided Vc_guess
+        2) provided Vphi_guess
+        3) class attributes self.vc or self.vphi if present
+        4) fallback to 0 (flat rotation) -> ratio = 0.5
+        """
+        # choose available velocity array
+        if Vc_guess is None:
+            if Vphi_guess is None:
+                Vc_arr = getattr(self, "vc", None)
+                if Vc_arr is None:
+                    Vc_arr = getattr(self, "vphi", None)
+            else:
+                Vc_arr = Vphi_guess
+        else:
+            Vc_arr = Vc_guess
+
+        if Vc_arr is None:
+            # no velocity info -> assume flat rotation curve
+            dlnVc = np.zeros_like(R, dtype=float)
+        else:
+            Vc_arr = np.asarray(Vc_arr, dtype=float)
+            # ensure non-negative
+            Vc_arr = np.maximum(Vc_arr, 1e-8)
+            dlnVc = _safe_dln_dlnR(self, Vc_arr, R, smooth=True)
+
+        ratio = 0.5 * (1.0 + dlnVc)
+        # clamp to reasonable physical bounds
+        ratio = np.clip(ratio, 0.0, 2.0)
+        return ratio
+
+    def _calc_vel_drift_sq(self, radius: np.ndarray, sigma_stellar: np.ndarray, sigma_R: np.ndarray) -> np.ndarray:
+        """
+        Compute V_drift^2(R) using the formula:
+        V_drift^2(R) = - sigma_R^2 * [ d ln (Sigma_* * sigma_R^2) / d ln R + (1 - sigma_phi^2 / sigma_R^2) ]
+        Inputs:
+        radius: 1D array of R (same unit, should be > 0)
+        sigma_stellar: Sigma_*(R) (surface density, arbitrary units)
+        sigma_R: radial velocity dispersion sigma_R(R) (same velocity units)
+        Returns:
+        V_drift_sq: 1D array of V_drift^2 (same units as velocity^2)
+        Notes:
+        - The function will try to estimate sigma_phi^2 / sigma_R^2 using class attributes
+            or a flat-rotation fallback if necessary.
+        - Numerical derivatives are smoothed to reduce noise amplification.
+        """
+        R = np.asarray(radius, dtype=float)
+        Sigma = np.asarray(sigma_stellar, dtype=float)
+        sR = np.asarray(sigma_R, dtype=float)
+
+        # basic checks and shapes
+        if R.ndim != 1 or Sigma.ndim != 1 or sR.ndim != 1:
+            raise ValueError("radius, sigma_stellar, sigma_R must be 1D arrays of same length")
+        if not (len(R) == len(Sigma) == len(sR)):
+            raise ValueError("radius, sigma_stellar, sigma_R must have same length")
+
+        # avoid zero/negative inputs for logs
+        eps = 1e-12
+        Sigma_safe = np.maximum(Sigma, eps)
+        sR_safe = np.maximum(sR, eps)
+
+        # compute d ln (Sigma * sigma_R^2) / d ln R
+        product = Sigma_safe * (sR_safe**2)
+        dln_product = _safe_dln_dlnR(self, product, R, smooth=True)
+
+        # compute sigma_phi^2 / sigma_R^2 estimate
+        # Prefer explicit class attributes if user provided them:
+        #   self.sigma_phi (array) or self.vc / self.vphi for epicycle approx
+        sigma_phi_arr = getattr(self, "sigma_phi", None)
+        if sigma_phi_arr is not None:
+            sigma_phi2_over_sigmaR2 = (np.asarray(sigma_phi_arr, dtype=float)**2) / (sR_safe**2)
+            sigma_phi2_over_sigmaR2 = np.nan_to_num(sigma_phi2_over_sigmaR2, nan=0.5, posinf=2.0, neginf=0.0)
+        else:
+            # try to use vc or vphi if available on self
+            Vc_guess = getattr(self, "vc", None)
+            Vphi_guess = getattr(self, "vphi", None)
+            sigma_phi2_over_sigmaR2 = _estimate_sigma_phi2_over_sigmaR2(self, R, Vc_guess=Vc_guess, Vphi_guess=Vphi_guess)
+
+        # build the bracket term
+        bracket = dln_product + (1.0 - sigma_phi2_over_sigmaR2)
+
+        # V_drift^2 = - sigma_R^2 * bracket
+        Vdrift2 = - (sR_safe**2) * bracket
+
+        # numerical safety: negative values can appear due to noisy derivatives or approximations.
+        # physically Vdrift^2 should be >= 0. Clamp small negative values to zero.
+        Vdrift2 = np.where(Vdrift2 < 0.0, 0.0, Vdrift2)
+
+        return Vdrift2
     
     ################################################################################
     # public methods

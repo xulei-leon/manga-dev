@@ -156,7 +156,7 @@ class PlotUtil:
         valid_gas = np.isfinite(r_signed) & np.isfinite(v_rot_map)
 
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.scatter(r_signed[valid_gas], v_rot_map[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Rotation Velocity')
+        ax.scatter(r_signed[valid_gas], v_rot_map[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Velocity')
 
         # Plot stellar velocity if provided
         if r_rot2_map is not None and v_rot2_map is not None:

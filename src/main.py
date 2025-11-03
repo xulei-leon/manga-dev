@@ -63,7 +63,7 @@ def main():
     plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=V_rot_fitted, title="Rotational Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fitted")
  
     # compare rotational fitted velocity (abs) vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Rotational Fitted abs", r_rot2_map=r_stellar_fitted, v_rot2_map=V_stellar_fitted, title2="Stellar Fitted")
+    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Total Rotational", r_rot2_map=r_stellar_fitted, v_rot2_map=V_stellar_fitted, title2="Stellar")
 
     return
 

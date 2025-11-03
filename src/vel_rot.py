@@ -174,7 +174,8 @@ class VelRot:
         correction = np.sin(inc) * np.cos(phi_delta)
         return vel_rot * correction
 
-    def _vel_obs_fit_func(self, r, Vc, Rt, V_out, inc, phi) -> np.ndarray:
+    #  V_obs = (Vc * tanh(r / Rt) + V_out * r) * (sin(i) * cos(phi_delta))
+    def _vel_obs_model(self, r, Vc, Rt, V_out, inc, phi) -> np.ndarray:
         r = np.asarray(r, dtype=float)
         vel_rot = self.__calc_vel_rot(r, Vc, Rt, V_out)
         vel_obs = self.__calc_vel_obs(vel_rot, inc, phi)
@@ -199,7 +200,7 @@ class VelRot:
         _, inc0 = self._calc_pa_inc()
         initial_guess = [Vc0, Rt0, Vout0, inc0]
 
-        fit_func_partial = lambda r, Vc, Rt, V_out, inc: self._vel_obs_fit_func(r, Vc, Rt, V_out, inc, phi=phi_valid)
+        fit_func_partial = lambda r, Vc, Rt, V_out, inc: self._vel_obs_model(r, Vc, Rt, V_out, inc, phi=phi_valid)
         try:
             popt, _ = curve_fit(fit_func_partial, radius_valid, vel_valid, p0=initial_guess,
                                 bounds=([-np.inf, 1e-6, -np.inf, 0], [np.inf, np.inf, np.inf, np.pi]))
@@ -212,7 +213,7 @@ class VelRot:
             print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
 
             # Generate fitted velocity values
-            vel_obs_fitted = self._vel_obs_fit_func(radius_valid, Vc_fit, Rt_fit, V_out_fit, inc_fit, phi=phi_valid)
+            vel_obs_fitted = self._vel_obs_model(radius_valid, Vc_fit, Rt_fit, V_out_fit, inc_fit, phi=phi_valid)
             vel_rot_fitted = self.__calc_vel_rot(radius_valid, Vc_fit, Rt_fit, V_out_fit)
             return radius_valid, vel_rot_fitted, vel_obs_fitted
         

@@ -22,6 +22,7 @@ from util.fits_util import FitsUtil
 from util.drpall_util import DrpallUtil
 from util.firefly_util import FireflyUtil
 from util.maps_util import MapsUtil
+from util.plot_util import PlotUtil
 
 RADIUS_MIN_KPC = 0.1  # kpc
 G = const.G.to('kpc km2 / (Msun s2)').value  # gravitational constant in kpc km^2 / (M_sun s^2)
@@ -215,9 +216,12 @@ class Stellar:
         return total_mass
 
     # used the minimum χ 2 method for fitting
-    def _stellar_mass_fit(self, radius: np.ndarray, mass: np.ndarray, radius_fitted: np.ndarray) -> np.ndarray:
+    def _stellar_mass_fit(self, radius: np.ndarray, mass: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> np.ndarray:
+        radius_filter = radius[radius>r_min]
+        mass_filter = mass[radius>r_min]
+
         initial_guess = [1e10, 1.0, 1e10, 3.0]  # Initial guess for MB, a, MD, rd
-        popt, pcov = curve_fit(self._stellar_mass_model, radius, mass, p0=initial_guess, maxfev=10000)
+        popt, pcov = curve_fit(self._stellar_mass_model, radius_filter, mass_filter, p0=initial_guess, maxfev=10000)
         fitted_mass = self._stellar_mass_model(radius_fitted, *popt)
         print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
         return radius_fitted, fitted_mass
@@ -239,7 +243,7 @@ class Stellar:
     
     def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
-        _, mass_fitted = self._stellar_mass_fit(r_map, mass_map, radius_fitted)
+        _, mass_fitted = self._stellar_mass_fit(r_map, mass_map, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
         vel_sq_fitted = self.calc_mass_to_V2(radius_fitted, mass_fitted, r_min=RADIUS_MIN_KPC)
         vel_fitted = np.sqrt(vel_sq_fitted)
 
@@ -257,6 +261,7 @@ def main() -> None:
     drpall_util = DrpallUtil(drpall_file)
     firefly_util = FireflyUtil(firefly_file)
     maps_util = MapsUtil(maps_file)
+    plot_util = PlotUtil(fits_util)
 
     r_map, vel_map = Stellar(drpall_util, firefly_util, maps_util).get_stellar_vel(PLATE_IFU)
     r_fitted, vel_fitted = Stellar(drpall_util, firefly_util, maps_util).fit_vel_stellar(PLATE_IFU, radius_fitted=r_map)
@@ -266,6 +271,8 @@ def main() -> None:
     print("#######################################################")
     print(f"Calc Velocity shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
     print(f"Fitted Velocity shape: {vel_fitted.shape}, range: [{np.nanmin(vel_fitted):.3f}, {np.nanmax(vel_fitted):.3f}]")
+
+    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar", r_rot2_map=r_fitted, v_rot2_map=vel_fitted, title2="Fitted Stellar")
     return
 
 if __name__ == "__main__":

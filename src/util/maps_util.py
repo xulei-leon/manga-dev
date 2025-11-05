@@ -140,10 +140,46 @@ class MapsUtil:
 
     # EMLINE_GSIGMA
     # EMLINE_INSTSIGMA
-    # \sigma_{\rm gas}^2 = \sigma_{\rm gas,obs}^2 - \sigma_{\rm inst}^2
+    # sigma_gas^2 = EMLINE_GSIGMA^2 - EMLINE_INSTSIGMA^2
+    def get_eml_sigma_map(self, channel_name='Ha-6564') -> tuple[np.ndarray, np.ndarray]:
+        """Return the gas velocity dispersion map, its unit, and masked IVAR from the MAPS file."""
+        hdr = self.hdu['EMLINE_GSIGMA'].header
+        sigma_unit = hdr.get('BUNIT', '')
+
+        sigma_data = self.hdu['EMLINE_GSIGMA'].data
+        mask_data = self.hdu['EMLINE_GSIGMA_MASK'].data
+        sigma_inst_data = self.hdu['EMLINE_INSTSIGMA'].data
+
+        channel_index = self._channel_dictionary('EMLINE_GSIGMA').get(channel_name)
+        if channel_index is None:
+            raise ValueError(f"Channel {channel_name} not found in MAPS file.")
+
+        sigma_channel = sigma_data[channel_index, ...]
+        mask_channel = mask_data[channel_index, ...]
+        sigma_inst_channel = sigma_inst_data[channel_index, ...]
+
+        sigma = np.where(mask_channel == 0, sigma_channel, np.nan)
+        sigma_inst = np.where(mask_channel == 0, sigma_inst_channel, np.nan)
+
+        return sigma, sigma_inst
+
+
     # STELLAR_SIGMA: Raw line-of-sight stellar velocity dispersion measurements in km/s. 
     # STELLAR_SIGMACORR: Quadrature correction for STELLAR_SIGMA to obtain the astrophysical velocity dispersion. 
-    # \sigma_\ast^2 = \sigma_{\ast,{\rm obs}}^2 - \delta\sigma_{\rm inst}^2
+    # sigma_ast^2 = STELLAR_SIGMA^2 - STELLAR_SIGMACORR^2
+    def get_stellar_sigma_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the stellar velocity dispersion map, its unit, and masked IVAR from the MAPS file."""
+        hdr = self.hdu['STELLAR_SIGMA'].header
+        sigma_unit = hdr.get('BUNIT', '')
+
+        sigma_data = self.hdu['STELLAR_SIGMA'].data
+        mask_data = self.hdu['STELLAR_SIGMA_MASK'].data
+        sigma_corr_data = self.hdu['STELLAR_SIGMACORR'].data
+
+        sigma = np.where(mask_data == 0, sigma_data, np.nan)
+        sigma_corr = np.where(mask_data == 0, sigma_corr_data, np.nan)
+
+        return sigma, sigma_corr
 
     ###############################################################################
     # internal utility functions for channel handling

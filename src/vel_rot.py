@@ -221,13 +221,26 @@ class VelRot:
             print("Curve fitting failed.")
             return np.array([]), np.array([]), np.array([])
 
+
+
+    ################################################################################
+    # Gas Pressure Support Correction: Vc^2 = V_rot^2 + V_drift^2
+    # V_drift^2 = Sigma_gas^2 * [ -(d ln(Sigma_gas) / d ln(R)) - (d ln(Sigma_gas^2) / d ln(R)) ]
+    ################################################################################
+
+    def _get_gas_sigmaR_sq(self) -> tuple[np.ndarray]:
+        sigma_gas, sigma_gas_corr = self.maps_util.get_eml_sigma_map()
+        sigmaR_sq = np.maximum(np.square(sigma_gas) - np.square(sigma_gas_corr), 0.0)
+
+        return sigmaR_sq
+
+
     # Jeans equations
-    # Strömberg equation
     # Asymmetric drift correction
-    # \Delta V^2 = \sigma_{\rm gas}^2 - \sigma_{\ast}^2
-    def _vel_rot_adc(self, vel_rot_map: np.ndarray, sigma_stellar_map: np.ndarray) -> np.ndarray:
+    def _get_gas_vel_circular(self, radius_map: np.ndarray, vel_rot_map: np.ndarray) -> np.ndarray:
         # TODO
         return
+    
 
 
     ################################################################################
@@ -240,7 +253,16 @@ class VelRot:
     def fit_vel_rot(self, PLATE_IFU: str):
         radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU)
         return self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
+    
+    def get_vel_circular(self, PLATE_IFU: str):
+        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU)
+        vel_circular_map = self._get_gas_vel_circular(radius_map, vel_obs_map)
+        return vel_circular_map
 
+
+######################################################
+# main function for test
+######################################################
 def main():
     PLATE_IFU = "8723-12705"
 

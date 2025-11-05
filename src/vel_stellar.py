@@ -3,6 +3,7 @@ from operator import le
 from pathlib import Path
 from tkinter import N
 
+from deprecated import deprecated
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -37,6 +38,10 @@ class Stellar:
         self.firefly_util = firefly_util
         self.maps_util = maps_util
 
+
+
+
+
     @staticmethod
     def calc_r_ratio_to_h_kpc(r_arcsec: np.ndarray, r_h_kpc: np.ndarray) -> float:
         r_arcsec = np.asarray(r_arcsec)
@@ -49,96 +54,6 @@ class Stellar:
         ratio_r = r_h_kpc / r_arcsec
         ratio = np.median(ratio_r[~np.isnan(ratio_r)])
         return ratio
-
-    @staticmethod
-    def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        mass_cell = np.asarray(mass_cell)
-        radius = np.asarray(radius)
-
-        if mass_cell.shape != radius.shape:
-            raise ValueError("mass_cell and radius must have the same shape")
-
-        valid_mask = (~np.isnan(mass_cell)) & (~np.isnan(radius)) & (mass_cell >= 0) & (radius >= 0)
-
-        if not np.any(valid_mask):
-            return np.array([], dtype=float), np.array([], dtype=float)
-
-        filtered_mass = mass_cell[valid_mask]
-        filtered_radius = radius[valid_mask]
-
-        sorted_idx = np.argsort(filtered_radius)
-
-        sorted_radius = filtered_radius[sorted_idx]
-        sorted_masses = filtered_mass[sorted_idx]
-
-        mass_r = np.cumsum(sorted_masses)
-        r_bins = sorted_radius
-
-        return mass_r, r_bins
-
-    # Orbital Velocity Formula
-    # V(r) = sqrt( G * M(r) / r )
-    # mass_r unit: M_sun
-    # radius unit: kpc
-    # velocity unit: km/s
-    @staticmethod
-    def calc_mass_to_V2(radius: np.ndarray, mass_r: np.ndarray, r_min: float=0.1) -> np.ndarray:
-        mass_r = np.asarray(mass_r)
-        radius = np.asarray(radius)
-        if mass_r.shape != radius.shape:
-            raise ValueError("mass_r and radius must have the same shape")
-        radius = np.where(radius < r_min, np.nan, radius)
-        mass_r = np.where(mass_r < 0, np.nan, mass_r)
-
-        print(f"G constant value: {G} kpc km2 / (Msun s2)")
-        V2 = G * mass_r / radius  # in (km/s)^2
-        return V2
-
-    # Savitzky-Golay fitter for V^2(r) = G * M(r) / r
-    # return smoothed/interpolated values
-    @staticmethod
-    def _get_vel_sg_func(radius: np.ndarray, vel_sq: np.ndarray) -> interp1d:
-        polyorder = 3
-        # Filter out invalid data points
-        valid_mask = np.isfinite(vel_sq) & np.isfinite(radius)
-        radius_valid = radius[valid_mask]
-        V2_valid = vel_sq[valid_mask]
-
-        # Ensure data is sorted by radius for interpolation
-        sort_indices = np.argsort(radius_valid)
-        radius_valid = radius_valid[sort_indices]
-        V2_valid = V2_valid[sort_indices]
-
-        n = len(V2_valid)
-        
-        # If too few points, return a simple linear interpolation
-        if n < polyorder + 2:
-            print(f"Warning: Too few data points ({n}) for smoothing. Returning unsmoothed interpolation.")
-            return interp1d(radius_valid, V2_valid, bounds_error=False, fill_value=np.nan)
-
-        # Adjust window_length for Savitzky-Golay filter
-        # It must be an odd integer and greater than polyorder.
-        window_length = min(51, n)
-        if window_length % 2 == 0:
-            window_length -= 1
-        if window_length <= polyorder:
-            # This ensures window_length is odd and > polyorder
-            window_length = polyorder + 1 if polyorder % 2 == 0 else polyorder + 2
-        if window_length > n:
-            window_length = n
-            if window_length % 2 == 0:
-                window_length -= 1
-
-
-        # Apply Savitzky–Golay smoothing
-        smoothed_V2_valid = savgol_filter(V2_valid, window_length, polyorder, mode='nearest')
-
-        # Interpolate smoothed results
-        f_smooth = interp1d(radius_valid, smoothed_V2_valid,
-                            kind='cubic', bounds_error=False, fill_value=np.nan)
-
-        return f_smooth
-
 
     def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
         _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
@@ -171,7 +86,38 @@ class Stellar:
             print("  WARNING: Calculated radius does not match MAPS radius within 1%")
         return radius_h_kpc_map
 
+    ################################################################################
+    # Stellar Mass M(r)
+    # Unused for now
+    ################################################################################
 
+    @staticmethod
+    def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        mass_cell = np.asarray(mass_cell)
+        radius = np.asarray(radius)
+
+        if mass_cell.shape != radius.shape:
+            raise ValueError("mass_cell and radius must have the same shape")
+
+        valid_mask = (~np.isnan(mass_cell)) & (~np.isnan(radius)) & (mass_cell >= 0) & (radius >= 0)
+
+        if not np.any(valid_mask):
+            return np.array([], dtype=float), np.array([], dtype=float)
+
+        filtered_mass = mass_cell[valid_mask]
+        filtered_radius = radius[valid_mask]
+
+        sorted_idx = np.argsort(filtered_radius)
+
+        sorted_radius = filtered_radius[sorted_idx]
+        sorted_masses = filtered_mass[sorted_idx]
+
+        mass_r = np.cumsum(sorted_masses)
+        r_bins = sorted_radius
+
+        return mass_r, r_bins
+
+    @deprecated(reason="To use Mass Density method instead", version="0.1.0")
     def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
@@ -206,10 +152,6 @@ class Stellar:
 
         return radius_h_kpc_map, mass_map
 
-    ################################################################################
-    # fitting mass methods
-    ################################################################################
-
     # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
     def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
         bulge_mass = MB * (r**2) / (r + a)**2
@@ -218,6 +160,7 @@ class Stellar:
         return total_mass
 
     # used the minimum χ 2 method for fitting
+    @deprecated(reason="To use Mass Density method instead", version="0.1.0")
     def _stellar_mass_fit(self, radius: np.ndarray, mass: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> np.ndarray:
         radius_filter = radius[radius>r_min]
         mass_filter = mass[radius>r_min]
@@ -228,20 +171,13 @@ class Stellar:
         print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
         return radius_fitted, fitted_mass
 
-
-    def _get_stellar_V2(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
-        vel_sq = self.calc_mass_to_V2(r_map, mass_map, r_min=RADIUS_MIN_KPC)
-        return r_map, vel_sq
-    
-
     ################################################################################
-    # mass density
+    # Mass Density Method
     ################################################################################
+
     # Exponential Disk rotation velocity formula
     # V^2(R) = 4 * pi * G * Sigma_0 * R_d * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
     # where y = R / (2 * R_d)
-    ################################################################################
     def __stellar_vel_sq(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         y = R / (2.0 * R_d)
         I_0 = special.i0(y)

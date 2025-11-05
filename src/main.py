@@ -47,7 +47,6 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU)
-    r_stellar_fitted, V_stellar_fitted = stellar.fit_vel_stellar(PLATE_IFU, r_rot_fitted)
 
     ########################################################
     ## plot velocity map
@@ -57,14 +56,13 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # compare stellar velocity vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Stellar", r_rot2_map=r_stellar_fitted, v_rot2_map=V_stellar_fitted, title2="Stellar Fitted")
+    plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Stellar")
 
     # compare rotational fitted velocity vs observed fitted velocity
     plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=V_rot_fitted, title="Rotational Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fitted")
  
     # compare rotational fitted velocity (abs) vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Total Rotational", r_rot2_map=r_stellar_fitted, v_rot2_map=V_stellar_fitted, title2="Stellar")
-
+    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Total Rotational", r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Stellar")
     return
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
+import scipy.special as special
 from scipy import stats
 from scipy.optimize import curve_fit
 from scipy.signal import savgol_filter
@@ -15,7 +16,6 @@ from scipy.interpolate import interp1d
 
 
 from matplotlib import colors
-from scipy.special import gamma, gammainc
 
 # my imports
 from util.fits_util import FitsUtil
@@ -51,7 +51,7 @@ class Stellar:
         return ratio
 
     @staticmethod
-    def calc_mass_r(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         mass_cell = np.asarray(mass_cell)
         radius = np.asarray(radius)
 
@@ -139,6 +139,39 @@ class Stellar:
 
         return f_smooth
 
+
+    def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
+        _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
+        print(f"Radius (MAPS) shape: {_r_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(_r_arcsec_map[_r_arcsec_map>=0]):.3f}, {np.nanmax(_r_arcsec_map):.3f}]")
+        print(f"Radius (MAPS) shape: {_r_h_kpc_map.shape}, Unit: kpc/h, range [{np.nanmin(_r_h_kpc_map[_r_h_kpc_map>=0]):.3f}, {np.nanmax(_r_h_kpc_map):.3f}]")
+
+        effective_radius = self.drpall_util.get_effective_radius(PLATE_IFU)
+        print(f"Effective Radius (DRPALL): {effective_radius:.3f} arcsec")
+
+        radius_arcsec_map = radius_eff_map * effective_radius
+        print(f"Radius (arcsec) shape: {radius_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(radius_arcsec_map[radius_arcsec_map>=0]):.3f}, {np.nanmax(radius_arcsec_map):.3f}]")
+
+        _r_err_percent = np.abs(np.nanmax(radius_arcsec_map) - np.nanmax(_r_arcsec_map)) / np.nanmax(_r_arcsec_map)
+        print(f"  Verification with MAPS radius:")
+        if np.nanmax(_r_err_percent) < 0.01:
+            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
+        else:
+            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
+
+        ratio_r = self.calc_r_ratio_to_h_kpc(_r_arcsec_map, _r_h_kpc_map)
+        print(f"Radius ratio (arcsec to kpc/h): {ratio_r:.3f}")
+
+        radius_h_kpc_map = radius_arcsec_map * ratio_r
+        print(f"Radius (kpc/h) shape: {radius_h_kpc_map.shape}, Unit: kpc/h, range [min: {np.nanmin(radius_h_kpc_map[radius_h_kpc_map>=0]):.3f}, max: {np.nanmax(radius_h_kpc_map):.3f}]")
+        _r_err_percent = np.abs(np.nanmax(radius_h_kpc_map) - np.nanmax(_r_h_kpc_map)) / np.nanmax(_r_h_kpc_map)
+        print(f"  Verification with MAPS radius:")
+        if np.nanmax(_r_err_percent) < 0.01:
+            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
+        else:
+            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
+        return radius_h_kpc_map
+
+
     def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
@@ -165,50 +198,19 @@ class Stellar:
         print(f"Radius Eff shape: {_radius_eff.shape}, Unit: effective radius, range [{np.nanmin(_radius_eff[azimuth>=0]):.3f}, {np.nanmax(_radius_eff):.3f}]")
         print(f"Azimuth shape: {azimuth.shape}, Unit: degrees, range [{np.nanmin(azimuth[azimuth>=0]):.3f}, {np.nanmax(azimuth):.3f}]")
 
-        mass_map, radius_eff_map = self.calc_mass_r(mass_stellar_cell, _radius_eff)
+        mass_map, radius_eff_map = self._calc_mass_of_radius(mass_stellar_cell, _radius_eff)
         print(f"Cumulative Mass shape: {mass_map.shape}, Unit: M solar, range [{np.nanmin(mass_map):.3f}, {np.nanmax(mass_map):,.1f}]")
         print(f"Radius bins shape: {radius_eff_map.shape}, Unit: effective radius, range [{np.nanmin(radius_eff_map):.3f}, {np.nanmax(radius_eff_map):.3f}]")
 
-        print("")
-        print("#######################################################")
-        print("# 2. calculate stellar r")
-        print("#######################################################")
-
-        _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
-        print(f"Radius (MAPS) shape: {_r_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(_r_arcsec_map[_r_arcsec_map>=0]):.3f}, {np.nanmax(_r_arcsec_map):.3f}]")
-        print(f"Radius (MAPS) shape: {_r_h_kpc_map.shape}, Unit: kpc/h, range [{np.nanmin(_r_h_kpc_map[_r_h_kpc_map>=0]):.3f}, {np.nanmax(_r_h_kpc_map):.3f}]")
-
-
-        effective_radius = self.drpall_util.get_effective_radius(PLATE_IFU)
-        print(f"Effective Radius (DRPALL): {effective_radius:.3f} arcsec")
-
-        radius_arcsec_map = radius_eff_map * effective_radius
-        print(f"Radius (arcsec) shape: {radius_arcsec_map.shape}, Unit: arcsec, range [{np.nanmin(radius_arcsec_map[radius_arcsec_map>=0]):.3f}, {np.nanmax(radius_arcsec_map):.3f}]")
-
-        _r_err_percent = np.abs(np.nanmax(radius_arcsec_map) - np.nanmax(_r_arcsec_map)) / np.nanmax(_r_arcsec_map)
-        print(f"  Verification with MAPS radius:")
-        if np.nanmax(_r_err_percent) < 0.01:
-            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
-        else:
-            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
-
-        ratio_r = self.calc_r_ratio_to_h_kpc(_r_arcsec_map, _r_h_kpc_map)
-        print(f"Radius ratio (arcsec to kpc/h): {ratio_r:.3f}")
-
-        radius_h_kpc_map = radius_arcsec_map * ratio_r
-        print(f"Radius (kpc/h) shape: {radius_h_kpc_map.shape}, Unit: kpc/h, range [min: {np.nanmin(radius_h_kpc_map[radius_h_kpc_map>=0]):.3f}, max: {np.nanmax(radius_h_kpc_map):.3f}]")
-        _r_err_percent = np.abs(np.nanmax(radius_h_kpc_map) - np.nanmax(_r_h_kpc_map)) / np.nanmax(_r_h_kpc_map)
-        print(f"  Verification with MAPS radius:")
-        if np.nanmax(_r_err_percent) < 0.01:
-            print(f"  Calculated radius matches MAPS radius within {np.nanmax(_r_err_percent):.1%}")
-        else:
-            print("  WARNING: Calculated radius does not match MAPS radius within 1%")
+        radius_h_kpc_map = self._calc_radius_to_h_kpc(PLATE_IFU, radius_eff_map)
 
         return radius_h_kpc_map, mass_map
 
     ################################################################################
-    # fitting methods
+    # fitting mass methods
     ################################################################################
+
+    # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
     def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
         bulge_mass = MB * (r**2) / (r + a)**2
         disk_mass = MD * (1 - (1 + r / rd) * np.exp(-r / rd))
@@ -231,7 +233,53 @@ class Stellar:
         r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
         vel_sq = self.calc_mass_to_V2(r_map, mass_map, r_min=RADIUS_MIN_KPC)
         return r_map, vel_sq
+    
 
+    ################################################################################
+    # mass density
+    ################################################################################
+    # Exponential Disk rotation velocity formula
+    # V^2(R) = 4 * pi * G * Sigma_0 * R_d * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    # where y = R / (2 * R_d)
+    ################################################################################
+    def __stellar_vel_sq(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+        y = R / (2.0 * R_d)
+        I_0 = special.i0(y)
+        I_1 = special.i1(y)
+        K_0 = special.k0(y)
+        K_1 = special.k1(y)
+
+        V2 = 4.0 * np.pi * G * Sigma_0 * R_d * (y**2) * (I_0 * K_0 - I_1 * K_1)
+        return V2
+
+    # Exponential Disk Model fitting function
+    # Sigma(R) = Sigma_0 * exp(-R / R_d)
+    def _stellar_density_model_ff(self, R: np.ndarray, Sigma_0: np.ndarray, R_d: float) -> np.ndarray:
+        return Sigma_0 * np.exp(-R / R_d)
+    
+    # Central Surface Mass Density Fitting
+    def _stellar_central_density_fit(self, radius: np.ndarray, density: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        radius_filter = radius[radius>r_min]
+        density_filter = density[radius>r_min]
+
+        initial_guess = [1e8, 3.0]  # Initial guess for Sigma_0, R_d
+        popt, pcov = curve_fit(self._stellar_density_model_ff, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
+
+        sigma_0_fitted, r_d_fitted = popt
+        print(f"Fitted parameters: Sigma_0={popt[0]:.3e}, R_d={popt[1]:.3f}")
+        return sigma_0_fitted, r_d_fitted
+
+    def _calc_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        _radius_eff, _ = self.firefly_util.get_radius_eff(PLATE_IFU)
+        _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
+
+        _density, _ = self.firefly_util.get_stellar_density_cell(PLATE_IFU)
+        print(f"Stellar Mass Density shape: {_density.shape}, Unit: M solar / kpc^2, range [{np.nanmin(_density[_density>=0]):.3f}, {np.nanmax(_density):,.1f}] M solar / kpc^2")
+
+        sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=_radius_h_kpc)
+
+        _vel_sq = self.__stellar_vel_sq(_radius_h_kpc, sigma_0_fitted, r_d_fitted)
+        return _radius_h_kpc, _vel_sq
 
     ################################################################################
     # asymmetric drift correction
@@ -362,18 +410,11 @@ class Stellar:
     # public methods
     ################################################################################
     def get_stellar_vel(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq = self._get_stellar_V2(PLATE_IFU)
+        r_map, vel_sq = self._calc_stellar_vel_sq(PLATE_IFU)
         vel_map = np.sqrt(vel_sq)
         print(f"Velocity shape: {vel_map.shape}, min: {np.nanmin(vel_map):.3f}, max: {np.nanmax(vel_map):,.1f} km/s")
         return r_map, vel_map
     
-    def fit_vel_stellar(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        r_map, mass_map = self._get_stellar_mass(PLATE_IFU)
-        _, mass_fitted = self._stellar_mass_fit(r_map, mass_map, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
-        vel_sq_fitted = self.calc_mass_to_V2(radius_fitted, mass_fitted, r_min=RADIUS_MIN_KPC)
-        vel_fitted = np.sqrt(vel_sq_fitted)
-
-        return radius_fitted, vel_fitted
 
 def main() -> None:
     PLATE_IFU = "8723-12705"
@@ -389,16 +430,16 @@ def main() -> None:
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    r_map, vel_map = Stellar(drpall_util, firefly_util, maps_util).get_stellar_vel(PLATE_IFU)
-    r_fitted, vel_fitted = Stellar(drpall_util, firefly_util, maps_util).fit_vel_stellar(PLATE_IFU, radius_fitted=r_map)
+    stellar = Stellar(drpall_util, firefly_util, maps_util)
+
+    r_map, vel_map = stellar.get_stellar_vel(PLATE_IFU)
 
     print("#######################################################")
     print("# calculate stellar rotation velocity V(r)")
     print("#######################################################")
     print(f"Calc Velocity shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
-    print(f"Fitted Velocity shape: {vel_fitted.shape}, range: [{np.nanmin(vel_fitted):.3f}, {np.nanmax(vel_fitted):.3f}]")
 
-    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar", r_rot2_map=r_fitted, v_rot2_map=vel_fitted, title2="Fitted Stellar")
+    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar")
     return
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ class FireflyUtil:
     # HDU13: SURFACE MASS DENSITY
     # Surface Mass Density, and associated error, derived from the full spectral fit for each Voronoi cell.
     # shape: (10735, 2800, 2)
-    def get_stellar_density(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
+    def get_stellar_density_cell(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the surface mass density (in solar masses per kpc^2) for the given plateifu."""
         hdu_index = 13
         row_idx = self._find_row_index(plateifu)  # integer row index for galaxy

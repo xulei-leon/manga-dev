@@ -95,7 +95,7 @@ class VelRot:
 
         return pa, inc
 
-    def _get_vel_obs(self, PLATE_IFU: str):
+    def _get_vel_obs(self, PLATE_IFU: str, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         print(f"Plate-IFU {PLATE_IFU} MAPS")
 
         print("")
@@ -143,9 +143,15 @@ class VelRot:
         print("# Filter Velocity Processing")
         print("#######################################################")
         # Velocity correction
-        v_obs_map = v_obs_gas_map
-        v_unit = _gv_unit
-        v_uindx = eml_uindx
+        if type == 'gas':
+            v_obs_map = v_obs_gas_map
+            v_unit = _gv_unit
+            v_uindx = eml_uindx
+        else:
+            v_obs_map = v_obs_stellar_map
+            v_unit = _sv_unit
+            v_uindx = stellar_uindx
+        
         azimuth_rad_map = np.radians(azimuth_map)
 
         filtered_vel_map = self._vel_map_filter(v_obs_map, snr_map, azimuth_rad_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
@@ -249,9 +255,8 @@ class VelRot:
         return
     
 
-
     ################################################################################
-    # Stellar Pressure Support Correction: Vc^2 = V_rot^2 + V_a_drift^2
+    # Stellar Pressure Support Correction: 
     ################################################################################
 
     # formula: sigma_stellar^2 = sigma_stellar_obs^2 - sigma_stellar_inst^2
@@ -262,38 +267,54 @@ class VelRot:
 
 
     # V_drift^2(R) = - Sigma_R^2 * [ G_SigmaSigmaR2 + G_Anisotropy ]
-    #
-    # Where:
+    # 
     # Sigma_R^2       = Radial velocity dispersion squared (Sigma*^2 in the R-direction)
-    #
-    # G_SigmaSigmaR2  = Logarithmic gradient of the radial pressure term:
-    #                   d ln(Density_star * Sigma_R^2) / d ln(R)
-    #
-    # G_Anisotropy    = Anisotropy term:
-    #                   (1 - Sigma_phi^2 / Sigma_R^2)
+    # G_SigmaSigmaR2  =  d ln(Density_star * Sigma_R^2) / d ln(R)
+    # G_Anisotropy    = (1 - Sigma_phi^2 / Sigma_R^2)
     #
     # R               = Radius
     # Density_star    = Stellar Surface Mass Density
     # Sigma_phi^2     = Tangential velocity dispersion squared (in the phi-direction)
+    def _calc_stellar_v_drift_sq(self, radius: np.ndarray, stellar_density: np.ndarray, sigma_r_sq: np.ndarray) -> np.ndarray:
+        # set Empirical Assumption as 0.7
+        sigma_ratio = 0.7
 
+        # d ln(Density_star * Sigma_R^2) / d ln(R)
+        # This is a simplified version; in practice, you'd compute this numerically
+        dln_density_sigma_r2_dln_r = np.gradient(np.log(stellar_density * sigma_r_sq), np.log(radius), axis=0)
+        g_anisotropy = 1.0 - (sigma_ratio**2) 
+        v_drift_sq = -sigma_r_sq * (dln_density_sigma_r2_dln_r + g_anisotropy)
+        return v_drift_sq
+    
 
-
+    # V_start_circular^2 = V_star_rot^2 - V_star_drift^2
+    def _calc_stellar_v_circular_sq(self, vel_rot_sq: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
+        v_circular_sq = vel_rot_sq - v_drift_sq
+        v_circular_sq = np.maximum(v_circular_sq, 0.0)
+        return v_circular_sq
 
     ################################################################################
     # public methods
     ################################################################################
-    def get_vel_obs(self, PLATE_IFU: str):
-        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU)
+    def get_gas_vel_obs(self, PLATE_IFU: str):
+        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU, type='gas')
+        return radius_map, vel_obs_map, phi_map
+    
+    def get_stellar_vel_obs(self, PLATE_IFU: str):
+        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU, type='stellar')
         return radius_map, vel_obs_map, phi_map
 
-    def fit_vel_rot(self, PLATE_IFU: str):
-        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU)
+    def fit_vel_rot(self, radius_map, vel_obs_map, phi_map):
         return self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
-    
-    def get_vel_circular(self, PLATE_IFU: str):
-        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU)
-        vel_circular_map = self._get_gas_vel_circular(radius_map, vel_obs_map)
-        return vel_circular_map
+
+    def get_stellar_v_drift_sq(self, radius_map: np.ndarray, stellar_density: np.ndarray) -> np.ndarray:
+        sigma_gas_sq = self._get_stellar_sigma_sq()
+        v_drift_sq = self._calc_stellar_v_drift_sq(radius_map, stellar_density, sigma_gas_sq)
+        return v_drift_sq
+
+    def calc_stellar_v_circular(self, vel_rot: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
+        v_circular_sq = self._calc_stellar_v_circular_sq(np.square(vel_rot), v_drift_sq)
+        return np.sqrt(v_circular_sq)
 
 
 ######################################################
@@ -319,7 +340,7 @@ def main():
     plot_util = PlotUtil(fits_util)
 
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
-    r_obs_map, V_obs_map, _ = vel_rot.get_vel_obs(PLATE_IFU)
+    r_obs_map, V_obs_map, _ = vel_rot.get_gas_vel_obs(PLATE_IFU)
     r_rot_fitted, V_rot_fitted, V_obs_fitted = vel_rot.fit_vel_rot(PLATE_IFU)
 
     print("#######################################################")

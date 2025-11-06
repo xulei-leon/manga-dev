@@ -35,18 +35,32 @@ def main():
 
     print("")
     print("#######################################################")
-    print("# 3. calculate rot rotation velocity V(r)")
+    print("# 2. calculate rot rotation velocity V(r)")
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
-    r_obs_map, V_obs_map, _ = vel_rot.get_vel_obs(PLATE_IFU)
-    r_rot_fitted, V_rot_fitted, V_obs_fitted = vel_rot.fit_vel_rot(PLATE_IFU)
-    
+    r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs(PLATE_IFU)
+    r_gas_rot_fitted, V_gas_rot_fitted, V_gas_obs_fitted = vel_rot.fit_vel_rot(r_gas_obs_map, V_gas_obs_map, phi_gas_map)
+
+    r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs(PLATE_IFU)
+    r_stellar_rot_fitted, V_stellar_rot_fitted, V_stellar_obs_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
+
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU)
+
+    r_stellar, V_stellar_sq, stellar_sigma_0, stellar_r_d = stellar.get_stellar_vel_sq(PLATE_IFU)
+    stellar_density = stellar.get_stellar_density(r_stellar, stellar_sigma_0, stellar_r_d)
+
+
+    print("#######################################################")
+    print("# 4. calculate stellar circular velocity V(r)")
+    print("#######################################################")
+    V_stellar_drift_sq = vel_rot.get_stellar_v_drift_sq(r_stellar, stellar_density)
+    V_stellar_circular = vel_rot.calc_stellar_v_circular(r_stellar, V_stellar_drift_sq)
+
 
     ########################################################
     ## plot velocity map
@@ -55,14 +69,22 @@ def main():
     # plot galaxy image
     plot_util.plot_galaxy_image(PLATE_IFU)
 
-    # compare stellar velocity vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Stellar")
+    # 
+    plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Star Circular")
 
     # compare rotational fitted velocity vs observed fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=V_rot_fitted, title="Rotational Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fitted")
+    plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=V_gas_rot_fitted, title="Rotational gas", 
+                            r_rot2_map=r_gas_rot_fitted, v_rot2_map=V_gas_obs_fitted, title2="Observed gas")
+    
+    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
+                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_obs_fitted, title2="Observed stellar")
+    
+    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
+                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_circular, title2="Circular stellar")
  
     # compare rotational fitted velocity (abs) vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_rot_fitted, v_rot_map=np.abs(V_rot_fitted), title="Total Rotational", r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Stellar")
+    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=np.abs(V_stellar_circular), title="Total Circular", 
+                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
     return
 
 if __name__ == "__main__":

@@ -186,7 +186,7 @@ class Stellar:
 
     # Exponential Disk Model fitting function
     # Sigma(R) = Sigma_0 * exp(-R / R_d)
-    def _stellar_density_model_ff(self, R: np.ndarray, Sigma_0: np.ndarray, R_d: float) -> np.ndarray:
+    def _stellar_density_model_ff(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         return Sigma_0 * np.exp(-R / R_d)
     
     # Central Surface Mass Density Fitting
@@ -211,19 +211,22 @@ class Stellar:
         sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=_radius_h_kpc)
 
         _vel_sq = self.__stellar_vel_sq(_radius_h_kpc, sigma_0_fitted, r_d_fitted)
-        return _radius_h_kpc, _vel_sq
+        return _radius_h_kpc, _vel_sq, sigma_0_fitted, r_d_fitted
     
     ################################################################################
     # public methods
     ################################################################################
     def get_stellar_vel(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq = self._calc_stellar_vel_sq(PLATE_IFU)
+        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU)
         vel_map = np.sqrt(vel_sq)
         return r_map, vel_map
     
     def get_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq = self._calc_stellar_vel_sq(PLATE_IFU)
-        return r_map, vel_sq
+        r_map, vel_sq, sigma_0, r_d = self._calc_stellar_vel_sq(PLATE_IFU)
+        return r_map, vel_sq, sigma_0, r_d
+
+    def get_stellar_density(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
+        return self._stellar_density_model_ff(radius, sigma_0, r_d)
 
 
 

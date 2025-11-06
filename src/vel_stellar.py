@@ -38,10 +38,6 @@ class Stellar:
         self.firefly_util = firefly_util
         self.maps_util = maps_util
 
-
-
-
-
     @staticmethod
     def calc_r_ratio_to_h_kpc(r_arcsec: np.ndarray, r_h_kpc: np.ndarray) -> float:
         r_arcsec = np.asarray(r_arcsec)

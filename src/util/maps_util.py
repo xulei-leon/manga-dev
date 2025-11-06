@@ -158,10 +158,10 @@ class MapsUtil:
         mask_channel = mask_data[channel_index, ...]
         sigma_inst_channel = sigma_inst_data[channel_index, ...]
 
-        sigma = np.where(mask_channel == 0, sigma_channel, np.nan)
+        sigma_obs = np.where(mask_channel == 0, sigma_channel, np.nan)
         sigma_inst = np.where(mask_channel == 0, sigma_inst_channel, np.nan)
 
-        return sigma, sigma_inst
+        return sigma_obs, sigma_inst
 
 
     # STELLAR_SIGMA: Raw line-of-sight stellar velocity dispersion measurements in km/s. 

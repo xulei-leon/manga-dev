@@ -225,15 +225,22 @@ class VelRot:
 
     ################################################################################
     # Gas Pressure Support Correction: Vc^2 = V_rot^2 + V_drift^2
-    # V_drift^2 = Sigma_gas^2 * [ -(d ln(Sigma_gas) / d ln(R)) - (d ln(Sigma_gas^2) / d ln(R)) ]
     ################################################################################
 
-    def _get_gas_sigmaR_sq(self) -> tuple[np.ndarray]:
-        sigma_gas, sigma_gas_corr = self.maps_util.get_eml_sigma_map()
-        sigmaR_sq = np.maximum(np.square(sigma_gas) - np.square(sigma_gas_corr), 0.0)
-
-        return sigmaR_sq
-
+    # formula: sigma_gas^2 = sigma_gas_obs^2 - sigma_gas_inst^2
+    def _get_gas_sigma_sq(self) -> tuple[np.ndarray]:
+        sigma_obs, sigma_inst = self.maps_util.get_eml_sigma_map()
+        sigma_sq = np.maximum(np.square(sigma_obs) - np.square(sigma_inst), 0.0)
+        return sigma_sq
+    
+    # V_drift^2 = Sigma_gas^2 * [ -(d ln(Density_gas) / d ln(R)) - (d ln(Sigma_gas^2) / d ln(R)) ]
+    def _calc_gas_v_drift_sq(self, radius: np.ndarray, density: np.ndarray, sigma_sq: np.ndarray) -> np.ndarray:
+        # d ln(Sigma_gas^2) / d ln(R)
+        # This is a simplified version; in practice, you'd compute this numerically
+        dln_density_dln_r = np.gradient(np.log(density), np.log(radius), axis=0)
+        dln_sigma_sq_dln_r = np.gradient(np.log(sigma_sq), np.log(radius), axis=0)
+        v_drift_sq = sigma_sq * (-(dln_density_dln_r) - (dln_sigma_sq_dln_r))
+        return v_drift_sq
 
     # Jeans equations
     # Asymmetric drift correction
@@ -241,6 +248,35 @@ class VelRot:
         # TODO
         return
     
+
+
+    ################################################################################
+    # Stellar Pressure Support Correction: Vc^2 = V_rot^2 + V_a_drift^2
+    ################################################################################
+
+    # formula: sigma_stellar^2 = sigma_stellar_obs^2 - sigma_stellar_inst^2
+    def _get_stellar_sigma_sq(self) -> tuple[np.ndarray]:
+        sigma_obs, sigma_inst = self.maps_util.get_stellar_sigma_map()
+        sigma_sq = np.maximum(np.square(sigma_obs) - np.square(sigma_inst), 0.0)
+        return sigma_sq
+
+
+    # V_drift^2(R) = - Sigma_R^2 * [ G_SigmaSigmaR2 + G_Anisotropy ]
+    #
+    # Where:
+    # Sigma_R^2       = Radial velocity dispersion squared (Sigma*^2 in the R-direction)
+    #
+    # G_SigmaSigmaR2  = Logarithmic gradient of the radial pressure term:
+    #                   d ln(Density_star * Sigma_R^2) / d ln(R)
+    #
+    # G_Anisotropy    = Anisotropy term:
+    #                   (1 - Sigma_phi^2 / Sigma_R^2)
+    #
+    # R               = Radius
+    # Density_star    = Stellar Surface Mass Density
+    # Sigma_phi^2     = Tangential velocity dispersion squared (in the phi-direction)
+
+
 
 
     ################################################################################

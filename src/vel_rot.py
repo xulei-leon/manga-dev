@@ -19,6 +19,7 @@ from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
 from vel_stellar import Stellar
+from scipy.signal import savgol_filter
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -280,7 +281,7 @@ class VelRot:
 
 
     # V_drift^2(R) = - Sigma_R^2 * [ G_SigmaSigmaR2 + G_Anisotropy ]
-    # 
+    #
     # Sigma_R^2       = Radial velocity dispersion squared (Sigma*^2 in the R-direction)
     # G_SigmaSigmaR2  =  d ln(Density_star * Sigma_R^2) / d ln(R)
     # G_Anisotropy    = (1 - Sigma_phi^2 / Sigma_R^2)   # empirical ratio: Sigma_phi / Sigma_R ~ 0.7
@@ -288,191 +289,161 @@ class VelRot:
     # R               = Radius
     # Density_star    = Stellar Surface Mass Density
     # Sigma_phi^2     = Tangential velocity dispersion squared (in the phi-direction)
-
     def _calc_stellar_v_drift_sq(
-        self, 
-        radius: np.ndarray, 
-        stellar_density: np.ndarray, 
+        self,
+        radius: np.ndarray,
+        stellar_density: np.ndarray,
         sigma_r_sq: np.ndarray,
         sigma_phi_sigma_r_ratio: float = 0.7,
         min_radius: float = 0.1,
         smooth_window: int = None
     ) -> np.ndarray:
         """
-        Calculate asymmetric drift correction term:
+        Calculate asymmetric drift correction term.
             V_drift^2(R) = - sigma_R^2 * [ dln(Sigma_star * sigma_R^2)/dlnR + (1 - (sigma_phi^2 / sigma_R^2)) ]
-        
+
         Parameters:
         -----------
         radius : np.ndarray
-            Radius values
+            Radius values.
         stellar_density : np.ndarray
-            Stellar surface mass density
+            Stellar surface mass density.
         sigma_r_sq : np.ndarray
-            Radial velocity dispersion squared
+            Radial velocity dispersion squared.
         sigma_phi_sigma_r_ratio : float
-            Empirical ratio of tangential to radial velocity dispersion (default: 0.7)
+            Empirical ratio of tangential to radial velocity dispersion (default: 0.7).
         min_radius : float
-            Minimum radius threshold (default: 0.1)
+            Minimum radius threshold (default: 0.1).
         smooth_window : int
-            Smoothing window for gradient calculation (default: auto)
-            
+            Smoothing window for gradient calculation (default: auto).
+
         Returns:
         --------
         np.ndarray
-            Drift velocity squared values
+            Drift velocity squared values.
         """
-        
         if not (radius.shape == stellar_density.shape == sigma_r_sq.shape):
             raise ValueError("Input arrays must have the same shape.")
 
         original_shape = radius.shape
-        
-        # 展平数组
         radius_flat = radius.ravel()
         stellar_density_flat = stellar_density.ravel()
         sigma_r_sq_flat = sigma_r_sq.ravel()
-        
+
         result = np.zeros_like(radius_flat, dtype=float)
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
-            # 严格的有效性检查
             valid_mask = (
-                (radius_flat > min_radius) & 
-                (stellar_density_flat > 0) & 
+                (radius_flat > min_radius) &
+                (stellar_density_flat > 0) &
                 (sigma_r_sq_flat > 0) &
                 np.isfinite(radius_flat) &
                 np.isfinite(stellar_density_flat) &
                 np.isfinite(sigma_r_sq_flat)
             )
-            
+
             if not np.any(valid_mask):
-                print("警告: 没有有效的数据点")
+                print("Warning: No valid data points.")
                 return result.reshape(original_shape)
-            
-            # 获取有效数据
+
             r_valid = radius_flat[valid_mask]
             rho_valid = stellar_density_flat[valid_mask]
             sig_valid = sigma_r_sq_flat[valid_mask]
-            
-            print(f"有效数据点: {len(r_valid)} / {len(radius_flat)}")
-            print(f"半径范围: [{np.min(r_valid):.3f}, {np.max(r_valid):.3f}]")
-            print(f"密度范围: [{np.min(rho_valid):.3e}, {np.max(rho_valid):.3e}]")
-            print(f"sigma_R^2 范围: [{np.min(sig_valid):.3f}, {np.max(sig_valid):.3f}] (km/s)^2")
-            
-            # 按半径排序
+
+            print(f"Valid data points: {len(r_valid)} / {len(radius_flat)}")
+            print(f"Radius range: [{np.min(r_valid):.3f}, {np.max(r_valid):.3f}]")
+            print(f"Density range: [{np.min(rho_valid):.3e}, {np.max(rho_valid):.3e}]")
+            print(f"sigma_R^2 range: [{np.min(sig_valid):.3f}, {np.max(sig_valid):.3f}] (km/s)^2")
+
             sort_idx = np.argsort(r_valid)
             r_sorted = r_valid[sort_idx]
             rho_sorted = rho_valid[sort_idx]
             sig_sorted = sig_valid[sort_idx]
-            
-            # 计算 f = Sigma_star * sigma_R^2
+
             f_sorted = rho_sorted * sig_sorted
-            
-            # 转换为对数空间
             log_r_sorted = np.log(r_sorted)
             log_f_sorted = np.log(f_sorted)
-            
-            print(f"\nlog(f) 范围: [{np.min(log_f_sorted):.3f}, {np.max(log_f_sorted):.3f}]")
-            print(f"log(r) 范围: [{np.min(log_r_sorted):.3f}, {np.max(log_r_sorted):.3f}]")
-            
-            # ========== 关键修复：计算对数导数 ==========
+
+            print(f"\nlog(f) range: [{np.min(log_f_sorted):.3f}, {np.max(log_f_sorted):.3f}]")
+            print(f"log(r) range: [{np.min(log_r_sorted):.3f}, {np.max(log_r_sorted):.3f}]")
+
+            dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
             if len(log_r_sorted) > 5:
-                # 设置平滑窗口
                 if smooth_window is None:
                     smooth_window = max(5, len(log_r_sorted) // 10)
                 if smooth_window % 2 == 0:
-                    smooth_window += 1  # 确保奇数
+                    smooth_window += 1
                 smooth_window = min(smooth_window, len(log_r_sorted))
-                
-                # 使用 Savitzky-Golay 滤波器
+
                 try:
-                    # 先对数据进行平滑
-                    log_f_smooth = savgol_filter(log_f_sorted, window_length=smooth_window, polyorder=2)
-                    
-                    # 计算平滑后的导数
-                    # dlog(f)/dlog(r) = [dlog(f)/dr] / [dlog(r)/dr]
                     dlogf_dr = savgol_filter(log_f_sorted, window_length=smooth_window, polyorder=2, deriv=1)
                     dlogr_dr = savgol_filter(log_r_sorted, window_length=smooth_window, polyorder=2, deriv=1)
                     
-                    # 计算对数导数
                     dln_f_dlnr_sorted = dlogf_dr / (dlogr_dr + 1e-10)
-                    
-                    # **关键：限制导数的极端值**
-                    # 合理范围：[-2, 2] （表示函数增长率从 exp(-2R) 到 exp(2R)）
                     dln_f_dlnr_sorted = np.clip(dln_f_dlnr_sorted, -2.0, 2.0)
-                    
                 except Exception as e:
-                    print(f"平滑导数计算失败: {e}")
-                    dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
+                    print(f"Derivative smoothing failed: {e}")
             else:
-                print(f"警告: 有效数据点过少 ({len(log_r_sorted)})")
-                dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
-            
-            print(f"dln(f)/dln(r) 范围: [{np.min(dln_f_dlnr_sorted):.6f}, {np.max(dln_f_dlnr_sorted):.6f}]")
-            
-            # 计算各向异性项
+                print(f"Warning: Too few valid data points ({len(log_r_sorted)}) for smoothing.")
+
             g_anisotropy = 1.0 - sigma_phi_sigma_r_ratio**2
-            print(f"各向异性项 (1 - σ_φ^2/σ_R^2): {g_anisotropy:.4f}")
-            
-            # 计算括号内的项
             bracket_term = dln_f_dlnr_sorted + g_anisotropy
-            print(f"[dln(f)/dln(r) + g_anisotropy] 范围: [{np.min(bracket_term):.6f}, {np.max(bracket_term):.6f}]")
-            
-            # 计算漂移速度平方
             v_drift_sq_sorted = -sig_sorted * bracket_term
-            
-            # **关键：验证结果的符号和大小**
-            print(f"\n-σ_R^2 * bracket 范围: [{np.min(v_drift_sq_sorted):.1f}, {np.max(v_drift_sq_sorted):.1f}] (km/s)^2")
-            print(f"预期范围: [-10000, 0] (km/s)^2")
-            
-            # 检查异常值
-            negative_count = np.sum(v_drift_sq_sorted < 0)
-            print(f"负值占比: {negative_count/len(v_drift_sq_sorted)*100:.1f}%")
-            
-            # 将结果映射回原始位置
             result[valid_mask] = v_drift_sq_sorted[np.argsort(sort_idx)]
-        
-        # 恢复原始形状
+
         result = result.reshape(original_shape)
-        
-        # **最终安全检查**
-        # 将极端正值转换为 0（因为 V_drift_sq 应该 ≤ 0）
-        result = np.where(result > 0, 0.0, result)
-        
+        result = np.where(result < 0, 0.0, result)
         return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
 
     # V_start_circular^2 = V_star_rot^2 - V_star_drift^2
-    def _calc_stellar_v_circular_sq(self, r_rot: np.ndarray, vel_rot_sq: np.ndarray, r_drift: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
-        if r_rot.shape != vel_rot_sq.shape or r_drift.shape != v_drift_sq.shape:
-            print(f"r_rot shape: {r_rot.shape}, vel_rot_sq shape: {vel_rot_sq.shape}, r_drift shape: {r_drift.shape}, v_drift_sq shape: {v_drift_sq.shape}")
-            raise ValueError("Input arrays must have the same shape.")
+    def _calc_stellar_v_circular_sq(self, r_rot: np.ndarray, vel_rot_sq: np.ndarray, r_drift: np.ndarray, v_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Calculates the circular velocity squared, aligning rotation and drift data.
+        V_circular^2 = V_rot^2 + V_drift^2
+        """
+        if r_rot.ndim != 1 or r_rot.shape != vel_rot_sq.shape:
+            raise ValueError("r_rot and vel_rot_sq must be 1D arrays with the same shape.")
+        if r_drift.shape != v_drift_sq.shape:
+            raise ValueError("r_drift and v_drift_sq must have the same shape.")
+
+        # Flatten the drift map data and remove non-finite values
+        valid_mask = np.isfinite(r_drift) & np.isfinite(v_drift_sq)
+        r_drift_flat = r_drift[valid_mask]
+        v_drift_sq_flat = v_drift_sq[valid_mask]
+
+        # Create a dictionary for quick lookup of drift velocity by radius
+        # Assumes multiple v_drift_sq values for the same radius can be averaged.
+        drift_map = {}
+        for r, v_sq in zip(r_drift_flat, v_drift_sq_flat):
+            drift_map.setdefault(r, []).append(v_sq)
         
-        r_drift_flat = r_drift.flatten()
-        v_drift_sq = v_drift_sq.flatten()
+        # Average the drift velocities for each unique radius
+        r_drift_unique_unsorted = np.array(list(drift_map.keys()))
+        v_drift_avg_unsorted = np.array([np.mean(drift_map[r]) for r in r_drift_unique_unsorted])
 
-        r_drift_unique, unique_idx = np.unique(r_drift_flat, return_index=True)
-        v_drift_sq = v_drift_sq[unique_idx]
+        # Sort drift data by radius for np.searchsorted
+        sort_drift_indices = np.argsort(r_drift_unique_unsorted)
+        r_drift_unique = r_drift_unique_unsorted[sort_drift_indices]
+        v_drift_avg = v_drift_avg_unsorted[sort_drift_indices]
 
-        # keep only r_drift_unique values that also exist in r_rot, and align arrays
-        mask = np.isin(r_drift_unique, r_rot)
-        r_drift_2 = r_drift_unique[mask]
-        v_drift_sq = v_drift_sq[mask]
+        # Find common radii between rotation and drift data
+        common_radii_mask = np.isin(r_rot, r_drift_unique, assume_unique=True)
+        r_common = r_rot[common_radii_mask]
+        vel_rot_sq_common = vel_rot_sq[common_radii_mask]
 
-        # if no common radii, return empty
-        if r_drift_2.size == 0:
+        if r_common.size == 0:
+            print("Warning: No common radii found between rotation and drift data. Returning original rotation curve.")
             return r_rot, vel_rot_sq
 
-        # align vel_rot_sq to the order of r_drift_2 (use isclose for floats)
-        idx_in_r_rot = np.array([np.where(np.isclose(r_rot, val))[0][0] for val in r_drift_2], dtype=int)
-        vel_rot_sq = vel_rot_sq[idx_in_r_rot]
+        # Align drift data with the common radii
+        # Since r_rot is sorted, searchsorted gives the correct indices efficiently.
+        sort_indices = np.searchsorted(r_drift_unique, r_common)
+        v_drift_sq_common = v_drift_avg[sort_indices]
 
-        # set r_drift to the filtered radii
-        r_drift = r_drift_2
-
-
-        v_circular_sq = vel_rot_sq - v_drift_sq
-        return r_drift, v_circular_sq
+        # Calculate circular velocity squared
+        v_circular_sq = vel_rot_sq_common + v_drift_sq_common
+        
+        return r_common, v_circular_sq
 
     ################################################################################
     # public methods

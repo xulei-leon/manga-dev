@@ -43,6 +43,7 @@ def main():
 
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs(PLATE_IFU)
     r_stellar_rot_fitted, V_stellar_rot_fitted, V_stellar_obs_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
+    print(f"V_stellar_rot_fitted shape: {V_stellar_rot_fitted.shape}, range: [{np.nanmin(V_stellar_rot_fitted):,.1f}, {np.nanmax(V_stellar_rot_fitted):,.1f}] km/s")
 
 
     print("#######################################################")
@@ -52,14 +53,18 @@ def main():
     r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU)
 
     r_stellar, V_stellar_sq, stellar_sigma_0, stellar_r_d = stellar.get_stellar_vel_sq(PLATE_IFU)
-    stellar_density = stellar.get_stellar_density(r_stellar, stellar_sigma_0, stellar_r_d)
-
+    stellar_density = stellar.get_stellar_density(r_stellar_obs_map, stellar_sigma_0, stellar_r_d)
+    print(f"stellar density shape: {stellar_density.shape}, range: [{np.nanmin(stellar_density):,.1f}, {np.nanmax(stellar_density):,.1f}] Msun/kpc^2")
 
     print("#######################################################")
     print("# 4. calculate stellar circular velocity V(r)")
     print("#######################################################")
-    V_stellar_drift_sq = vel_rot.get_stellar_v_drift_sq(r_stellar, stellar_density)
-    V_stellar_circular = vel_rot.calc_stellar_v_circular(r_stellar, V_stellar_drift_sq)
+    V_stellar_drift_sq = vel_rot.get_stellar_v_drift_sq(r_stellar_obs_map, stellar_density)
+    print(f"V_stellar_drift_sq shape: {V_stellar_drift_sq.shape}, range: [{np.nanmin(V_stellar_drift_sq):,.1f}, {np.nanmax(V_stellar_drift_sq):,.1f}] (km/s)^2")
+    print(f"V_stellar_drift value example: {np.sqrt(V_stellar_drift_sq[~np.isnan(V_stellar_drift_sq)])[:50]} km/s")
+
+    r_stellar_circular, V_stellar_circular = vel_rot.calc_stellar_v_circular(r_stellar_rot_fitted, V_stellar_rot_fitted, r_stellar_obs_map, V_stellar_drift_sq)
+    print(f"V_stellar_circular shape: {V_stellar_circular.shape}, range: [{np.nanmin(V_stellar_circular):,.1f}, {np.nanmax(V_stellar_circular):,.1f}] km/s")
 
 
     ########################################################
@@ -74,16 +79,16 @@ def main():
 
     # compare rotational fitted velocity vs observed fitted velocity
     plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=V_gas_rot_fitted, title="Rotational gas", 
-                            r_rot2_map=r_gas_rot_fitted, v_rot2_map=V_gas_obs_fitted, title2="Observed gas")
+                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_rot_fitted, title2="Rotational stellar")
+    
+    # plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
+    #                         r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_obs_fitted, title2="Observed stellar")
     
     plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
-                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_obs_fitted, title2="Observed stellar")
-    
-    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
-                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_circular, title2="Circular stellar")
+                            r_rot2_map=r_stellar_circular, v_rot2_map=V_stellar_circular, title2="Circular stellar")
  
     # compare rotational fitted velocity (abs) vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=np.abs(V_stellar_circular), title="Total Circular", 
+    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=np.abs(V_stellar_rot_fitted), title="Total stellar", 
                             r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
     return
 

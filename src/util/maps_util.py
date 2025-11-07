@@ -172,8 +172,8 @@ class MapsUtil:
         hdr = self.hdu['STELLAR_SIGMA'].header
         sigma_unit = hdr.get('BUNIT', '')
 
-        sigma_data = self.hdu['STELLAR_SIGMA'].data[0, ...]
-        mask_data = self.hdu['STELLAR_SIGMA_MASK'].data[0, ...]
+        sigma_data = self.hdu['STELLAR_SIGMA'].data
+        mask_data = self.hdu['STELLAR_SIGMA_MASK'].data
         sigma_corr_data = self.hdu['STELLAR_SIGMACORR'].data[0, ...]
 
         sigma = np.where(mask_data == 0, sigma_data, np.nan)

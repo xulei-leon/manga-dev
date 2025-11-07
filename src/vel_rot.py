@@ -288,43 +288,161 @@ class VelRot:
     # R               = Radius
     # Density_star    = Stellar Surface Mass Density
     # Sigma_phi^2     = Tangential velocity dispersion squared (in the phi-direction)
-    def _calc_stellar_v_drift_sq(self, radius: np.ndarray, stellar_density: np.ndarray, sigma_r_sq: np.ndarray) -> np.ndarray:
+
+    def _calc_stellar_v_drift_sq(
+        self, 
+        radius: np.ndarray, 
+        stellar_density: np.ndarray, 
+        sigma_r_sq: np.ndarray,
+        sigma_phi_sigma_r_ratio: float = 0.7,
+        min_radius: float = 0.1,
+        smooth_window: int = None
+    ) -> np.ndarray:
         """
         Calculate asymmetric drift correction term:
             V_drift^2(R) = - sigma_R^2 * [ dln(Sigma_star * sigma_R^2)/dlnR + (1 - (sigma_phi^2 / sigma_R^2)) ]
+        
+        Parameters:
+        -----------
+        radius : np.ndarray
+            Radius values
+        stellar_density : np.ndarray
+            Stellar surface mass density
+        sigma_r_sq : np.ndarray
+            Radial velocity dispersion squared
+        sigma_phi_sigma_r_ratio : float
+            Empirical ratio of tangential to radial velocity dispersion (default: 0.7)
+        min_radius : float
+            Minimum radius threshold (default: 0.1)
+        smooth_window : int
+            Smoothing window for gradient calculation (default: auto)
+            
+        Returns:
+        --------
+        np.ndarray
+            Drift velocity squared values
         """
-
-        sigma_ratio = 0.7  # empirical ratio: sigma_phi / sigma_R
-
+        
         if not (radius.shape == stellar_density.shape == sigma_r_sq.shape):
             raise ValueError("Input arrays must have the same shape.")
 
+        original_shape = radius.shape
+        
+        # 展平数组
+        radius_flat = radius.ravel()
+        stellar_density_flat = stellar_density.ravel()
+        sigma_r_sq_flat = sigma_r_sq.ravel()
+        
+        result = np.zeros_like(radius_flat, dtype=float)
+        
         with np.errstate(divide='ignore', invalid='ignore'):
-            safe_density = np.where(stellar_density > 0, stellar_density, np.nan)
-            safe_sigma_r_sq = np.where(sigma_r_sq > 0, sigma_r_sq, np.nan)
-            safe_radius = np.where(radius > 0.1, radius, np.nan)
+            # 严格的有效性检查
+            valid_mask = (
+                (radius_flat > min_radius) & 
+                (stellar_density_flat > 0) & 
+                (sigma_r_sq_flat > 0) &
+                np.isfinite(radius_flat) &
+                np.isfinite(stellar_density_flat) &
+                np.isfinite(sigma_r_sq_flat)
+            )
+            
+            if not np.any(valid_mask):
+                print("警告: 没有有效的数据点")
+                return result.reshape(original_shape)
+            
+            # 获取有效数据
+            r_valid = radius_flat[valid_mask]
+            rho_valid = stellar_density_flat[valid_mask]
+            sig_valid = sigma_r_sq_flat[valid_mask]
+            
+            print(f"有效数据点: {len(r_valid)} / {len(radius_flat)}")
+            print(f"半径范围: [{np.min(r_valid):.3f}, {np.max(r_valid):.3f}]")
+            print(f"密度范围: [{np.min(rho_valid):.3e}, {np.max(rho_valid):.3e}]")
+            print(f"sigma_R^2 范围: [{np.min(sig_valid):.3f}, {np.max(sig_valid):.3f}] (km/s)^2")
+            
+            # 按半径排序
+            sort_idx = np.argsort(r_valid)
+            r_sorted = r_valid[sort_idx]
+            rho_sorted = rho_valid[sort_idx]
+            sig_sorted = sig_valid[sort_idx]
+            
+            # 计算 f = Sigma_star * sigma_R^2
+            f_sorted = rho_sorted * sig_sorted
+            
+            # 转换为对数空间
+            log_r_sorted = np.log(r_sorted)
+            log_f_sorted = np.log(f_sorted)
+            
+            print(f"\nlog(f) 范围: [{np.min(log_f_sorted):.3f}, {np.max(log_f_sorted):.3f}]")
+            print(f"log(r) 范围: [{np.min(log_r_sorted):.3f}, {np.max(log_r_sorted):.3f}]")
+            
+            # ========== 关键修复：计算对数导数 ==========
+            if len(log_r_sorted) > 5:
+                # 设置平滑窗口
+                if smooth_window is None:
+                    smooth_window = max(5, len(log_r_sorted) // 10)
+                if smooth_window % 2 == 0:
+                    smooth_window += 1  # 确保奇数
+                smooth_window = min(smooth_window, len(log_r_sorted))
+                
+                # 使用 Savitzky-Golay 滤波器
+                try:
+                    # 先对数据进行平滑
+                    log_f_smooth = savgol_filter(log_f_sorted, window_length=smooth_window, polyorder=2)
+                    
+                    # 计算平滑后的导数
+                    # dlog(f)/dlog(r) = [dlog(f)/dr] / [dlog(r)/dr]
+                    dlogf_dr = savgol_filter(log_f_sorted, window_length=smooth_window, polyorder=2, deriv=1)
+                    dlogr_dr = savgol_filter(log_r_sorted, window_length=smooth_window, polyorder=2, deriv=1)
+                    
+                    # 计算对数导数
+                    dln_f_dlnr_sorted = dlogf_dr / (dlogr_dr + 1e-10)
+                    
+                    # **关键：限制导数的极端值**
+                    # 合理范围：[-2, 2] （表示函数增长率从 exp(-2R) 到 exp(2R)）
+                    dln_f_dlnr_sorted = np.clip(dln_f_dlnr_sorted, -2.0, 2.0)
+                    
+                except Exception as e:
+                    print(f"平滑导数计算失败: {e}")
+                    dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
+            else:
+                print(f"警告: 有效数据点过少 ({len(log_r_sorted)})")
+                dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
+            
+            print(f"dln(f)/dln(r) 范围: [{np.min(dln_f_dlnr_sorted):.6f}, {np.max(dln_f_dlnr_sorted):.6f}]")
+            
+            # 计算各向异性项
+            g_anisotropy = 1.0 - sigma_phi_sigma_r_ratio**2
+            print(f"各向异性项 (1 - σ_φ^2/σ_R^2): {g_anisotropy:.4f}")
+            
+            # 计算括号内的项
+            bracket_term = dln_f_dlnr_sorted + g_anisotropy
+            print(f"[dln(f)/dln(r) + g_anisotropy] 范围: [{np.min(bracket_term):.6f}, {np.max(bracket_term):.6f}]")
+            
+            # 计算漂移速度平方
+            v_drift_sq_sorted = -sig_sorted * bracket_term
+            
+            # **关键：验证结果的符号和大小**
+            print(f"\n-σ_R^2 * bracket 范围: [{np.min(v_drift_sq_sorted):.1f}, {np.max(v_drift_sq_sorted):.1f}] (km/s)^2")
+            print(f"预期范围: [-10000, 0] (km/s)^2")
+            
+            # 检查异常值
+            negative_count = np.sum(v_drift_sq_sorted < 0)
+            print(f"负值占比: {negative_count/len(v_drift_sq_sorted)*100:.1f}%")
+            
+            # 将结果映射回原始位置
+            result[valid_mask] = v_drift_sq_sorted[np.argsort(sort_idx)]
+        
+        # 恢复原始形状
+        result = result.reshape(original_shape)
+        
+        # **最终安全检查**
+        # 将极端正值转换为 0（因为 V_drift_sq 应该 ≤ 0）
+        result = np.where(result > 0, 0.0, result)
+        
+        return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
 
-            log_f = np.log(safe_density * safe_sigma_r_sq)
-            log_r = np.log(safe_radius)
-
-            # projected radial derivative in log-space: d ln(f) / d ln(R)
-            g_lnf_y, g_lnf_x = np.gradient(log_f)
-            g_lnr_y, g_lnr_x = np.gradient(log_r)
-            denom = g_lnr_y**2 + g_lnr_x**2
-            dln_density_sigma_r2_dln_r = np.where(denom > 0, (g_lnf_y * g_lnr_y + g_lnf_x * g_lnr_x) / denom, 0.0)
-
-        g_anisotropy = 1.0 - sigma_ratio ** 2
-        v_drift_sq = -safe_sigma_r_sq * (dln_density_sigma_r2_dln_r + g_anisotropy)
-        print(f"safe_sigma_r_sq shape: {safe_sigma_r_sq.shape}, range: {np.nanmin(safe_sigma_r_sq):,.1f} to {np.nanmax(safe_sigma_r_sq):,.1f} (km/s)^2")
-        print(f"dln_density_sigma_r2_dln_r shape: {dln_density_sigma_r2_dln_r.shape}, range: {np.nanmin(dln_density_sigma_r2_dln_r):,.3f} to {np.nanmax(dln_density_sigma_r2_dln_r):,.3f}")
-        print(f"g_anisotropy: {g_anisotropy:.3f}")
-        print(f"v_drift_sq shape: {v_drift_sq.shape}, range before nan_to_num: [{np.nanmin(v_drift_sq):,.1f}, {np.nanmax(v_drift_sq):,.1f}] (km/s)^2")
-
-        return np.nan_to_num(v_drift_sq, nan=0.0, posinf=0.0, neginf=0.0)
-
-    
-
-    # V_start_circular^2 = V_star_rot^2 + V_star_drift^2
+    # V_start_circular^2 = V_star_rot^2 - V_star_drift^2
     def _calc_stellar_v_circular_sq(self, r_rot: np.ndarray, vel_rot_sq: np.ndarray, r_drift: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
         if r_rot.shape != vel_rot_sq.shape or r_drift.shape != v_drift_sq.shape:
             print(f"r_rot shape: {r_rot.shape}, vel_rot_sq shape: {vel_rot_sq.shape}, r_drift shape: {r_drift.shape}, v_drift_sq shape: {v_drift_sq.shape}")
@@ -353,7 +471,7 @@ class VelRot:
         r_drift = r_drift_2
 
 
-        v_circular_sq = vel_rot_sq + v_drift_sq
+        v_circular_sq = vel_rot_sq - v_drift_sq
         return r_drift, v_circular_sq
 
     ################################################################################

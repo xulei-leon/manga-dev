@@ -39,10 +39,10 @@ def main():
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs(PLATE_IFU)
-    r_gas_rot_fitted, V_gas_rot_fitted, V_gas_obs_fitted = vel_rot.fit_vel_rot(r_gas_obs_map, V_gas_obs_map, phi_gas_map)
+    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_vel_rot(r_gas_obs_map, V_gas_obs_map, phi_gas_map)
 
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs(PLATE_IFU)
-    r_stellar_rot_fitted, V_stellar_rot_fitted, V_stellar_obs_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
+    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
     print(f"V_stellar_rot_fitted shape: {V_stellar_rot_fitted.shape}, range: [{np.nanmin(V_stellar_rot_fitted):,.1f}, {np.nanmax(V_stellar_rot_fitted):,.1f}] km/s")
 
 
@@ -59,10 +59,7 @@ def main():
     print("#######################################################")
     print("# 4. calculate stellar circular velocity V(r)")
     print("#######################################################")
-    V_stellar_drift_sq = vel_rot.get_stellar_v_drift_sq(r_stellar_obs_map, stellar_density)
-    print(f"V_stellar_drift_sq shape: {V_stellar_drift_sq.shape}, range: [{np.nanmin(V_stellar_drift_sq):,.1f}, {np.nanmax(V_stellar_drift_sq):,.1f}] (km/s)^2")
-
-    r_stellar_circular, V_stellar_circular = vel_rot.calc_stellar_v_circular(r_stellar_rot_fitted, V_stellar_rot_fitted, r_stellar_obs_map, V_stellar_drift_sq)
+    r_stellar_circular, V_stellar_circular = vel_rot.calc_vel_circ(r_stellar_rot_fitted, V_stellar_rot_fitted, stellar_density)
     print(f"V_stellar_circular shape: {V_stellar_circular.shape}, range: [{np.nanmin(V_stellar_circular):,.1f}, {np.nanmax(V_stellar_circular):,.1f}] km/s")
 
 

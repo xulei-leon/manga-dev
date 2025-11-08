@@ -1,6 +1,8 @@
+from hashlib import sha1
 from operator import le
 from pathlib import Path
 from tkinter import N
+from turtle import shape
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -208,35 +210,18 @@ class VelRot:
         initial_guess = [Vc0, Rt0, Vout0, inc0]
 
         fit_func_partial = lambda r, Vc, Rt, V_out, inc: self._vel_obs_model(r, Vc, Rt, V_out, inc, phi=phi_valid)
-        try:
-            popt, _ = curve_fit(fit_func_partial, radius_valid, vel_valid, p0=initial_guess,
-                                bounds=([-np.inf, 1e-6, -np.inf, 0], [np.inf, np.inf, np.inf, np.pi]))
-            Vc_fit, Rt_fit, V_out_fit, inc_fit = popt
+        popt, _ = curve_fit(fit_func_partial, radius_valid, vel_valid, p0=initial_guess,
+                            bounds=([-np.inf, 1e-6, -np.inf, 0], [np.inf, np.inf, np.inf, np.pi]))
+        Vc_fit, Rt_fit, V_out_fit, inc_fit = popt
 
-            print("Fitted parameters:")
-            print(f"  Vc: {Vc_fit:.3f} km/s")
-            print(f"  Rt: {Rt_fit:.3f} kpc/h")
-            print(f"  V_out: {V_out_fit:.3f} km/s")
-            print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
+        print("Fitted parameters:")
+        print(f"  Vc: {Vc_fit:.3f} km/s")
+        print(f"  Rt: {Rt_fit:.3f} kpc/h")
+        print(f"  V_out: {V_out_fit:.3f} km/s")
+        print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
 
-            # Generate fitted velocity values
-            # sort radii and keep corresponding phi, then remove duplicate radii
-            sort_idx = np.argsort(radius_valid)
-            radius_sorted = radius_valid[sort_idx]
-            phi_sorted = phi_valid[sort_idx]
-
-            radius_fitted, unique_idx = np.unique(radius_sorted, return_index=True)
-            # align phi_valid with unique radii (take first occurrence for each unique radius)
-            phi_valid = phi_sorted[unique_idx]
-
-            vel_obs_fitted = self._vel_obs_model(radius_fitted, Vc_fit, Rt_fit, V_out_fit, inc_fit, phi=phi_valid)
-            vel_rot_fitted = self.__calc_vel_rot(radius_fitted, Vc_fit, Rt_fit, V_out_fit)
-            return radius_fitted, vel_rot_fitted, vel_obs_fitted
-        
-        except RuntimeError:
-            print("Curve fitting failed.")
-            return np.array([]), np.array([]), np.array([])
-
+        vel_rot_fitted = self.__calc_vel_rot(radius_map, Vc_fit, Rt_fit, V_out_fit)
+        return vel_rot_fitted, (Vc_fit, Rt_fit, V_out_fit)
 
 
     ################################################################################
@@ -258,12 +243,7 @@ class VelRot:
         v_drift_sq = sigma_sq * (-(dln_density_dln_r) - (dln_sigma_sq_dln_r))
         return v_drift_sq
 
-    # Jeans equations
-    # Asymmetric drift correction
-    def _get_gas_vel_circular(self, radius_map: np.ndarray, vel_rot_map: np.ndarray) -> np.ndarray:
-        # TODO
-        return
-    
+
 
     ################################################################################
     # Stellar Pressure Support Correction: 
@@ -272,6 +252,8 @@ class VelRot:
     # formula: sigma_stellar^2 = sigma_stellar_obs^2 - sigma_stellar_inst^2
     def _get_stellar_sigma_sq(self) -> np.ndarray:
         sigma_obs, sigma_inst = self.maps_util.get_stellar_sigma_map()
+        print(f"Stellar observed sigma shape: {sigma_obs.shape}, range: [{np.nanmin(sigma_obs):.3f}, {np.nanmax(sigma_obs):.3f}] km/s")
+        print(f"Stellar instrumental sigma shape: {sigma_inst.shape}, range: [{np.nanmin(sigma_inst):.3f}, {np.nanmax(sigma_inst):.3f}] km/s")
         # If observed dispersion is smaller than instrumental, do not subtract instrumental term.
         sigma_sq = np.where(sigma_obs >= sigma_inst,
                     np.square(sigma_obs) - np.square(sigma_inst),
@@ -280,170 +262,122 @@ class VelRot:
         return sigma_sq
 
 
-    # V_drift^2(R) = - Sigma_R^2 * [ G_SigmaSigmaR2 + G_Anisotropy ]
-    #
-    # Sigma_R^2       = Radial velocity dispersion squared (Sigma*^2 in the R-direction)
-    # G_SigmaSigmaR2  =  d ln(Density_star * Sigma_R^2) / d ln(R)
-    # G_Anisotropy    = (1 - Sigma_phi^2 / Sigma_R^2)   # empirical ratio: Sigma_phi / Sigma_R ~ 0.7
-    #
-    # R               = Radius
-    # Density_star    = Stellar Surface Mass Density
-    # Sigma_phi^2     = Tangential velocity dispersion squared (in the phi-direction)
-    def _calc_stellar_v_drift_sq(
-        self,
-        radius: np.ndarray,
-        stellar_density: np.ndarray,
-        sigma_r_sq: np.ndarray,
-        sigma_phi_sigma_r_ratio: float = 0.7,
-        min_radius: float = 0.1,
-        smooth_window: int = None
-    ) -> np.ndarray:
-        """
-        Calculate asymmetric drift correction term.
-            V_drift^2(R) = - sigma_R^2 * [ dln(Sigma_star * sigma_R^2)/dlnR + (1 - (sigma_phi^2 / sigma_R^2)) ]
 
-        Parameters:
-        -----------
-        radius : np.ndarray
-            Radius values.
-        stellar_density : np.ndarray
-            Stellar surface mass density.
-        sigma_r_sq : np.ndarray
-            Radial velocity dispersion squared.
-        sigma_phi_sigma_r_ratio : float
-            Empirical ratio of tangential to radial velocity dispersion (default: 0.7).
-        min_radius : float
-            Minimum radius threshold (default: 0.1).
-        smooth_window : int
-            Smoothing window for gradient calculation (default: auto).
+    def G_gradient(self, R_array, Sigma_d_array, sigma_R2_array):
+        """
+        Calculates the G_gradient term (d ln(Sigma_d * sigma_R^2) / d ln(R))
+        using numerical differentiation on discrete data arrays.
+        
+        Args:
+            R_array (np.array): Array of radial distances.
+            Sigma_d_array (np.array): Array of stellar surface mass densities.
+            sigma_R2_array (np.array): Array of radial velocity dispersion squared.
 
         Returns:
-        --------
-        np.ndarray
-            Drift velocity squared values.
+            np.array: Array of G_gradient values.
         """
-        if not (radius.shape == stellar_density.shape == sigma_r_sq.shape):
-            raise ValueError("Input arrays must have the same shape.")
+        R_array = np.asarray(R_array)
+        Sigma_d_array = np.asarray(Sigma_d_array)
+        sigma_R2_array = np.asarray(sigma_R2_array)
 
-        original_shape = radius.shape
-        radius_flat = radius.ravel()
-        stellar_density_flat = stellar_density.ravel()
-        sigma_r_sq_flat = sigma_r_sq.ravel()
+        # 1. 计算压力项 P = Sigma_d * sigma_R^2
+        P = Sigma_d_array * sigma_R2_array
+        
+        # 2. 计算 ln(P) 和 ln(R)
+        # 避免 ln(0) 错误：使用 where 参数或预先过滤掉 R=0 的中心点
+        ln_P = np.log(P, where=P > 0, out=np.full_like(P, np.nan))
+        ln_R = np.log(R_array, where=R_array > 0, out=np.full_like(R_array, np.nan))
+        
+        # 3. 使用 np.gradient 计算 ln(P) 和 ln(R) 在两个轴上的梯度 (d/dx, d/dy)
+        # grad_P_y, grad_P_x: d(ln P)/dy 和 d(ln P)/dx
+        grad_lnP = np.gradient(ln_P) 
+        
+        # grad_R_y, grad_R_x: d(ln R)/dy 和 d(ln R)/dx
+        grad_lnR = np.gradient(ln_R) 
+        
+        grad_lnP_y, grad_lnP_x = grad_lnP
+        grad_lnR_y, grad_lnR_x = grad_lnR
+        
+        # 4. 应用链式法则的 2D 推广 (Chain Rule in 2D)
+        # d(ln P) / d(ln R) = [grad(ln P) . grad(ln R)] / |grad(ln R)|^2
+        # 注意：在径向对称的假设下，方向导数 d(ln P)/d(ln R) 应该等于 grad(ln P) 投影到 grad(ln R) 上的分量。
+        
+        # 计算分子 (Numerator): grad(ln P) 和 grad(ln R) 的点积
+        Numerator = grad_lnP_x * grad_lnR_x + grad_lnP_y * grad_lnR_y
+        
+        # 计算分母 (Denominator): |grad(ln R)|^2
+        Denominator = grad_lnR_x**2 + grad_lnR_y**2
+        
+        # 避免除以 0
+        G_values = np.divide(Numerator, Denominator, 
+                            out=np.full_like(Numerator, np.nan), 
+                            where=Denominator != 0)
+        
+        return G_values
 
-        result = np.zeros_like(radius_flat, dtype=float)
+    # V_drift^2 = sigma_R^2 * [ d ln( density * sigma_R^2 ) / d ln R + 1 - (sigma_phi^2 / sigma_R^2) ]
+    # set (sigma_phi^2 / sigma_R^2) = 0.5
+    def _v_drift_sq_formula(self, radius: np.ndarray, density: np.ndarray, sigma_r_sq: np.ndarray) -> np.ndarray:
+        """
+        Calculate 2D asymmetric drift velocity squared:
+            V_drift^2 = sigma_R^2 * [ d ln(density * sigma_R^2) / d ln R + 1 - (sigma_phi^2 / sigma_R^2) ]
+        Assuming (sigma_phi^2 / sigma_R^2) = 0.5
 
-        with np.errstate(divide='ignore', invalid='ignore'):
+        Works for 2D maps (radius, density, sigma_r_sq with same shape).
+        Output shape matches input.
+        """
+        with np.errstate(divide="ignore", invalid="ignore"):
             valid_mask = (
-                (radius_flat > min_radius) &
-                (stellar_density_flat > 0) &
-                (sigma_r_sq_flat > 0) &
-                np.isfinite(radius_flat) &
-                np.isfinite(stellar_density_flat) &
-                np.isfinite(sigma_r_sq_flat)
+                np.isfinite(radius)
+                & np.isfinite(density)
+                & np.isfinite(sigma_r_sq)
+                & (density > 0.0)
+                & (sigma_r_sq > 0.0)
+                & (radius > 0.01)
+                & (radius < np.nanmax(radius) * 0.5)  # avoid edge effects
             )
 
             if not np.any(valid_mask):
-                print("Warning: No valid data points.")
-                return result.reshape(original_shape)
+                return np.zeros_like(radius, dtype=float)
 
-            r_valid = radius_flat[valid_mask]
-            rho_valid = stellar_density_flat[valid_mask]
-            sig_valid = sigma_r_sq_flat[valid_mask]
+            # Safe values
+            radius_safe = np.where(valid_mask, np.clip(radius, 1e-6, None), np.nan)            
 
-            print(f"Valid data points: {len(r_valid)} / {len(radius_flat)}")
-            print(f"Radius range: [{np.min(r_valid):.3f}, {np.max(r_valid):.3f}]")
-            print(f"Density range: [{np.min(rho_valid):.3e}, {np.max(rho_valid):.3e}]")
-            print(f"sigma_R^2 range: [{np.min(sig_valid):.3f}, {np.max(sig_valid):.3f}] (km/s)^2")
+            G_gradient = self.G_gradient(radius_safe, density, sigma_r_sq)
 
-            sort_idx = np.argsort(r_valid)
-            r_sorted = r_valid[sort_idx]
-            rho_sorted = rho_valid[sort_idx]
-            sig_sorted = sig_valid[sort_idx]
+            # anisotropy term: 1 - (sigma_phi^2 / sigma_R^2) = 0.5
+            phi_r_radio = 0.7
+            A_gradient = 1 - phi_r_radio ** 2
 
-            f_sorted = rho_sorted * sig_sorted
-            log_r_sorted = np.log(r_sorted)
-            log_f_sorted = np.log(f_sorted)
+            bracket_term = G_gradient + A_gradient
+            print(f"bracket_term shape: {bracket_term.shape}, range: [{np.nanmin(bracket_term):.3f}, {np.nanmax(bracket_term):.3f}]")
+            print(f"sigma_r_sq shape: {sigma_r_sq.shape}, range: [{np.nanmin(sigma_r_sq):.3f}, {np.nanmax(sigma_r_sq):.3f}]")
 
-            print(f"\nlog(f) range: [{np.min(log_f_sorted):.3f}, {np.max(log_f_sorted):.3f}]")
-            print(f"log(r) range: [{np.min(log_r_sorted):.3f}, {np.max(log_r_sorted):.3f}]")
+            v_drift_sq = sigma_r_sq * bracket_term
+            v_drift_sq = np.where(~np.isfinite(v_drift_sq) | (v_drift_sq < 0.0), 0.0, v_drift_sq)
+            v_drift_sq = np.where(valid_mask, v_drift_sq, 0.0)
 
-            dln_f_dlnr_sorted = np.zeros_like(log_f_sorted)
-            if len(log_r_sorted) > 5:
-                if smooth_window is None:
-                    smooth_window = max(5, len(log_r_sorted) // 10)
-                if smooth_window % 2 == 0:
-                    smooth_window += 1
-                smooth_window = min(smooth_window, len(log_r_sorted))
+        return v_drift_sq
 
-                try:
-                    dlogf_dr = savgol_filter(log_f_sorted, window_length=smooth_window, polyorder=2, deriv=1)
-                    dlogr_dr = savgol_filter(log_r_sorted, window_length=smooth_window, polyorder=2, deriv=1)
-                    
-                    dln_f_dlnr_sorted = dlogf_dr / (dlogr_dr + 1e-10)
-                    dln_f_dlnr_sorted = np.clip(dln_f_dlnr_sorted, -2.0, 2.0)
-                except Exception as e:
-                    print(f"Derivative smoothing failed: {e}")
-            else:
-                print(f"Warning: Too few valid data points ({len(log_r_sorted)}) for smoothing.")
 
-            g_anisotropy = 1.0 - sigma_phi_sigma_r_ratio**2
-            bracket_term = dln_f_dlnr_sorted + g_anisotropy
-            v_drift_sq_sorted = -sig_sorted * bracket_term
-            result[valid_mask] = v_drift_sq_sorted[np.argsort(sort_idx)]
+    # V_circular^2 = V_rot^2 + V_drift^2
+    def _v_circle_sq_formula(self, vel_rot_sq: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
+        if vel_rot_sq.shape != v_drift_sq.shape:
+            print(f"vel_rot_sq shape: {vel_rot_sq.shape}, v_drift_sq shape: {v_drift_sq.shape}")
+            raise ValueError("Input arrays must have the same shape.")
+        v_circular_sq = vel_rot_sq + v_drift_sq
+        return v_circular_sq
 
-        result = result.reshape(original_shape)
-        result = np.where(result < 0, 0.0, result)
-        return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # V_start_circular^2 = V_star_rot^2 - V_star_drift^2
-    def _calc_stellar_v_circular_sq(self, r_rot: np.ndarray, vel_rot_sq: np.ndarray, r_drift: np.ndarray, v_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Calculates the circular velocity squared, aligning rotation and drift data.
-        V_circular^2 = V_rot^2 + V_drift^2
-        """
-        if r_rot.ndim != 1 or r_rot.shape != vel_rot_sq.shape:
-            raise ValueError("r_rot and vel_rot_sq must be 1D arrays with the same shape.")
-        if r_drift.shape != v_drift_sq.shape:
-            raise ValueError("r_drift and v_drift_sq must have the same shape.")
+    def _calc_vel_circ_sq(self, radius_map: np.ndarray, vel_rot_map: np.ndarray, stellar_density: np.ndarray):
+        sigma_sq = self._get_stellar_sigma_sq()
+        v_drift_sq = self._v_drift_sq_formula(radius_map, stellar_density, sigma_sq)
+        print(f"v_drift_sq shape: {v_drift_sq.shape}, range: [{np.nanmin(v_drift_sq):.3f}, {np.nanmax(v_drift_sq):.3f}]")
 
-        # Flatten the drift map data and remove non-finite values
-        valid_mask = np.isfinite(r_drift) & np.isfinite(v_drift_sq)
-        r_drift_flat = r_drift[valid_mask]
-        v_drift_sq_flat = v_drift_sq[valid_mask]
 
-        # Create a dictionary for quick lookup of drift velocity by radius
-        # Assumes multiple v_drift_sq values for the same radius can be averaged.
-        drift_map = {}
-        for r, v_sq in zip(r_drift_flat, v_drift_sq_flat):
-            drift_map.setdefault(r, []).append(v_sq)
-        
-        # Average the drift velocities for each unique radius
-        r_drift_unique_unsorted = np.array(list(drift_map.keys()))
-        v_drift_avg_unsorted = np.array([np.mean(drift_map[r]) for r in r_drift_unique_unsorted])
-
-        # Sort drift data by radius for np.searchsorted
-        sort_drift_indices = np.argsort(r_drift_unique_unsorted)
-        r_drift_unique = r_drift_unique_unsorted[sort_drift_indices]
-        v_drift_avg = v_drift_avg_unsorted[sort_drift_indices]
-
-        # Find common radii between rotation and drift data
-        common_radii_mask = np.isin(r_rot, r_drift_unique, assume_unique=True)
-        r_common = r_rot[common_radii_mask]
-        vel_rot_sq_common = vel_rot_sq[common_radii_mask]
-
-        if r_common.size == 0:
-            print("Warning: No common radii found between rotation and drift data. Returning original rotation curve.")
-            return r_rot, vel_rot_sq
-
-        # Align drift data with the common radii
-        # Since r_rot is sorted, searchsorted gives the correct indices efficiently.
-        sort_indices = np.searchsorted(r_drift_unique, r_common)
-        v_drift_sq_common = v_drift_avg[sort_indices]
-
-        # Calculate circular velocity squared
-        v_circular_sq = vel_rot_sq_common + v_drift_sq_common
-        
-        return r_common, v_circular_sq
+        vel_rot_sq = np.square(vel_rot_map)
+        v_circ_sq = self._v_circle_sq_formula(vel_rot_sq, v_drift_sq)
+        return radius_map, v_circ_sq
 
     ################################################################################
     # public methods
@@ -457,17 +391,13 @@ class VelRot:
         return radius_map, vel_obs_map, phi_map
 
     def fit_vel_rot(self, radius_map, vel_obs_map, phi_map):
-        return self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
+        vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
+        return radius_map, vel_rot_fitted
 
-    def get_stellar_v_drift_sq(self, radius_map: np.ndarray, stellar_density: np.ndarray) -> np.ndarray:
-        sigma_gas_sq = self._get_stellar_sigma_sq()
-        v_drift_sq = self._calc_stellar_v_drift_sq(radius_map, stellar_density, sigma_gas_sq)
-        return v_drift_sq
-
-    def calc_stellar_v_circular(self, r_rot: np.ndarray, vel_rot: np.ndarray, r_drift: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
-        r_circular, v_circular_sq = self._calc_stellar_v_circular_sq(r_rot, np.square(vel_rot), r_drift, v_drift_sq)
-        v_circular = np.sqrt(v_circular_sq)
-        return r_circular, v_circular
+    def calc_vel_circ(self, radius_map, vel_rot_map, stellar_density):
+        r_circ, v_circ_sq = self._calc_vel_circ_sq(radius_map, vel_rot_map, stellar_density)
+        v_circular = np.sqrt(v_circ_sq)
+        return r_circ, v_circular
 
 
 ######################################################
@@ -494,18 +424,16 @@ def main():
 
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     r_obs_map, V_obs_map, phi_map = vel_rot.get_gas_vel_obs(PLATE_IFU)
-    r_rot_fitted, V_rot_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, phi_map)
+    r_rot_fitted, V_rot_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, phi_map)
 
     print("#######################################################")
     print("# 3. calculate rot rotation velocity V(r)")
     print("#######################################################")
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
-    print(f"Fitted Obs Velocity shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):.3f}, {np.nanmax(V_obs_fitted):.3f}]")
     print(f"Fitted Rot Velocity shape: {V_rot_fitted.shape}, range: [{np.nanmin(V_rot_fitted):.3f}, {np.nanmax(V_rot_fitted):.3f}]")
 
     plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs")
-    plot_util.plot_rv_curve(r_rot_fitted, V_obs_fitted, title="Obs Fitted")
-    plot_util.plot_rv_curve(r_rot_fitted, V_obs_fitted, title="Obs Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_rot_fitted, title2="Rot Fitted")
+    plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_rot_fitted, title2="Rot Fitted")
     return
 
 

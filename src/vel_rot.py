@@ -234,16 +234,6 @@ class VelRot:
         sigma_sq = np.maximum(np.square(sigma_obs) - np.square(sigma_inst), 0.0)
         return sigma_sq
     
-    # V_drift^2 = Sigma_gas^2 * [ -(d ln(Density_gas) / d ln(R)) - (d ln(Sigma_gas^2) / d ln(R)) ]
-    def _calc_gas_v_drift_sq(self, radius: np.ndarray, density: np.ndarray, sigma_sq: np.ndarray) -> np.ndarray:
-        # d ln(Sigma_gas^2) / d ln(R)
-        # This is a simplified version; in practice, you'd compute this numerically
-        dln_density_dln_r = np.gradient(np.log(density), np.log(radius), axis=0)
-        dln_sigma_sq_dln_r = np.gradient(np.log(sigma_sq), np.log(radius), axis=0)
-        v_drift_sq = sigma_sq * (-(dln_density_dln_r) - (dln_sigma_sq_dln_r))
-        return v_drift_sq
-
-
 
     ################################################################################
     # Stellar Pressure Support Correction: 
@@ -262,122 +252,21 @@ class VelRot:
         return sigma_sq
 
 
+    ########################################################################################
+    # Use the following equation to fit DM profile:
+    ########################################################################################
+    # V_rot^2  =  V_star^2 + V_gas^2 + V_dm^2 - V_drift^2
+    # V_rot: has been calculated
+    # V_star: has been calculated
+    # V_dm: use NFW profile to fit
+    # V_drift^2 = 2 * sigma_0^2 * (R / R_d) : sigma_0  will be fitted, R_d has been calculated
+    ########################################################################################
 
-    def G_gradient(self, R_array, Sigma_d_array, sigma_R2_array):
-        """
-        Calculates the G_gradient term (d ln(Sigma_d * sigma_R^2) / d ln(R))
-        using numerical differentiation on discrete data arrays.
-        
-        Args:
-            R_array (np.array): Array of radial distances.
-            Sigma_d_array (np.array): Array of stellar surface mass densities.
-            sigma_R2_array (np.array): Array of radial velocity dispersion squared.
-
-        Returns:
-            np.array: Array of G_gradient values.
-        """
-        R_array = np.asarray(R_array)
-        Sigma_d_array = np.asarray(Sigma_d_array)
-        sigma_R2_array = np.asarray(sigma_R2_array)
-
-        # 1. 计算压力项 P = Sigma_d * sigma_R^2
-        P = Sigma_d_array * sigma_R2_array
-        
-        # 2. 计算 ln(P) 和 ln(R)
-        # 避免 ln(0) 错误：使用 where 参数或预先过滤掉 R=0 的中心点
-        ln_P = np.log(P, where=P > 0, out=np.full_like(P, np.nan))
-        ln_R = np.log(R_array, where=R_array > 0, out=np.full_like(R_array, np.nan))
-        
-        # 3. 使用 np.gradient 计算 ln(P) 和 ln(R) 在两个轴上的梯度 (d/dx, d/dy)
-        # grad_P_y, grad_P_x: d(ln P)/dy 和 d(ln P)/dx
-        grad_lnP = np.gradient(ln_P) 
-        
-        # grad_R_y, grad_R_x: d(ln R)/dy 和 d(ln R)/dx
-        grad_lnR = np.gradient(ln_R) 
-        
-        grad_lnP_y, grad_lnP_x = grad_lnP
-        grad_lnR_y, grad_lnR_x = grad_lnR
-        
-        # 4. 应用链式法则的 2D 推广 (Chain Rule in 2D)
-        # d(ln P) / d(ln R) = [grad(ln P) . grad(ln R)] / |grad(ln R)|^2
-        # 注意：在径向对称的假设下，方向导数 d(ln P)/d(ln R) 应该等于 grad(ln P) 投影到 grad(ln R) 上的分量。
-        
-        # 计算分子 (Numerator): grad(ln P) 和 grad(ln R) 的点积
-        Numerator = grad_lnP_x * grad_lnR_x + grad_lnP_y * grad_lnR_y
-        
-        # 计算分母 (Denominator): |grad(ln R)|^2
-        Denominator = grad_lnR_x**2 + grad_lnR_y**2
-        
-        # 避免除以 0
-        G_values = np.divide(Numerator, Denominator, 
-                            out=np.full_like(Numerator, np.nan), 
-                            where=Denominator != 0)
-        
-        return G_values
-
-    # V_drift^2 = sigma_R^2 * [ d ln( density * sigma_R^2 ) / d ln R + 1 - (sigma_phi^2 / sigma_R^2) ]
-    # set (sigma_phi^2 / sigma_R^2) = 0.5
-    def _v_drift_sq_formula(self, radius: np.ndarray, density: np.ndarray, sigma_r_sq: np.ndarray) -> np.ndarray:
-        """
-        Calculate 2D asymmetric drift velocity squared:
-            V_drift^2 = sigma_R^2 * [ d ln(density * sigma_R^2) / d ln R + 1 - (sigma_phi^2 / sigma_R^2) ]
-        Assuming (sigma_phi^2 / sigma_R^2) = 0.5
-
-        Works for 2D maps (radius, density, sigma_r_sq with same shape).
-        Output shape matches input.
-        """
-        with np.errstate(divide="ignore", invalid="ignore"):
-            valid_mask = (
-                np.isfinite(radius)
-                & np.isfinite(density)
-                & np.isfinite(sigma_r_sq)
-                & (density > 0.0)
-                & (sigma_r_sq > 0.0)
-                & (radius > 0.01)
-                & (radius < np.nanmax(radius) * 0.5)  # avoid edge effects
-            )
-
-            if not np.any(valid_mask):
-                return np.zeros_like(radius, dtype=float)
-
-            # Safe values
-            radius_safe = np.where(valid_mask, np.clip(radius, 1e-6, None), np.nan)            
-
-            G_gradient = self.G_gradient(radius_safe, density, sigma_r_sq)
-
-            # anisotropy term: 1 - (sigma_phi^2 / sigma_R^2) = 0.5
-            phi_r_radio = 0.7
-            A_gradient = 1 - phi_r_radio ** 2
-
-            bracket_term = G_gradient + A_gradient
-            print(f"bracket_term shape: {bracket_term.shape}, range: [{np.nanmin(bracket_term):.3f}, {np.nanmax(bracket_term):.3f}]")
-            print(f"sigma_r_sq shape: {sigma_r_sq.shape}, range: [{np.nanmin(sigma_r_sq):.3f}, {np.nanmax(sigma_r_sq):.3f}]")
-
-            v_drift_sq = sigma_r_sq * bracket_term
-            v_drift_sq = np.where(~np.isfinite(v_drift_sq) | (v_drift_sq < 0.0), 0.0, v_drift_sq)
-            v_drift_sq = np.where(valid_mask, v_drift_sq, 0.0)
-
+    # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
+    def _v_drift_sq_formula(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
+        v_drift_sq = 2 * np.square(sigma_0) * (radius / r_d)
         return v_drift_sq
-
-
-    # V_circular^2 = V_rot^2 + V_drift^2
-    def _v_circle_sq_formula(self, vel_rot_sq: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
-        if vel_rot_sq.shape != v_drift_sq.shape:
-            print(f"vel_rot_sq shape: {vel_rot_sq.shape}, v_drift_sq shape: {v_drift_sq.shape}")
-            raise ValueError("Input arrays must have the same shape.")
-        v_circular_sq = vel_rot_sq + v_drift_sq
-        return v_circular_sq
-
-
-    def _calc_vel_circ_sq(self, radius_map: np.ndarray, vel_rot_map: np.ndarray, stellar_density: np.ndarray):
-        sigma_sq = self._get_stellar_sigma_sq()
-        v_drift_sq = self._v_drift_sq_formula(radius_map, stellar_density, sigma_sq)
-        print(f"v_drift_sq shape: {v_drift_sq.shape}, range: [{np.nanmin(v_drift_sq):.3f}, {np.nanmax(v_drift_sq):.3f}]")
-
-
-        vel_rot_sq = np.square(vel_rot_map)
-        v_circ_sq = self._v_circle_sq_formula(vel_rot_sq, v_drift_sq)
-        return radius_map, v_circ_sq
+    
 
     ################################################################################
     # public methods
@@ -394,10 +283,8 @@ class VelRot:
         vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
         return radius_map, vel_rot_fitted
 
-    def calc_vel_circ(self, radius_map, vel_rot_map, stellar_density):
-        r_circ, v_circ_sq = self._calc_vel_circ_sq(radius_map, vel_rot_map, stellar_density)
-        v_circular = np.sqrt(v_circ_sq)
-        return r_circ, v_circular
+    def calc_vel_circ(self, radius_map, vel_rot_map):
+        return radius_map, vel_rot_map
 
 
 ######################################################

@@ -52,14 +52,10 @@ def main():
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU)
 
-    r_stellar, V_stellar_sq, stellar_sigma_0, stellar_r_d = stellar.get_stellar_vel_sq(PLATE_IFU)
-    stellar_density = stellar.get_stellar_density(r_stellar_obs_map, stellar_sigma_0, stellar_r_d)
-    print(f"stellar density shape: {stellar_density.shape}, range: [{np.nanmin(stellar_density):,.1f}, {np.nanmax(stellar_density):,.1f}] Msun/kpc^2")
-
     print("#######################################################")
     print("# 4. calculate stellar circular velocity V(r)")
     print("#######################################################")
-    r_stellar_circular, V_stellar_circular = vel_rot.calc_vel_circ(r_stellar_rot_fitted, V_stellar_rot_fitted, stellar_density)
+    r_stellar_circular, V_stellar_circular = vel_rot.calc_vel_circ(r_stellar_rot_fitted, V_stellar_rot_fitted)
     print(f"V_stellar_circular shape: {V_stellar_circular.shape}, range: [{np.nanmin(V_stellar_circular):,.1f}, {np.nanmax(V_stellar_circular):,.1f}] km/s")
 
 

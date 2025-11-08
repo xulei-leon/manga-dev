@@ -221,7 +221,7 @@ class Stellar:
         vel_map = np.sqrt(vel_sq)
         return r_map, vel_map
     
-    def get_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+    def get_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray, float, float]:
         r_map, vel_sq, sigma_0, r_d = self._calc_stellar_vel_sq(PLATE_IFU)
         return r_map, vel_sq, sigma_0, r_d
 

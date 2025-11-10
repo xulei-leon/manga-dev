@@ -172,13 +172,13 @@ class VelRot:
     ################################################################################
 
     # Formula: V(r) = Vc * tanh(r / Rt) + V_out * r
-    def __calc_vel_rot(self, r, Vc, Rt, V_out) -> np.ndarray:
+    def _vel_rot_fit_profile(self, r, Vc, Rt, V_out) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + V_out * r
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
     # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
     # Formula: V_obs = V_rot * (sin(i) * cos(phi_delta))
-    def __calc_vel_obs(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray) -> np.ndarray:
+    def _vel_obs_profile(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray) -> np.ndarray:
         phi_delta = self._calc_phi_delta(phi, phi_0=0.0)
         correction = np.sin(inc) * np.cos(phi_delta)
         return vel_rot * correction
@@ -186,8 +186,8 @@ class VelRot:
     #  V_obs = (Vc * tanh(r / Rt) + V_out * r) * (sin(i) * cos(phi_delta))
     def _vel_obs_model(self, r, Vc, Rt, V_out, inc, phi) -> np.ndarray:
         r = np.asarray(r, dtype=float)
-        vel_rot = self.__calc_vel_rot(r, Vc, Rt, V_out)
-        vel_obs = self.__calc_vel_obs(vel_rot, inc, phi)
+        vel_rot = self._vel_rot_fit_profile(r, Vc, Rt, V_out)
+        vel_obs = self._vel_obs_profile(vel_rot, inc, phi)
         return vel_obs
 
     # used the minimum χ 2 method for fitting
@@ -220,7 +220,7 @@ class VelRot:
         print(f"  V_out: {V_out_fit:.3f} km/s")
         print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
 
-        vel_rot_fitted = self.__calc_vel_rot(radius_map, Vc_fit, Rt_fit, V_out_fit)
+        vel_rot_fitted = self._vel_rot_fit_profile(radius_map, Vc_fit, Rt_fit, V_out_fit)
         return vel_rot_fitted, (Vc_fit, Rt_fit, V_out_fit)
 
 
@@ -263,10 +263,91 @@ class VelRot:
     ########################################################################################
 
     # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
-    def _v_drift_sq_formula(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
+    def _v_drift_sq_profile(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
         v_drift_sq = 2 * np.square(sigma_0) * (radius / r_d)
         return v_drift_sq
     
+    ########################################################################################
+    # NFW Dark Matter Halo Profile:
+    ########################################################################################
+    # --- Navarro-Frenk-White (NFW) Dark Matter Halo Rotational Velocity Squared ---
+    #
+    # Formula:
+    # V_DM_sq(r) = V_200_sq * [ ln(1 + c*x) - (c*x)/(1 + c*x) ] / [ ln(1 + c) - c/(1 + c) ]
+    #
+    # V_DM_sq(r): The squared rotational velocity due to the dark matter halo at radius r.
+    # V_200_sq  : The squared circular speed at the virial radius r_200.
+    # ln        : The natural logarithm function.
+    #
+    # --- Key Parameters and Context ---
+    # 1. Normalized Radius (x):
+    #    x = r / r_200.
+    #
+    # 2. Virial Radius (r_200):
+    #    r_200 is the radius within which the mean density is 200 times the critical density.
+    #    It is related to V_200 and the Hubble parameter H(z) by: r_200 = V_200 / (10 * H(z)).
+    #
+    # 3. Halo Mass (M_200) and V_200 Relation:
+    #    M_200 is the halo mass within r_200. V_200 is connected to M_200 via:
+    #    V_200^3 = 10 * G * H(z) * M_200, where G is the gravitational constant.
+    #
+    # 4. Concentration Parameter (c):
+    #    c is the concentration parameter of the NFW profile. It relates to the scale radius
+    #    r_s through r_s = r_200 / c.
+    #
+    # 5. c - M_200 Mass-Concentration Relation (Duffy et al. 2008):
+    #    c is not independent; it correlates with M_200 (low-mass halos are more concentrated).
+    #    The relation used here is:
+    #    c = 5.74 * ( M_200 / (2 * 10^12 * h^-1 * M_sun) )^(-0.097)
+    #
+    # 6. Hubble Parameter (H(z)):
+    #    H(z) = H_0 * sqrt( Omega_m*(1 + z)^3 + Omega_Lambda )
+    #    (Using typical redshift z=0.04 for the sample.)
+    #
+    # Conclusion:
+    # In this simplified model, the entire V_DM(r) profile is determined by a single parameter: the halo mass M_200.
+    ########################################################################################
+    def _v_dm_sq_nfw_profile(self, radius: np.ndarray, M_200: float, H_0: float=70.0, Omega_m: float=0.3, Omega_Lambda: float=0.7, z: float=0.04) -> np.ndarray:
+        '''
+        H_0 = 70.0  # Hubble constant at z=0 in km/s/Mpc
+        Omega_m = 0.3  # Matter density parameter
+        Omega_Lambda = 0.7  # Dark energy density parameter
+        z = 0.04  # Typical redshift for the sample        
+        '''
+
+        # Calculate H(z)
+        H_z = H_0 * np.sqrt(Omega_m * (1 + z)**3 + Omega_Lambda)  # in km/s/Mpc
+        H_z_s = H_z / (1e3 * const.pc.to('km').value) # H(z) in 1/s
+
+        # Gravitational constant in kpc^3 / (M_sun * s^2)
+        G_kpc_Msun_s = const.G.to('kpc3 / (M_sun s2)').value
+
+        # Calculate r_200 in kpc
+        # M_200 = (4/3) * pi * r_200^3 * 200 * rho_crit = (4/3) * pi * r_200^3 * 200 * (3 * H_z^2 / (8 * pi * G))
+        # M_200 = r_200^3 * 100 * H_z^2 / G
+        # r_200^3 = M_200 * G / (100 * H_z^2)
+        r_200 = ( (M_200 * G_kpc_Msun_s) / (100 * H_z_s**2) )**(1/3)
+
+        # Calculate V_200 in km/s
+        # V_200^2 = G * M_200 / r_200
+        V_200_sq = (G_kpc_Msun_s * M_200 / r_200) * (const.kpc.to('km').value)**2
+        V_200 = np.sqrt(V_200_sq)
+
+        # Calculate concentration parameter c using Duffy et al. (2008)
+        # The formula uses M_200 / (h^-1 M_sun), where h = H_0 / 100.
+        h = H_0 / 100.0
+        c = 5.74 * ( (M_200 * h) / (2e12) )**(-0.097)
+
+        # Calculate normalized radius x
+        x = radius / r_200
+
+        # Calculate V_DM^2 using the NFW profile formula
+        numerator = np.log(1 + c * x) - (c * x) / (1 + c * x)
+        denominator = np.log(1 + c) - c / (1 + c)
+        V_DM_sq = V_200_sq * (numerator / denominator)
+
+        return V_DM_sq
+
 
     ################################################################################
     # public methods

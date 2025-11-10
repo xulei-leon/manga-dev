@@ -133,7 +133,7 @@ class DrpallUtil:
             return None
 
     # z_sys: The systemic redshift of the galaxy.
-    def get_z_sys(self, plateifu: str) -> float | None:
+    def get_redshift(self, plateifu: str) -> float | None:
         """Return z_sys for plateifu using available columns (nsa_z, nsa_zdist, z) or None."""
         val = self._fetch_scalar_column_value(plateifu, ["nsa_z", "nsa_zdist", "z"])
         if val is not None:

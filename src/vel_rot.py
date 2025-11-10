@@ -309,6 +309,11 @@ class VelRot:
     # In this simplified model, the entire V_DM(r) profile is determined by a single parameter: the halo mass M_200.
     ########################################################################################
 
+    def _get_z(self, PLATE_IFU: str) -> float:
+        z = self.drpall_util.get_redshift(PLATE_IFU)
+        print(f"Redshift z from DRPALL: {z:.5f}")
+        return z
+
     def H_of_z(self, z: float) -> float:
         """Calculate the Hubble parameter at redshift z."""
         H0 = 70.0 # km/s/Mpc
@@ -334,7 +339,7 @@ class VelRot:
         c = 5.74 * np.power(M200_Msun / M_pivot, -0.097)
         return c
     
-    def _V_dm_nfw_sq_profile(self, radius_kpc: np.ndarray, M200_Msun: float, z: float=0.04, h: float=0.7) -> np.ndarray:
+    def _vel_dm_sq_profile(self, radius_kpc: np.ndarray, M200_Msun: float, z: float=0.04, h: float=0.7) -> np.ndarray:
         """Calculate the NFW dark matter halo rotational velocity squared profile."""
         H_kpc = self.H_of_z(z) / 1000.0  # convert H from km/s/Mpc to km/s/kpc
         V200 = (10.0 * const.G.to('kpc km^2 / s^2 Msun').value * H_kpc * M200_Msun)**(1/3)  # in km/s
@@ -349,6 +354,11 @@ class VelRot:
 
         V_dm_sq = (V200**2 / x) * (numerator / denominator)
         return V_dm_sq
+    
+
+    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs_map, z: float=0.04, h: float=0.7) -> np.ndarray:
+        #TODO: implement the fitting procedure for DM NFW profile
+        pass
 
     ################################################################################
     # public methods
@@ -367,6 +377,12 @@ class VelRot:
 
     def calc_vel_circ(self, radius_map, vel_rot_map):
         return radius_map, vel_rot_map
+
+    def fit_vel_dm(self, PLATE_IFU: str):
+        radius_map, vel_obs_map, phi_map = self._get_vel_obs(PLATE_IFU, type='gas')
+        z = self._get_z(PLATE_IFU)
+        vel_dm = self._dm_nfw_fit(radius_map, vel_obs_map, z=z)
+        return radius_map, vel_dm
 
 
 ######################################################

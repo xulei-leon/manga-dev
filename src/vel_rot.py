@@ -35,6 +35,8 @@ SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 
+
+
 class VelRot:
     drpall_util = None
     firefly_util = None
@@ -273,10 +275,9 @@ class VelRot:
     # --- Navarro-Frenk-White (NFW) Dark Matter Halo Rotational Velocity Squared ---
     #
     # Formula:
-    # V_DM_sq(r) = V_200_sq * [ ln(1 + c*x) - (c*x)/(1 + c*x) ] / [ ln(1 + c) - c/(1 + c) ]
-    #
-    # V_DM_sq(r): The squared rotational velocity due to the dark matter halo at radius r.
-    # V_200_sq  : The squared circular speed at the virial radius r_200.
+    # V_DM^2(r) = (V_200^2 / x) * [ (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c)) ]    #
+    # V_DM(r): rotational velocity due to the dark matter halo at radius r.
+    # V_200(r): circular speed at the virial radius r_200.
     # ln        : The natural logarithm function.
     #
     # --- Key Parameters and Context ---
@@ -307,47 +308,47 @@ class VelRot:
     # Conclusion:
     # In this simplified model, the entire V_DM(r) profile is determined by a single parameter: the halo mass M_200.
     ########################################################################################
-    def _v_dm_sq_nfw_profile(self, radius: np.ndarray, M_200: float, H_0: float=70.0, Omega_m: float=0.3, Omega_Lambda: float=0.7, z: float=0.04) -> np.ndarray:
-        '''
-        H_0 = 70.0  # Hubble constant at z=0 in km/s/Mpc
-        Omega_m = 0.3  # Matter density parameter
-        Omega_Lambda = 0.7  # Dark energy density parameter
-        z = 0.04  # Typical redshift for the sample        
-        '''
 
-        # Calculate H(z)
-        H_z = H_0 * np.sqrt(Omega_m * (1 + z)**3 + Omega_Lambda)  # in km/s/Mpc
-        H_z_s = H_z / (1e3 * const.pc.to('km').value) # H(z) in 1/s
+    def H_of_z(self, z: float) -> float:
+        """Calculate the Hubble parameter at redshift z."""
+        H0 = 70.0 # km/s/Mpc
+        Om0 = 0.3
+        Ol0 = 0.7
+        Hz = H0 * np.sqrt(Om0 * np.power(1 + z, 3) + Ol0)
+        return Hz
+    
+    def r200_of_V200_kpc(self, V200: float, z: float) -> float:
+        """Calculate the virial radius r200 from V200 at redshift z."""
+        H = self.H_of_z(z)
+        return V200 / (10.0 * H) * 1000.0  # convert Mpc to kpc
 
-        # Gravitational constant in kpc^3 / (M_sun * s^2)
-        G_kpc_Msun_s = const.G.to('kpc3 / (M_sun s2)').value
+    def M200_of_V200(self, V200: float, z: float) -> float:
+        # M200 = V200^3 / (10 G H(z))  with G in appropriate units
+        G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value
+        H_kpc = self.H_of_z(z) / 1000.0  # convert H from km/s/Mpc to km/s/kpc
+        return np.power(V200, 3) / (10.0 * G_kpc_kms_Msun * H_kpc) # in Msun
 
-        # Calculate r_200 in kpc
-        # M_200 = (4/3) * pi * r_200^3 * 200 * rho_crit = (4/3) * pi * r_200^3 * 200 * (3 * H_z^2 / (8 * pi * G))
-        # M_200 = r_200^3 * 100 * H_z^2 / G
-        # r_200^3 = M_200 * G / (100 * H_z^2)
-        r_200 = ( (M_200 * G_kpc_Msun_s) / (100 * H_z_s**2) )**(1/3)
+    def c_duffy(self, M200_Msun: float, h: float) -> float:
+        # c = 5.74 * ( M_200 / (2 * 10^12 * h^-1 * M_sun) )^(-0.097)
+        M_pivot = 2e12 / h  # in Msun
+        c = 5.74 * np.power(M200_Msun / M_pivot, -0.097)
+        return c
+    
+    def _V_dm_nfw_sq_profile(self, radius_kpc: np.ndarray, M200_Msun: float, z: float=0.04, h: float=0.7) -> np.ndarray:
+        """Calculate the NFW dark matter halo rotational velocity squared profile."""
+        H_kpc = self.H_of_z(z) / 1000.0  # convert H from km/s/Mpc to km/s/kpc
+        V200 = (10.0 * const.G.to('kpc km^2 / s^2 Msun').value * H_kpc * M200_Msun)**(1/3)  # in km/s
+        r200_kpc = self.r200_of_V200_kpc(V200, z)  # in kpc
+        c = self.c_duffy(M200_Msun, h)  # concentration parameter
 
-        # Calculate V_200 in km/s
-        # V_200^2 = G * M_200 / r_200
-        V_200_sq = (G_kpc_Msun_s * M_200 / r_200) * (const.kpc.to('km').value)**2
-        V_200 = np.sqrt(V_200_sq)
+        x = radius_kpc / r200_kpc
+        x = np.where(x == 0, 1e-6, x)  # avoid division by zero
 
-        # Calculate concentration parameter c using Duffy et al. (2008)
-        # The formula uses M_200 / (h^-1 M_sun), where h = H_0 / 100.
-        h = H_0 / 100.0
-        c = 5.74 * ( (M_200 * h) / (2e12) )**(-0.097)
-
-        # Calculate normalized radius x
-        x = radius / r_200
-
-        # Calculate V_DM^2 using the NFW profile formula
         numerator = np.log(1 + c * x) - (c * x) / (1 + c * x)
         denominator = np.log(1 + c) - c / (1 + c)
-        V_DM_sq = V_200_sq * (numerator / denominator)
 
-        return V_DM_sq
-
+        V_dm_sq = (V200**2 / x) * (numerator / denominator)
+        return V_dm_sq
 
     ################################################################################
     # public methods

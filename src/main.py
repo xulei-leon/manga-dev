@@ -43,21 +43,30 @@ def main():
 
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs(PLATE_IFU)
     r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
-    print(f"V_stellar_rot_fitted shape: {V_stellar_rot_fitted.shape}, range: [{np.nanmin(V_stellar_rot_fitted):,.1f}, {np.nanmax(V_stellar_rot_fitted):,.1f}] km/s")
 
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
-    r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU)
+    r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU, radius_fitted=r_gas_rot_fitted)
+    r_stellar, V_stellar_sq = stellar.get_stellar_vel_sq(PLATE_IFU, radius_fitted=r_gas_rot_fitted)
 
     print("#######################################################")
-    print("# 4. calculate stellar circular velocity V(r)")
+    print("# 4. calculate dark-matter rotation velocity V(r)")
     print("#######################################################")
-    r_stellar_circular, V_stellar_circular = vel_rot.calc_vel_circ(r_stellar_rot_fitted, V_stellar_rot_fitted)
-    print(f"V_stellar_circular shape: {V_stellar_circular.shape}, range: [{np.nanmin(V_stellar_circular):,.1f}, {np.nanmax(V_stellar_circular):,.1f}] km/s")
+    r_dm, V_dm, V_total = vel_rot.fit_vel_dm(PLATE_IFU, r_gas_rot_fitted, V_gas_rot_fitted, v_star=V_stellar)
 
+
+
+    print("#######################################################")
+    print("# Results")
+    print("#######################################################")
+    print(f"V_gas_obs_map shape: {V_gas_obs_map.shape}, range: [{np.nanmin(V_gas_obs_map):,.1f}, {np.nanmax(V_gas_obs_map):,.1f}] km/s")
+    print(f"V_gas_rot_fitted shape: {V_gas_rot_fitted.shape}, range: [{np.nanmin(V_gas_rot_fitted):,.1f}, {np.nanmax(V_gas_rot_fitted):,.1f}] km/s")
+    print(f"V_stellar shape: {V_stellar.shape}, range: [{np.nanmin(V_stellar):,.1f}, {np.nanmax(V_stellar):,.1f}] km/s")
+    print(f"V_dm shape: {V_dm.shape}, range: [{np.nanmin(V_dm):,.1f}, {np.nanmax(V_dm):,.1f}] km/s")
+    print(f"V_total shape: {V_total.shape}, range: [{np.nanmin(V_total):,.1f}, {np.nanmax(V_total):,.1f}] km/s")
 
     ########################################################
     ## plot velocity map
@@ -69,19 +78,11 @@ def main():
     # 
     plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Star Circular")
 
-    # compare rotational fitted velocity vs observed fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=V_gas_rot_fitted, title="Rotational gas", 
-                            r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_rot_fitted, title2="Rotational stellar")
-    
-    # plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
-    #                         r_rot2_map=r_stellar_rot_fitted, v_rot2_map=V_stellar_obs_fitted, title2="Observed stellar")
-    
-    plot_util.plot_rv_curve(r_rot_map=r_stellar_rot_fitted, v_rot_map=V_stellar_rot_fitted, title="Rotational stellar", 
-                            r_rot2_map=r_stellar_circular, v_rot2_map=V_stellar_circular, title2="Circular stellar")
- 
-    # compare rotational fitted velocity (abs) vs stellar fitted velocity
-    plot_util.plot_rv_curve(r_rot_map=r_stellar_circular, v_rot_map=np.abs(V_stellar_circular), title="Total stellar", 
-                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
+    plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=np.abs(V_gas_rot_fitted), title="Fitted Rotational", 
+                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Rotational")
+
+    plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=np.abs(V_gas_rot_fitted), title="Fitted Rotational", 
+                        r_rot2_map=r_dm, v_rot2_map=V_dm, title2="Dark Matter Rotational")
     return
 
 if __name__ == "__main__":

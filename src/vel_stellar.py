@@ -201,7 +201,7 @@ class Stellar:
         print(f"Fitted parameters: Sigma_0={popt[0]:.3e}, R_d={popt[1]:.3f}")
         return sigma_0_fitted, r_d_fitted
 
-    def _calc_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+    def _calc_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         _radius_eff, _ = self.firefly_util.get_radius_eff(PLATE_IFU)
         _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
 
@@ -210,25 +210,20 @@ class Stellar:
 
         sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=_radius_h_kpc)
 
-        _vel_sq = self.__stellar_vel_sq(_radius_h_kpc, sigma_0_fitted, r_d_fitted)
-        return _radius_h_kpc, _vel_sq, sigma_0_fitted, r_d_fitted
+        _vel_sq = self.__stellar_vel_sq(radius_fitted, sigma_0_fitted, r_d_fitted)
+        return radius_fitted, _vel_sq, sigma_0_fitted, r_d_fitted
     
     ################################################################################
     # public methods
     ################################################################################
-    def get_stellar_vel(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU)
+    def get_stellar_vel(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU, radius_fitted)
         vel_map = np.sqrt(vel_sq)
         return r_map, vel_map
-    
-    def get_stellar_vel_sq(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray, float, float]:
-        r_map, vel_sq, sigma_0, r_d = self._calc_stellar_vel_sq(PLATE_IFU)
-        return r_map, vel_sq, sigma_0, r_d
 
-    def get_stellar_density(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
-        return self._stellar_density_model_ff(radius, sigma_0, r_d)
-
-
+    def get_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU, radius_fitted)
+        return r_map, vel_sq
 
 ######################################################
 # main function for test

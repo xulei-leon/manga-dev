@@ -174,7 +174,10 @@ class Stellar:
     # Exponential Disk rotation velocity formula
     # V^2(R) = 4 * pi * G * Sigma_0 * R_d * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
     # where y = R / (2 * R_d)
-    def __stellar_vel_sq(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+    def _stellar_vel_sq_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+        # FIXME: handle R = 0 case
+        R = np.where(R == 0, 1e-6, R)  # avoid division by zero
+
         y = R / (2.0 * R_d)
         I_0 = special.i0(y)
         I_1 = special.i1(y)
@@ -186,7 +189,7 @@ class Stellar:
 
     # Exponential Disk Model fitting function
     # Sigma(R) = Sigma_0 * exp(-R / R_d)
-    def _stellar_density_model_ff(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         return Sigma_0 * np.exp(-R / R_d)
     
     # Central Surface Mass Density Fitting
@@ -195,35 +198,40 @@ class Stellar:
         density_filter = density[radius>r_min]
 
         initial_guess = [1e8, 3.0]  # Initial guess for Sigma_0, R_d
-        popt, pcov = curve_fit(self._stellar_density_model_ff, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
+        popt, pcov = curve_fit(self._stellar_density_profile, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
 
         sigma_0_fitted, r_d_fitted = popt
         print(f"Fitted parameters: Sigma_0={popt[0]:.3e}, R_d={popt[1]:.3f}")
         return sigma_0_fitted, r_d_fitted
 
-    def _calc_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _calc_stellar_central_density(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[float, float]:
         _radius_eff, _ = self.firefly_util.get_radius_eff(PLATE_IFU)
         _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
 
         _density, _ = self.firefly_util.get_stellar_density_cell(PLATE_IFU)
         print(f"Stellar Mass Density shape: {_density.shape}, Unit: M solar / kpc^2, range [{np.nanmin(_density[_density>=0]):.3f}, {np.nanmax(_density):,.1f}] M solar / kpc^2")
 
-        sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=_radius_h_kpc)
+        sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
+        return sigma_0_fitted, r_d_fitted
 
-        _vel_sq = self.__stellar_vel_sq(radius_fitted, sigma_0_fitted, r_d_fitted)
-        return radius_fitted, _vel_sq, sigma_0_fitted, r_d_fitted
     
     ################################################################################
     # public methods
     ################################################################################
     def get_stellar_vel(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU, radius_fitted)
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+        vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         vel_map = np.sqrt(vel_sq)
-        return r_map, vel_map
+        return radius_fitted, vel_map
+    
+    def get_stellar_density_0(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> float:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+        return sigma_0_fitted
+    
+    def calc_stellar_vel_sq(self, radius, density_0, r_d) -> tuple[np.ndarray, np.ndarray]:
+        vel_sq = self._stellar_vel_sq_profile(radius, density_0, r_d)
+        return radius, vel_sq
 
-    def get_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        r_map, vel_sq, _, _ = self._calc_stellar_vel_sq(PLATE_IFU, radius_fitted)
-        return r_map, vel_sq
 
 ######################################################
 # main function for test

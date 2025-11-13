@@ -87,6 +87,18 @@ class Stellar:
     # Unused for now
     ################################################################################
 
+    # V_baryon^2(r) = (2 * G * M_baryon / R_d) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    def _stellar_vel_sq_mass_profile(self, R: np.ndarray, M_baryon: float, R_d: float) -> np.ndarray:
+        # FIXME: handle R = 0 case
+        R = np.where(R == 0, 1e-6, R)  # avoid division by zero
+        y = R / (2.0 * R_d)
+        I_0 = special.i0(y)
+        I_1 = special.i1(y)
+        K_0 = special.k0(y)
+        K_1 = special.k1(y)
+        V2 = (2.0 * G * M_baryon / R_d) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
+        return V2
+
     @staticmethod
     def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         mass_cell = np.asarray(mass_cell)
@@ -187,11 +199,12 @@ class Stellar:
         V2 = 4.0 * np.pi * G * Sigma_0 * R_d * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
         return V2
 
+
     # Exponential Disk Model fitting function
     # Sigma(R) = Sigma_0 * exp(-R / R_d)
     def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         return Sigma_0 * np.exp(-R / R_d)
-    
+
     # Central Surface Mass Density Fitting
     def _stellar_central_density_fit(self, radius: np.ndarray, density: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         radius_filter = radius[radius>r_min]
@@ -223,6 +236,11 @@ class Stellar:
         vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         vel_map = np.sqrt(vel_sq)
         return radius_fitted, vel_map
+    
+    def get_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> np.ndarray:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+        vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
+        return radius_fitted, vel_sq, sigma_0_fitted, r_d_fitted
     
     def get_stellar_density_0(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> float:
         sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)

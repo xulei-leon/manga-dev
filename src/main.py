@@ -51,12 +51,13 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     r_stellar, V_stellar = stellar.get_stellar_vel(PLATE_IFU, radius_fitted=r_gas_rot_fitted)
+    r_stellar, V_stellar_sq, _, r_d = stellar.get_stellar_vel_sq(PLATE_IFU, radius_fitted=r_gas_rot_fitted)
 
     print("#######################################################")
     print("# 4. calculate dark-matter rotation velocity V(r)")
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util, stellar, vel_rot)
-    M200_fit, r_dm_fit, V_total_fit, V_star_fit, V_dm_fit = dm_nfw.fit_dm_vel(PLATE_IFU, r_gas_rot_fitted, V_gas_rot_fitted)
+    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_vel(PLATE_IFU, r_gas_rot_fitted, V_gas_rot_fitted, V_stellar_sq, r_d)
 
 
 
@@ -67,7 +68,6 @@ def main():
     print(f"V_gas_rot_fitted shape: {V_gas_rot_fitted.shape}, range: [{np.nanmin(V_gas_rot_fitted):,.1f}, {np.nanmax(V_gas_rot_fitted):,.1f}] km/s")
     print(f"V_stellar shape: {V_stellar.shape}, range: [{np.nanmin(V_stellar):,.1f}, {np.nanmax(V_stellar):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
-    print(f"V_star_fit shape: {V_star_fit.shape}, range: [{np.nanmin(V_star_fit):,.1f}, {np.nanmax(V_star_fit):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
 
     ########################################################

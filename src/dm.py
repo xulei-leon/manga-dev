@@ -17,13 +17,14 @@ class DmNfw:
     ########################################################################################
     # Use the following equation to fit DM profile:
     ########################################################################################
-    # V_rot^2  =  V_star^2 + V_gas^2 + V_dm^2 - V_drift^2
-    # V_rot: has been calculated
+    # V_obs^2  =  V_star^2 + V_gas^2 + V_dm^2 - V_drift^2
+    # V_obs: has been calculated
     # V_star: has been calculated
     # V_dm: use NFW profile to fit
     # V_drift^2 = 2 * sigma_0^2 * (R / R_d) : sigma_0  will be fitted, R_d has been calculated
     ########################################################################################
 
+    # V_obs^2 = V_circ^2 - V_drift^2
     # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
     def _v_drift_sq_profile(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
         v_drift_sq = 2 * np.square(sigma_0) * (radius / r_d)
@@ -35,7 +36,7 @@ class DmNfw:
     # --- Navarro-Frenk-White (NFW) Dark Matter Halo Rotational Velocity Squared ---
     #
     # Formula:
-    # V_DM^2(r) = (V_200^2 / x) * [ (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c)) ]    #
+    # V_DM^2(r) = (V_200^2 / x) * [ (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c)) ]
     # V_DM(r): rotational velocity due to the dark matter halo at radius r.
     # V_200(r): circular speed at the virial radius r_200.
     # ln        : The natural logarithm function.
@@ -117,8 +118,8 @@ class DmNfw:
     
 
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
-    def _dm_nfw_vel_rot_fit_profile(self, radius: np.ndarray, M200: float, sigma_0: float, r_d: float, star_density_0: float, z: float=0.04, h: float=0.7) -> np.ndarray:
-        _, v_star_sq = self.stellar.calc_stellar_vel_sq(radius, density_0=star_density_0, r_d=r_d)
+    def _dm_nfw_vel_rot_fit_profile(self, radius: np.ndarray, M200: float, sigma_0: float, r_d: float, star_mass: float, z: float=0.04, h: float=0.7) -> np.ndarray:
+        v_star_sq = self.stellar._stellar_vel_sq_mass_profile(radius, star_mass, r_d)
         v_dm_sq = self._vel_dm_sq_profile(radius, M200, z=z, h=h)
         v_drift_sq = self._v_drift_sq_profile(radius, sigma_0, r_d)
         v_rot_sq = v_star_sq + v_dm_sq - v_drift_sq
@@ -127,41 +128,39 @@ class DmNfw:
         return v_rot
 
     # used the minimum χ 2 method for fitting
-    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs_map, star_density_0: float, z: float=0.04, h: float=0.7):
-        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius) & (radius > 0)
+    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs_map, star_mass: float, z: float=0.04, h: float=0.7):
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius) & (radius > 0.1)
         radius_valid = radius[valid_mask]
-        vel_valid = vel_obs_map[valid_mask]
+        vel_obs_valid = vel_obs_map[valid_mask]
 
-        # Initial guess for parameters: M200, sigma_0, r_d
-        initial_guess = [1e12, 70.0, 4.0]
-        bounds = ([1e8, 1.0, 0.01], [1e14, 350.0, 30.0])
+        # Initial guess for parameters: M200, sigma_0
+        initial_guess = [1e12, 70.0, 3.0]  # M200 in Msun, sigma_0 in km/s, r_d in kpc
+        bounds = ([1e8, 1.0, 0.1], [1e17, 350.0, 10.0])  # M200 in Msun, sigma_0 in km/s
 
         # Perform the fit
-        fit_func_partial = lambda r, M200, sigma_0, r_d: self._dm_nfw_vel_rot_fit_profile(r, M200, sigma_0, r_d, star_density_0, z=z, h=h)
-        popt, _ = curve_fit(fit_func_partial, radius_valid, vel_valid, p0=initial_guess, bounds=bounds)
+        fit_func_partial = lambda r, M200, sigma_0, r_d: self._dm_nfw_vel_rot_fit_profile(r, M200, sigma_0, r_d, star_mass=star_mass, z=z, h=h)
+        popt, _ = curve_fit(fit_func_partial, radius_valid, vel_obs_valid, p0=initial_guess, bounds=bounds)
         M200_fit, sigma_0_fit, r_d_fit = popt
 
         # Return the fitted DM velocity profile
-        vel_total_fit = self._dm_nfw_vel_rot_fit_profile(radius, M200_fit, sigma_0_fit, r_d_fit, star_density_0, z=z, h=h)
+        vel_total_fit = self._dm_nfw_vel_rot_fit_profile(radius, M200_fit, sigma_0_fit, r_d_fit, star_mass=star_mass, z=z, h=h)
         vel_dm_sq_fit = self._vel_dm_sq_profile(radius, M200_fit, z=z, h=h)
         vel_dm_fit = np.sqrt(vel_dm_sq_fit)
-        _, vel_star_sq_fit = self.stellar.calc_stellar_vel_sq(radius, star_density_0, r_d_fit)
-        vel_star_fit = np.sqrt(vel_star_sq_fit)
 
         print("Fitted DM NFW parameters:")
         print(f"  M200: {M200_fit:.3e} Msun")
         print(f"  sigma_0: {sigma_0_fit:.3f} km/s")
         print(f"  r_d: {r_d_fit:.3f} kpc")
 
-        return M200_fit, radius, vel_total_fit, vel_star_fit, vel_dm_fit
+        return M200_fit, radius, vel_total_fit, vel_dm_fit
     
 
     ################################################################################
     # public methods
     ################################################################################
 
-    def fit_dm_vel(self, PLATE_IFU: str, radius_map: np.ndarray, vel_obs_map: np.ndarray):
+    def fit_dm_vel(self, PLATE_IFU: str, radius_map: np.ndarray, vel_obs_map: np.ndarray, vel_stellar_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z(PLATE_IFU)
-        star_density_0 = self.stellar.get_stellar_density_0(PLATE_IFU, radius_map)
-        M200_fit, radius_fit, vel_total, vel_star, vel_dm = self._dm_nfw_fit(radius_map, vel_obs_map, star_density_0, z=z)
-        return M200_fit, radius_fit, vel_total, vel_star, vel_dm
+        _, star_mass = self.drpall_util.get_stellar_mass(PLATE_IFU)
+        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius_map, vel_obs_map, star_mass, z=z)
+        return M200_fit, radius_fit, vel_total, vel_dm

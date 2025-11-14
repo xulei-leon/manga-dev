@@ -173,22 +173,22 @@ class VelRot:
     ################################################################################
 
     # Formula: V(r) = Vc * tanh(r / Rt) + V_out * r
-    def _vel_rot_fit_profile(self, r, Vc, Rt, V_out) -> np.ndarray:
+    def __vel_rot_profile(self, r, Vc, Rt, V_out) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + V_out * r
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
     # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
     # Formula: V_obs = V_rot * (sin(i) * cos(phi_delta))
-    def _vel_obs_profile(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray) -> np.ndarray:
+    def _calc_vel_obs_from_rot(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray) -> np.ndarray:
         phi_delta = self._calc_phi_delta(phi, phi_0=0.0)
         correction = np.sin(inc) * np.cos(phi_delta)
         return vel_rot * correction
 
     #  V_obs = (Vc * tanh(r / Rt) + V_out * r) * (sin(i) * cos(phi_delta))
-    def _vel_obs_model(self, r, Vc, Rt, V_out, inc, phi) -> np.ndarray:
+    def _vel_obs_fit_profile(self, r, Vc, Rt, V_out, inc, phi) -> np.ndarray:
         r = np.asarray(r, dtype=float)
-        vel_rot = self._vel_rot_fit_profile(r, Vc, Rt, V_out)
-        vel_obs = self._vel_obs_profile(vel_rot, inc, phi)
+        vel_rot = self.__vel_rot_profile(r, Vc, Rt, V_out)
+        vel_obs = self._calc_vel_obs_from_rot(vel_rot, inc, phi)
         return vel_obs
 
     # used the minimum χ 2 method for fitting
@@ -210,7 +210,7 @@ class VelRot:
         _, inc0 = self._calc_pa_inc()
         initial_guess = [Vc0, Rt0, Vout0, inc0]
 
-        fit_func_partial = lambda r, Vc, Rt, V_out, inc: self._vel_obs_model(r, Vc, Rt, V_out, inc, phi=phi_valid)
+        fit_func_partial = lambda r, Vc, Rt, V_out, inc: self._vel_obs_fit_profile(r, Vc, Rt, V_out, inc, phi=phi_valid)
         popt, _ = curve_fit(fit_func_partial, radius_valid, vel_valid, p0=initial_guess,
                             bounds=([-np.inf, 1e-6, -np.inf, 0], [np.inf, np.inf, np.inf, np.pi]))
         Vc_fit, Rt_fit, V_out_fit, inc_fit = popt
@@ -221,7 +221,7 @@ class VelRot:
         print(f"  V_out: {V_out_fit:.3f} km/s")
         print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
 
-        vel_rot_fitted = self._vel_rot_fit_profile(radius_map, Vc_fit, Rt_fit, V_out_fit)
+        vel_rot_fitted = self.__vel_rot_profile(radius_map, Vc_fit, Rt_fit, V_out_fit)
         return vel_rot_fitted, (Vc_fit, Rt_fit, V_out_fit)
 
 
@@ -251,7 +251,6 @@ class VelRot:
                     np.square(sigma_obs))
 
         return sigma_sq
-
 
 
     ################################################################################

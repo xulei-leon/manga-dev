@@ -87,6 +87,7 @@ class Stellar:
     # Unused for now
     ################################################################################
 
+    # The RC of the baryonic disk model (V_baryon) was derived by a method in Noordermeer (2008).
     # V_baryon^2(r) = (2 * G * M_baryon / R_d) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
     def _stellar_vel_sq_mass_profile(self, R: np.ndarray, M_baryon: float, R_d: float) -> np.ndarray:
         # FIXME: handle R = 0 case

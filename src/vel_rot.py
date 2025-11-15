@@ -22,6 +22,7 @@ from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
 from vel_stellar import Stellar
 from scipy.signal import savgol_filter
+from scipy.ndimage import gaussian_filter1d
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -34,7 +35,8 @@ PLATE_IFU = "8723-12705"
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-
+DEFAULT_BETA = 0.5   # sigma_phi^2 / sigma_R^2
+DEFAULT_GAMMA = 0.6  # sigma_z / sigma_R
 
 class VelRot:
     drpall_util = None
@@ -252,6 +254,105 @@ class VelRot:
 
         return sigma_sq
 
+    def _calc_vel_drift_sq(self, radius_map: np.ndarray, stellar_density_map: np.ndarray, sigma_sq_map: np.ndarray, incl,
+                           beta: float = 0.5, gamma: float = 0.6, smooth_sigma: float = 1.0):
+        """
+        Compute asymmetric drift v_drift^2 map using Jeans approximation.
+
+        Parameters
+        ----------
+        radius_map : 2D array (kpc)
+            Physical radius per pixel.
+        stellar_density_map : 2D array (Msun/kpc^2)
+            Stellar surface density map Σ(R).
+        sigma_sq_map : 2D array (km^2/s^2)
+            LOS velocity dispersion map σ_LOS^2 (already instrument-corrected).
+        incl : float
+            Galaxy inclination in degrees.
+        beta : float
+            σ_phi^2 / σ_R^2  (default 0.5)
+        gamma : float
+            σ_z / σ_R (default 0.6)
+        smooth_sigma : float
+            Gaussian smoothing width for LOS sigma vs radius.
+
+        Returns
+        -------
+        v_drift_sq_map : 2D array (km^2/s^2)
+            Full 2D map of asymmetric drift term.
+        """
+
+        # ======================
+        # 0. Prepare arrays
+        # ======================
+        mask = (
+            np.isfinite(radius_map) &
+            np.isfinite(stellar_density_map) &
+            np.isfinite(sigma_sq_map)
+        )
+
+        r = radius_map[mask]
+        Sigma = stellar_density_map[mask]
+        sigma_los_sq = sigma_sq_map[mask]
+        sigma_los = np.sqrt(np.maximum(sigma_los_sq, 0.0))
+
+        # avoid r=0
+        eps = 1e-6
+        r = np.where(r > 0, r, eps)
+
+        # ======================
+        # 1. Radial averaging
+        # ======================
+        r_unique = np.unique(r)
+        sigma_los_R = np.zeros_like(r_unique)
+        Sigma_R = np.zeros_like(r_unique)
+
+        for i, rv in enumerate(r_unique):
+            sel = (r == rv)
+            sigma_los_R[i] = np.nanmedian(sigma_los[sel])
+            Sigma_R[i] = np.nanmedian(Sigma[sel])
+
+        # smooth LOS sigma (avoid noisy derivative)
+        sigma_los_R_s = gaussian_filter1d(sigma_los_R, smooth_sigma)
+
+        # ======================
+        # 2. LOS → σ_R
+        # ======================
+        i_rad = np.deg2rad(incl)
+        sin2i = np.sin(i_rad)**2
+        cos2i = np.cos(i_rad)**2
+
+        denom = 0.5 * (1 + beta) * sin2i + (gamma**2) * cos2i
+        denom = max(denom, 1e-6)
+
+        sigma_R = sigma_los_R_s / np.sqrt(denom)
+        sigma_R_sq = sigma_R**2
+
+        # ======================
+        # 3. d ln(Σ σ_R^2) / d ln r
+        # ======================
+        f = Sigma_R * sigma_R_sq
+        f = np.where(f > 0, f, eps)
+
+        ln_f = np.log(f)
+        ln_r = np.log(r_unique)
+
+        dlnf_dlnr = np.gradient(ln_f, ln_r)
+
+        # ======================
+        # 4. Jeans formula
+        # ======================
+        v_drift_sq_R = sigma_R_sq * (dlnf_dlnr + 1 - beta)
+        v_drift_sq_R = np.where(v_drift_sq_R > 0, v_drift_sq_R, 0.0)
+
+        # ======================
+        # 5. Interpolate back to 2D map
+        # ======================
+        v_drift_sq_map = np.zeros_like(radius_map)
+        v_interp = np.interp(r, r_unique, v_drift_sq_R)
+        v_drift_sq_map[mask] = v_interp
+
+        return v_drift_sq_map
 
     ################################################################################
     # public methods
@@ -268,6 +369,11 @@ class VelRot:
         vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
         return radius_map, vel_rot_fitted
 
+    def get_vel_drift_sq(self, radius_map: np.ndarray, stellar_density_map: np.ndarray) -> np.ndarray:
+        sigma_sq_map = self._get_stellar_sigma_sq()
+        _, inc = self._calc_pa_inc()
+        vel_drift_sq_map = self._calc_vel_drift_sq(radius_map, stellar_density_map, sigma_sq_map, inc)
+        return radius_map, vel_drift_sq_map
 
 
 ######################################################

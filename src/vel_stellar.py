@@ -250,6 +250,11 @@ class Stellar:
     def calc_stellar_vel_sq(self, radius, density_0, r_d) -> tuple[np.ndarray, np.ndarray]:
         vel_sq = self._stellar_vel_sq_profile(radius, density_0, r_d)
         return radius, vel_sq
+    
+    def calc_stellar_density(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+        density = self._stellar_density_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
+        return radius_fitted, density
 
 
 ######################################################

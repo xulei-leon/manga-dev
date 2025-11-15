@@ -1,3 +1,4 @@
+from re import M
 import numpy as np
 from scipy.optimize import curve_fit
 from astropy import constants as const
@@ -126,42 +127,66 @@ class DmNfw:
         den = np.log(1 + c) - c/(1 + c)
 
         return (V200**2 / x) * (num / den)
+    
+    def _calc_M200_from_rho_rs(self, rho_s: float, r_s: float, z: float=0.04, h: float=0.7):
+        # M200 = 4 * pi * rho_s * r_s^3 * [ ln(1 + c) - c/(1 + c) ]
+        H_si = self._calc_H_si(z)   # s^-1
+        H_kpc = (H_si * u.s**-1).to(u.km/u.s/u.kpc).value
+        r200 = r_s * ( (3 * rho_s) / (200 * (3 * H_kpc**2) / (8 * np.pi * const.G.to('kpc km^2 / s^2 Msun').value)) )**(1/3)
+        c = r200 / r_s
+        M200 = 4 * np.pi * rho_s * r_s**3 * (np.log(1 + c) - c/(1 + c))
+        return M200
+
+    def _vel_dm_sq_rho_rs_profile(self, radius: np.ndarray, rho_s: float, r_s: float) -> np.ndarray:
+        # V_DM^2(r) = 4 * pi * G * rho_s * r_s^3 * [ ln(1 + r/r_s) - (r/r_s)/(1 + r/r_s) ] / r
+        G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+        x = radius / r_s
+        x = np.where(x == 0, 1e-6, x)  # avoid division by zero
+
+        num = np.log(1 + x) - (x)/(1 + x)
+        vel_dm_sq = (4 * np.pi * G * rho_s * r_s**3 * num) / radius
+        return vel_dm_sq
+    
 
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
-    def _dm_nfw_vel_rot_sq_fit_profile(self, radius: np.ndarray, M200: float, sigma_0: float, r_d: float, star_mass: float, z: float=0.04, h: float=0.7) -> np.ndarray:
-        v_star_sq = self.stellar._stellar_vel_sq_mass_profile(radius, star_mass, r_d)
+    def _V_rot_sq_fit_model(self, radius: np.ndarray, log_M200: float, v_star_sq: np.ndarray, v_drift_sq: np.ndarray, z: float=0.04, h: float=0.7) -> np.ndarray:
+        M200 = 10**log_M200
         v_dm_sq = self._vel_dm_sq_profile(radius, M200, z=z, h=h)
-        v_drift_sq = self._v_drift_sq_profile(radius, sigma_0, r_d)
         v_rot_sq = v_star_sq + v_dm_sq - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
         return v_rot_sq
 
     # used the minimum χ 2 method for fitting
-    def _dm_nfw_fit(self, radius: np.ndarray, vel_rot_map, star_mass: float, z: float=0.04, h: float=0.7):
-        valid_mask = np.isfinite(vel_rot_map) & np.isfinite(radius) & (radius > 0.1) & (radius < 0.9 * np.nanmax(radius))
+    def _dm_nfw_fit(self, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, r_d:float, z: float=0.04, h: float=0.7):
+        valid_mask = np.isfinite(vel_rot_sq) & np.isfinite(radius) & (radius > 0.1) & (radius < 0.9 * np.nanmax(radius))
         radius_valid = radius[valid_mask]
-        vel_rot_valid = vel_rot_map[valid_mask]
-        vel_rot_sq_valid = vel_rot_valid**2
+        vel_rot_valid = vel_rot_sq[valid_mask]
+        vel_star_sq_valid = vel_star_sq[valid_mask]
+        vel_drift_sq_valid = vel_drift_sq[valid_mask]
 
-        # Initial guess for parameters: M200, sigma_0
-        initial_guess = [1e12, 70.0, 3.0]  # M200 in Msun, sigma_0 in km/s, r_d in kpc
-        bounds = ([1e8, 5.0, 0.1], [1e17, 350.0, 10.0])  # M200 in Msun, sigma_0 in km/s
+        # Initial guess for parameters: log_M200, sigma_0
+        p0 = [11.5]  # log_M200
+        lb = [10.0]  # log_M200
+        ub = [15.0]  # log_M200
+        xdata = radius_valid
+        ydata = vel_rot_valid**2
 
         # Perform the fit
-        fit_func_partial = lambda r, M200, sigma_0, r_d: self._dm_nfw_vel_rot_sq_fit_profile(r, M200, sigma_0, r_d, star_mass=star_mass, z=z, h=h)
-        popt, _ = curve_fit(fit_func_partial, radius_valid, vel_rot_sq_valid, p0=initial_guess, bounds=bounds)
-        M200_fit, sigma_0_fit, r_d_fit = popt
+        fit_func_partial = lambda r, log_M200: self._V_rot_sq_fit_model(r, log_M200, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
+        popt, pcov = curve_fit(fit_func_partial, xdata, ydata, p0=p0, bounds=(lb, ub))
+        # popt is an array (shape (1,)); extract scalar value
+        log_M200_fit = float(popt[0])
+        M200_fit = 10**log_M200_fit
 
         # Return the fitted DM velocity profile
-        vel_rot_sq_fit = self._dm_nfw_vel_rot_sq_fit_profile(radius, M200_fit, sigma_0_fit, r_d_fit, star_mass=star_mass, z=z, h=h)
+        vel_rot_sq_fit = self._V_rot_sq_fit_model(radius, log_M200_fit, vel_star_sq, vel_drift_sq, z=z, h=h)
         vel_dm_sq_fit = self._vel_dm_sq_profile(radius, M200_fit, z=z, h=h)
         vel_total_fit = np.sqrt(vel_rot_sq_fit)
         vel_dm_fit = np.sqrt(vel_dm_sq_fit)
 
         print("Fitted DM NFW parameters:")
-        print(f"  M200: {M200_fit:.3e} Msun")
-        print(f"  sigma_0: {sigma_0_fit:.3f} km/s")
-        print(f"  r_d: {r_d_fit:.3f} kpc")
+        print(f"  M200_fit: {M200_fit:.3e} Msun")
+        print(f"pcovariance matrix:\n{pcov}")
 
         return M200_fit, radius, vel_total_fit, vel_dm_fit
     
@@ -170,11 +195,7 @@ class DmNfw:
     # public methods
     ################################################################################
 
-    def fit_dm_vel(self, PLATE_IFU: str, radius_map: np.ndarray, vel_rot_map: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def fit_dm_nfw(self, PLATE_IFU: str, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z(PLATE_IFU)
-        _, star_mass = self.drpall_util.get_stellar_mass(PLATE_IFU)
-        print(f"Stellar mass (elpetro) from DRPALL: {star_mass:.3e} Msun")
-        print("radius_map units? min/max:", np.nanmin(radius_map), np.nanmax(radius_map))
-        
-        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius_map, vel_rot_map, star_mass, z=z)
+        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_rot_sq, vel_star_sq, V_drift_sq, r_d, z=z)
         return M200_fit, radius_fit, vel_total, vel_dm

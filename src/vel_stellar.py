@@ -352,6 +352,7 @@ def main() -> None:
     _, radius_h_kpc_map, _ = maps_util.get_radius_map()
     incl = vel_rot.get_inc_rad()
 
+    stellar.set_PLATE_IFU(PLATE_IFU)
     r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_h_kpc_map)
     _, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_h_kpc_map, incl=incl)
 
@@ -362,8 +363,8 @@ def main() -> None:
     print(f"Velocity stellar shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
     print(f"Velocity Drift shape: {vel_drift_map.shape}, range: [{np.nanmin(vel_drift_map):.3f}, {np.nanmax(vel_drift_map):.3f}]")
 
-    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar")
-    plot_util.plot_rv_curve(r_map, vel_drift_map, title="Velocity Drift")
+    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar",
+                            r_rot2_map=r_map, v_rot2_map=vel_drift_map, title2="Drift")
     return
 
 if __name__ == "__main__":

@@ -194,8 +194,11 @@ class DmNfw:
     ################################################################################
     # public methods
     ################################################################################
+    def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
+        self.PLATE_IFU = PLATE_IFU
+        return
 
-    def fit_dm_nfw(self, PLATE_IFU: str, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        z = self._get_z(PLATE_IFU)
+    def fit_dm_nfw(self, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        z = self._get_z(self.PLATE_IFU)
         M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_rot_sq, vel_star_sq, V_drift_sq, r_d, z=z)
         return M200_fit, radius_fit, vel_total, vel_dm

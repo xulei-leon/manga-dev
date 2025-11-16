@@ -1,4 +1,5 @@
 from bdb import effective
+from math import log
 from operator import le
 from pathlib import Path
 from tkinter import N
@@ -203,7 +204,7 @@ class Stellar:
 
     # Exponential Disk Model fitting function
     # Sigma(R) = Sigma_0 * exp(-R / R_d)
-    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+    def _stellar_density_fit_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         return Sigma_0 * np.exp(-R / R_d)
 
     # Central Surface Mass Density Fitting
@@ -212,7 +213,7 @@ class Stellar:
         density_filter = density[radius>r_min]
 
         initial_guess = [1e8, 3.0]  # Initial guess for Sigma_0, R_d
-        popt, pcov = curve_fit(self._stellar_density_profile, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
+        popt, pcov = curve_fit(self._stellar_density_fit_profile, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
 
         sigma_0_fitted, r_d_fitted = popt
         print(f"Fitted parameters: Sigma_0={popt[0]:.3e}, R_d={popt[1]:.3f}")
@@ -228,39 +229,110 @@ class Stellar:
         sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
         return sigma_0_fitted, r_d_fitted
 
+    ################################################################################
+    # Stellar Pressure Support Correction:
+    ################################################################################
+
+    # formula: sigma_ast^2 = sigma_stellar_obs^2 - sigma_stellar_inst^2
+    def _get_stellar_sigma_ast_sq(self) -> np.ndarray:
+        sigma_obs, sigma_inst = self.maps_util.get_stellar_sigma_map()
+        print(f"Stellar observed sigma shape: {sigma_obs.shape}, range: [{np.nanmin(sigma_obs):.3f}, {np.nanmax(sigma_obs):.3f}] km/s")
+        print(f"Stellar instrumental sigma shape: {sigma_inst.shape}, range: [{np.nanmin(sigma_inst):.3f}, {np.nanmax(sigma_inst):.3f}] km/s")
+        # If observed dispersion is smaller than instrumental, do not subtract instrumental term.
+        sigma_sq = np.where(sigma_obs >= sigma_inst,
+                    np.square(sigma_obs) - np.square(sigma_inst),
+                    np.square(sigma_obs))
+
+        return sigma_sq
     
+    
+    def _deproject_sigmaR(self, sigma_ast, incl, beta=0.5, gamma=0.6):
+        D = np.sqrt(0.5*(1+beta)*np.sin(incl)**2 + (gamma**2)*np.cos(incl)**2)
+        D = np.where(D>0, D, np.nan)
+        return sigma_ast / D
+
+    # sigma_R ^ 2 = sigma_0 ^ 2 * exp(−2R / Rd​)
+    def _sigmaR_sq_fit_profile(self, radius, log_sigma0, R_sigma):
+        sigma0 = 10**log_sigma0
+        return sigma0 * np.exp(-2 * radius / R_sigma)
+    
+
+    def _fit_stellar_sigmaR(self, radius, sigma_ast_sq_map, incl):
+        valid_mask = ~np.isnan(sigma_ast_sq_map) & (radius > RADIUS_MIN_KPC)
+        radius_valid = radius[valid_mask]
+        sigma_ast_sq_valid = sigma_ast_sq_map[valid_mask]
+
+        p0 = [2.0, 3.0]  # log_sigma0, R_sigma
+        lb = [0.0, 0.1]  # log_sigma0, R_sigma
+        ub = [3.0, 10.0]  # log_sigma0, R_sigma
+
+        sigmaR_deprojected = self._deproject_sigmaR(np.sqrt(sigma_ast_sq_valid), incl)
+
+        xdata = radius_valid
+        ydata = np.square(sigmaR_deprojected)
+        popt, pcov = curve_fit(self._sigmaR_sq_fit_profile, xdata, ydata, p0=p0, bounds=(lb, ub))
+
+        log_sigma0_fit, R_sigma_fit = popt
+        sigma0_fitted = 10**log_sigma0_fit
+        print(f"Fitted parameters: sigma0={sigma0_fitted:.3f}, R_sigma={R_sigma_fit:.3f}")
+        sigmaR_sq_fit = self._sigmaR_sq_fit_profile(radius, log_sigma0_fit, R_sigma_fit)
+
+        return sigmaR_sq_fit
+
+    # Radial Jeans Equation
+    # V_drift^2(R) = (R / Sigma) * [ d(Sigma * sigma_R^2) / dR + (Sigma * sigma_R^2 / R) * (1 - (sigma_phi^2 / sigma_R^2)) ]
+    def _calc_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
+        sigma_ast_sq_map = self._get_stellar_sigma_ast_sq()
+        sigmaR_sq_fit = self._fit_stellar_sigmaR(radius_fitted, sigma_ast_sq_map, incl)
+        return sigmaR_sq_fit
+
     ################################################################################
     # public methods
     ################################################################################
-    def get_stellar_vel(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+    def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
+        self.PLATE_IFU = PLATE_IFU
+        return
+
+    def get_stellar_vel(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
         vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         vel_map = np.sqrt(vel_sq)
         return radius_fitted, vel_map
-    
-    def get_stellar_vel_sq(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> np.ndarray:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+
+    def get_stellar_vel_sq(self, radius_fitted: np.ndarray) -> np.ndarray:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
         vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         return radius_fitted, vel_sq, sigma_0_fitted, r_d_fitted
-    
-    def get_stellar_density_0(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> float:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
+
+    def get_stellar_density_0(self, radius_fitted: np.ndarray) -> float:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
         return sigma_0_fitted
     
     def calc_stellar_vel_sq(self, radius, density_0, r_d) -> tuple[np.ndarray, np.ndarray]:
         vel_sq = self._stellar_vel_sq_profile(radius, density_0, r_d)
         return radius, vel_sq
-    
-    def calc_stellar_density(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(PLATE_IFU, radius_fitted)
-        density = self._stellar_density_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
+
+    def calc_stellar_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
+        density = self._stellar_density_fit_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         return radius_fitted, density
+
+    def get_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
+        vel_drift_sq = self._calc_stellar_vel_drift_sq(radius_fitted, incl)
+        return radius_fitted,vel_drift_sq
+    
+    def get_stellar_vel_drift(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
+        vel_drift_sq = self._calc_stellar_vel_drift_sq(radius_fitted, incl)
+        vel_drift = np.sqrt(vel_drift_sq)
+        return radius_fitted, vel_drift
 
 
 ######################################################
 # main function for test
 ######################################################
 def main() -> None:
+    from vel_rot import VelRot
+
     PLATE_IFU = "8723-12705"
 
     root_dir = Path(__file__).resolve().parent.parent
@@ -275,15 +347,23 @@ def main() -> None:
     plot_util = PlotUtil(fits_util)
 
     stellar = Stellar(drpall_util, firefly_util, maps_util)
+    vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
 
-    r_map, vel_map = stellar.get_stellar_vel(PLATE_IFU)
+    _, radius_h_kpc_map, _ = maps_util.get_radius_map()
+    incl = vel_rot.get_inc_rad()
+
+    r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_h_kpc_map)
+    _, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_h_kpc_map, incl=incl)
+
 
     print("#######################################################")
     print("# calculate stellar rotation velocity V(r)")
     print("#######################################################")
-    print(f"Calc Velocity shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
+    print(f"Velocity stellar shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
+    print(f"Velocity Drift shape: {vel_drift_map.shape}, range: [{np.nanmin(vel_drift_map):.3f}, {np.nanmax(vel_drift_map):.3f}]")
 
     plot_util.plot_rv_curve(r_map, vel_map, title="Stellar")
+    plot_util.plot_rv_curve(r_map, vel_drift_map, title="Velocity Drift")
     return
 
 if __name__ == "__main__":

@@ -65,8 +65,7 @@ def main():
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    V_obs_sq = V_stellar_rot_fitted**2
-    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_stellar_rot_fitted, V_obs_sq, V_stellar_sq, V_drift_sq, r_d)
+    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_stellar_rot_fitted, V_stellar_rot_fitted, V_stellar_sq, V_drift_sq, r_d)
 
 
 

@@ -1,5 +1,4 @@
-from hashlib import sha1
-from operator import le
+
 from pathlib import Path
 from tkinter import N
 from turtle import shape
@@ -20,11 +19,8 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
-from scipy.signal import savgol_filter
-from scipy.ndimage import gaussian_filter1d
 
-root_dir = Path(__file__).resolve().parent.parent
-fits_util = FitsUtil(root_dir / "data")
+
 
 
 PLATE_IFU = "8723-12705"
@@ -250,6 +246,8 @@ class VelRot:
 def main():
     PLATE_IFU = "8723-12705"
 
+    root_dir = Path(__file__).resolve().parent.parent
+    fits_util = FitsUtil(root_dir / "data")
     drpall_file = fits_util.get_drpall_file()
     firefly_file = fits_util.get_firefly_file()
     maps_file = fits_util.get_maps_file(PLATE_IFU)

@@ -63,9 +63,10 @@ def main():
     print("#######################################################")
     print("# 4. calculate dark-matter rotation velocity V(r)")
     print("#######################################################")
-    dm_nfw = DmNfw(drpall_util, stellar, vel_rot)
+    dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_gas_rot_fitted, V_gas_rot_fitted, V_stellar_sq, V_drift_sq, r_d)
+    V_obs_sq = V_stellar_rot_fitted**2
+    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_stellar_rot_fitted, V_obs_sq, V_stellar_sq, V_drift_sq, r_d)
 
 
 

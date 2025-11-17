@@ -1,20 +1,24 @@
+from pathlib import Path
+
 from re import M
 import numpy as np
 from scipy.optimize import curve_fit
 from astropy import constants as const
 from astropy import units as u
 
+from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
+from util.fits_util import FitsUtil
+from util.firefly_util import FireflyUtil
 from vel_stellar import Stellar
 from vel_rot import PLATE_IFU, VelRot
 
 
 class DmNfw:
 
-    def __init__(self, drpall_util: DrpallUtil, stellar: Stellar, vel_rot: VelRot):
+    def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
-        self.stellar = stellar
-        self.vel_rot = vel_rot
+
 
     ########################################################################################
     # Use the following equation to fit DM profile:
@@ -72,8 +76,8 @@ class DmNfw:
     # In this simplified model, the entire V_DM(r) profile is determined by a single parameter: the halo mass M_200.
     ########################################################################################
 
-    def _get_z(self, PLATE_IFU: str) -> float:
-        z = self.drpall_util.get_redshift(PLATE_IFU)
+    def _get_z(self) -> float:
+        z = self.drpall_util.get_redshift(self.PLATE_IFU)
         print(f"Redshift z from DRPALL: {z:.5f}")
         return z
 
@@ -157,10 +161,10 @@ class DmNfw:
         return v_rot_sq
 
     # used the minimum χ 2 method for fitting
-    def _dm_nfw_fit(self, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, r_d:float, z: float=0.04, h: float=0.7):
-        valid_mask = np.isfinite(vel_rot_sq) & np.isfinite(radius) & (radius > 0.1) & (radius < 0.9 * np.nanmax(radius))
+    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs_sq: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, r_d:float, z: float=0.04, h: float=0.7):
+        valid_mask = np.isfinite(vel_obs_sq) & np.isfinite(radius) & (radius > 0.1) & (radius < 0.9 * np.nanmax(radius))
         radius_valid = radius[valid_mask]
-        vel_rot_valid = vel_rot_sq[valid_mask]
+        vel_obs_valid = vel_obs_sq[valid_mask]
         vel_star_sq_valid = vel_star_sq[valid_mask]
         vel_drift_sq_valid = vel_drift_sq[valid_mask]
 
@@ -169,7 +173,7 @@ class DmNfw:
         lb = [10.0]  # log_M200
         ub = [15.0]  # log_M200
         xdata = radius_valid
-        ydata = vel_rot_valid**2
+        ydata = vel_obs_valid
 
         # Perform the fit
         fit_func_partial = lambda r, log_M200: self._V_rot_sq_fit_model(r, log_M200, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
@@ -179,9 +183,9 @@ class DmNfw:
         M200_fit = 10**log_M200_fit
 
         # Return the fitted DM velocity profile
-        vel_rot_sq_fit = self._V_rot_sq_fit_model(radius, log_M200_fit, vel_star_sq, vel_drift_sq, z=z, h=h)
+        vel_obs_sq_fit = self._V_rot_sq_fit_model(radius, log_M200_fit, vel_star_sq, vel_drift_sq, z=z, h=h)
         vel_dm_sq_fit = self._vel_dm_sq_profile(radius, M200_fit, z=z, h=h)
-        vel_total_fit = np.sqrt(vel_rot_sq_fit)
+        vel_total_fit = np.sqrt(vel_obs_sq_fit)
         vel_dm_fit = np.sqrt(vel_dm_sq_fit)
 
         print("Fitted DM NFW parameters:")
@@ -198,7 +202,48 @@ class DmNfw:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    def fit_dm_nfw(self, radius: np.ndarray, vel_rot_sq: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        z = self._get_z(self.PLATE_IFU)
-        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_rot_sq, vel_star_sq, V_drift_sq, r_d, z=z)
+    def fit_dm_nfw(self, radius: np.ndarray, vel_obs_sq: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        z = self._get_z()
+        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_obs_sq, vel_star_sq, V_drift_sq, r_d, z=z)
         return M200_fit, radius_fit, vel_total, vel_dm
+    
+
+######################################################
+# main function for test
+######################################################
+def main():
+    PLATE_IFU = "8723-12705"
+
+    root_dir = Path(__file__).resolve().parent.parent
+    fits_util = FitsUtil(root_dir / "data")
+    drpall_file = fits_util.get_drpall_file()
+    firefly_file = fits_util.get_firefly_file()
+    maps_file = fits_util.get_maps_file(PLATE_IFU)
+
+    print(f"DRPALL file: {drpall_file}")
+    print(f"FIREFLY file: {firefly_file}")
+    print(f"MAPS file: {maps_file}")
+
+    drpall_util = DrpallUtil(drpall_file)
+    firefly_util = FireflyUtil(firefly_file)
+    maps_util = MapsUtil(maps_file)
+
+    dm_nfw = DmNfw(drpall_util)
+    dm_nfw.set_PLATE_IFU(PLATE_IFU)
+
+    _, radius_h_kpc_map, _ = maps_util.get_radius_map()
+    z = dm_nfw._get_z()
+    M200 = 10**11.5 # example halo mass in Msun
+    vel_dm_sq = dm_nfw._vel_dm_sq_profile(radius_h_kpc_map, M200, z=z)  # Example usage
+    vel_dm = np.sqrt(vel_dm_sq)
+    print(f"Calculated V_DM  shape: {vel_dm.shape}, range: {np.nanmin(vel_dm):.2f} - {np.nanmax(vel_dm):.2f} km/s")
+
+    M200 = 10**15 # example halo mass in Msun
+    vel_dm_sq = dm_nfw._vel_dm_sq_profile(radius_h_kpc_map, M200, z=z)  # Example usage
+    vel_dm = np.sqrt(vel_dm_sq)
+    print(f"Calculated V_DM  shape: {vel_dm.shape}, range: {np.nanmin(vel_dm):.2f} - {np.nanmax(vel_dm):.2f} km/s")
+
+
+# main entry
+if __name__ == "__main__":
+    main()

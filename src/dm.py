@@ -133,7 +133,8 @@ class DmNfw:
         V_dm_sq = (V200**2 / x) * (num / den)
         V_dm = np.sqrt(V_dm_sq)
         V_dm_max_val = float(np.nanmax(V_dm))
-        print(f"M200={M200:.3e} Msun, V200={V200:.2f} km/s, r200={r200:.2f} kpc, c={c:.2f} -> V_dm={V_dm_max_val:.2f} km/s")
+        radius_max_val = float(np.nanmax(radius_kpc))
+        print(f"M200={M200:.3e} Msun, V200={V200:.2f} km/s, r200={r200:.2f} kpc, c={c:.2f}, radius={radius_max_val:.2f} kpc -> V_dm={V_dm_max_val:.2f} km/s")
 
         return V_dm_sq
     

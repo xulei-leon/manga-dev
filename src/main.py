@@ -45,6 +45,11 @@ def main():
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs()
     r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map)
 
+    r_obs_map = r_stellar_obs_map
+    V_obs_map = V_stellar_obs_map
+    r_obs_fitted = r_stellar_rot_fitted
+    V_obs_fitted = V_stellar_rot_fitted
+
     inc_rad = vel_rot.get_inc_rad()
 
 
@@ -53,11 +58,11 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
-    r_stellar, V_stellar = stellar.get_stellar_vel(radius_fitted=r_gas_rot_fitted)
-    r_stellar, V_stellar_sq, _, r_d = stellar.get_stellar_vel_sq(radius_fitted=r_gas_rot_fitted)
-    _, stellar_density_map = stellar.calc_stellar_density(radius_fitted=r_gas_rot_fitted)
+    r_stellar, V_stellar = stellar.get_stellar_vel(radius_fitted=r_obs_fitted)
+    r_stellar, V_stellar_sq, _, r_d = stellar.get_stellar_vel_sq(radius_fitted=r_obs_fitted)
+    _, stellar_density_map = stellar.calc_stellar_density(radius_fitted=r_obs_fitted)
 
-    _, V_drift_sq = stellar.get_stellar_vel_drift_sq(r_gas_rot_fitted, inc_rad)
+    _, V_drift_sq = stellar.get_stellar_vel_drift_sq(r_obs_fitted, inc_rad)
     V_drift = np.sqrt(V_drift_sq)
 
     print("#######################################################")
@@ -65,15 +70,15 @@ def main():
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_stellar_rot_fitted, V_stellar_rot_fitted, V_stellar_sq, V_drift_sq, r_d)
+    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq, r_d)
 
 
 
     print("#######################################################")
     print("# Results")
     print("#######################################################")
-    print(f"V_gas_obs_map shape: {V_gas_obs_map.shape}, range: [{np.nanmin(V_gas_obs_map):,.1f}, {np.nanmax(V_gas_obs_map):,.1f}] km/s")
-    print(f"V_gas_rot_fitted shape: {V_gas_rot_fitted.shape}, range: [{np.nanmin(V_gas_rot_fitted):,.1f}, {np.nanmax(V_gas_rot_fitted):,.1f}] km/s")
+    print(f"V_obs_map shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):,.1f}, {np.nanmax(V_obs_map):,.1f}] km/s")
+    print(f"V_obs_fitted shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):,.1f}, {np.nanmax(V_obs_fitted):,.1f}] km/s")
     print(f"V_stellar shape: {V_stellar.shape}, range: [{np.nanmin(V_stellar):,.1f}, {np.nanmax(V_stellar):,.1f}] km/s")
     print(f"V_drift shape: {V_drift.shape}, range: [{np.nanmin(V_drift):,.1f}, {np.nanmax(V_drift):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
@@ -91,7 +96,7 @@ def main():
                             r_rot2_map=r_stellar, v_rot2_map=V_stellar-V_drift, title2="Star Rotational")
 
     plot_util.plot_rv_curve(r_rot_map=r_gas_rot_fitted, v_rot_map=np.abs(V_gas_rot_fitted), title="Fitted Rotational", 
-                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Rotational")
+                            r_rot2_map=r_stellar, v_rot2_map=V_stellar-V_drift, title2="Star Rotational")
 
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=np.abs(V_total_fit), title="Fitted Total", 
                         r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Dark Matter")

@@ -162,6 +162,11 @@ class VelRot:
         phi_obs_map = azimuth_rad_map
 
         return r_obs_map, v_obs_map, phi_obs_map
+    
+    def _get_radius(self) -> np.ndarray:
+        _, radius_h_kpc_map, _ = self.maps_util.get_radius_map()
+        return radius_h_kpc_map
+
 
     ################################################################################
     # rotation curve fitting procedures
@@ -187,7 +192,7 @@ class VelRot:
         return vel_obs
 
     # used the minimum χ 2 method for fitting
-    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_map: np.ndarray):
+    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
         """Fit the rotation curve using the experience curve function."""
         # Flatten the maps and remove NaN values
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map)
@@ -216,8 +221,11 @@ class VelRot:
         print(f"  V_out: {V_out_fit:.3f} km/s")
         print(f"  inc: {np.degrees(inc_fit):.3f} deg, inc0: {np.degrees(inc0):.3f} deg")
 
-        vel_rot_fitted = self.__vel_rot_profile(radius_map, Vc_fit, Rt_fit, V_out_fit)
-        return vel_rot_fitted, (Vc_fit, Rt_fit, V_out_fit)
+        if radius_fit is None:
+            radius_fit = radius_map
+
+        vel_rot_fitted = self.__vel_rot_profile(radius_fit, Vc_fit, Rt_fit, V_out_fit)
+        return radius_fit, vel_rot_fitted, (Vc_fit, Rt_fit, V_out_fit)
 
 
     ################################################################################
@@ -231,13 +239,20 @@ class VelRot:
         radius_map, vel_obs_map, phi_map = self._get_vel_obs(type='stellar')
         return radius_map, vel_obs_map, phi_map
 
-    def fit_rot_vel(self, radius_map, vel_obs_map, phi_map):
-        vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map)
-        return radius_map, vel_rot_fitted
+    def fit_rot_vel(self, radius_map, vel_obs_map, phi_map, radius_fit=None):
+        radius_fitted, vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map, radius_fit=radius_fit)
+        return radius_fitted, vel_rot_fitted
 
     def get_inc_rad(self):
         _, inc_rad = self._calc_pa_inc()
         return inc_rad
+    
+    def get_radius_sort(self):
+        radius_map = self._get_radius()
+        radius_sorted = np.sort(radius_map[np.isfinite(radius_map)])
+        radius_sorted = np.unique(radius_sorted)
+
+        return radius_sorted
 
 
 ######################################################

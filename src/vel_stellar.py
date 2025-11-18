@@ -257,7 +257,7 @@ class Stellar:
         return sigma0 * np.exp(-2 * radius / R_sigma)
     
 
-    def _fit_stellar_sigmaR(self, radius, sigma_ast_sq_map, incl):
+    def _fit_stellar_sigmaR(self, radius, sigma_ast_sq_map, incl, radius_fit: np.ndarray) -> np.ndarray:
         valid_mask = ~np.isnan(sigma_ast_sq_map) & (radius > RADIUS_MIN_KPC)
         radius_valid = radius[valid_mask]
         sigma_ast_sq_valid = sigma_ast_sq_map[valid_mask]
@@ -275,16 +275,83 @@ class Stellar:
         log_sigma0_fit, R_sigma_fit = popt
         sigma0_fitted = 10**log_sigma0_fit
         print(f"Fitted parameters: sigma0={sigma0_fitted:.3f}, R_sigma={R_sigma_fit:.3f}")
-        sigmaR_sq_fit = self._sigmaR_sq_fit_profile(radius, log_sigma0_fit, R_sigma_fit)
+        sigmaR_sq_fit = self._sigmaR_sq_fit_profile(radius_fit, log_sigma0_fit, R_sigma_fit)
 
         return sigmaR_sq_fit
 
     # Radial Jeans Equation
-    # V_drift^2(R) = (R / Sigma) * [ d(Sigma * sigma_R^2) / dR + (Sigma * sigma_R^2 / R) * (1 - (sigma_phi^2 / sigma_R^2)) ]
-    def _calc_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
+    # V_drift^2(R) = (R / Density) * [ d(Density * sigma_R^2) / dR + (Density * sigma_R^2 / R) * (1 - (sigma_phi^2 / sigma_R^2)) ]
+    def _calc_stellar_vel_drift_sq(self, radius_fit: np.ndarray, incl: float):
+        """
+        使用解析求导法计算不对称漂移速度 V_drift。
+        假设 Density 和 sigma_R^2 均遵循指数衰减分布。
+        """
+        
+        # 1. 获取基础数据和拟合参数
+        # ------------------------------------------------------
+        # 获取密度参数: Density(R) = Sigma_0 * exp(-R / R_d)
+        density_0, r_d = self._calc_stellar_central_density(self.PLATE_IFU, radius_fit)
+        density_fit = self._stellar_density_fit_profile(radius_fit, density_0, r_d)
+        
+        # 获取速度弥散参数: sigma_R^2(R) = sigma_0^2 * exp(-R / h_sigma)
+        # 【重要】：您需要确保 _fit_stellar_sigmaR 能返回拟合出的尺度长度 h_sigma
+        # 如果您的拟合模型固定了 h_sigma = R_d / 2，则直接使用 R_d / 2
         sigma_ast_sq_map = self._get_stellar_sigma_ast_sq()
-        sigmaR_sq_fit = self._fit_stellar_sigmaR(radius_fitted, sigma_ast_sq_map, incl)
-        return sigmaR_sq_fit
+        _, radius_sigma_map, _ = self.maps_util.get_radius_map()
+        
+        # 假设这个函数现在返回拟合数组和尺度参数 (sigma_0_sq, h_sigma)
+        # 如果您现在的代码只返回数组，您需要修改该函数或在此处手动指定衰减关系
+        sigma_R_sq = self._fit_stellar_sigmaR(radius_sigma_map, sigma_ast_sq_map, incl, radius_fit=radius_fit)
+        
+        # 【假设场景 A】：完全基于理论假设 (sigma_R^2 随 R_d/2 衰减)
+        # 这是最物理、最平滑的做法，不需要从 sigma 数据中拟合尺度
+        h_sigma = r_d / 2.0 
+        
+        # 【假设场景 B】：如果您是从数据中独立拟合了 sigma 的衰减长度
+        # h_sigma = fitted_sigma_scale_length 
+
+        # 2. 计算乘积 S
+        # ------------------------------------------------------
+        S = density_fit * sigma_R_sq
+
+        # 3. 解析求导 (Analytical Derivative)
+        # ------------------------------------------------------
+        # 公式: dS/dR = -S * (1/R_d + 1/h_sigma)
+        # 这一步完全消除了数值差分带来的锯齿噪声
+        decay_factor = (1.0 / r_d) + (1.0 / h_sigma)
+        dS_dR = -S * decay_factor  # 这是一个平滑的负值数组
+
+        # 4. 计算 V_drift^2
+        # ------------------------------------------------------
+        # 定义各向异性比率 (beta = sigma_phi^2 / sigma_R^2)
+        # 假设 beta = 0.5 (即 sigma_phi ~ 0.707 * sigma_R)
+        beta_ratio = 0.5 
+
+        # 防止除以零
+        radius_safe = np.where(radius_fit == 0, 1e-9, radius_fit)
+
+        # Jeans 方程项:
+        # Term 1: 压力梯度项。注意这里使用了 负号 来抵消 dS_dR 的负值
+        # V_drift_term1 = - (R / Density) * (dS/dR)
+        term1_contribution = - (radius_safe / density_fit) * dS_dR
+        
+        # 优化: 代入 dS_dR 的解析式，这一项简化为:
+        # term1 = - (R/D) * (-S * decay) = R * sigma_R^2 * (1/Rd + 1/h_sigma)
+        # term1_contribution = radius_safe * sigma_R_sq * decay_factor
+
+        # Term 2: 各向异性项
+        # V_drift_term2 = (R / Density) * (S / R) * (1 - beta)
+        #               = sigma_R^2 * (1 - beta)
+        term2_contribution = sigma_R_sq * (1.0 - beta_ratio)
+
+        # 总 V_drift^2
+        V_drift_sq = term1_contribution + term2_contribution
+
+        # 5. 清理结果
+        # ------------------------------------------------------
+        V_drift_sq = np.where(V_drift_sq < 0, 0.0, V_drift_sq) # 物理上不应小于0
+        
+        return V_drift_sq
 
     ################################################################################
     # public methods
@@ -350,11 +417,13 @@ def main() -> None:
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
 
     _, radius_h_kpc_map, _ = maps_util.get_radius_map()
+    radius_sorted = np.sort(radius_h_kpc_map[np.isfinite(radius_h_kpc_map)])
+    radius_sorted = np.unique(radius_sorted)
     incl = vel_rot.get_inc_rad()
 
     stellar.set_PLATE_IFU(PLATE_IFU)
-    r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_h_kpc_map)
-    _, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_h_kpc_map, incl=incl)
+    r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_sorted)
+    r_drift, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_sorted, incl=incl)
 
 
     print("#######################################################")
@@ -363,8 +432,24 @@ def main() -> None:
     print(f"Velocity stellar shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
     print(f"Velocity Drift shape: {vel_drift_map.shape}, range: [{np.nanmin(vel_drift_map):.3f}, {np.nanmax(vel_drift_map):.3f}]")
 
+    valid = ~np.isnan(r_drift) & ~np.isnan(vel_drift_map)
+    if not np.any(valid):
+        print("No valid (r_drift, vel_drift) pairs")
+    else:
+        pairs = np.column_stack((r_drift[valid], vel_drift_map[valid]))
+        print("(r_drift, vel_drift) pairs:")
+        # sample 20 radii uniformly between min and max r and interpolate velocities
+        idx_sort = np.argsort(pairs[:, 0])
+        r_vals = pairs[idx_sort, 0]
+        v_vals = pairs[idx_sort, 1]
+        r_uniform = np.linspace(r_vals[0], r_vals[-1], 20)
+        v_uniform = np.interp(r_uniform, r_vals, v_vals)
+        for r, v in zip(r_uniform, v_uniform):
+            print(f"{r:.6f}, {v:.6f}")
+    
+
     plot_util.plot_rv_curve(r_map, vel_map, title="Stellar",
-                            r_rot2_map=r_map, v_rot2_map=vel_drift_map, title2="Drift")
+                            r_rot2_map=r_drift, v_rot2_map=vel_drift_map, title2="Drift")
     return
 
 if __name__ == "__main__":

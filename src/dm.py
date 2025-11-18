@@ -164,6 +164,8 @@ class DmNfw:
         v_dm_sq = self._vel_dm_sq_profile(radius, M200, z=z, h=h)
         v_rot_sq = v_star_sq + v_dm_sq - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
+
+        print(f"Fit M200={M200:.3e} Msun -> V_rot: {np.sqrt(np.nanmax(v_rot_sq)):.2f}, V_dm: {np.sqrt(np.nanmax(v_dm_sq)):.2f}, V_star: {np.sqrt(np.nanmax(v_star_sq)):.2f}, V_drift: {np.sqrt(np.nanmax(v_drift_sq)):.2f}")
         return v_rot_sq
 
     # used the minimum χ 2 method for fitting
@@ -174,15 +176,21 @@ class DmNfw:
         vel_star_sq_valid = vel_star_sq[valid_mask]
         vel_drift_sq_valid = vel_drift_sq[valid_mask]
 
-        # Initial guess for parameters: log_M200, sigma_0
+        # Initial guess for parameters: log_M200
         p0 = [11.5]  # log_M200
         lb = [10.0]  # log_M200
         ub = [15.0]  # log_M200
         xdata = radius_valid
         ydata = vel_obs_valid**2
 
-        # Perform the fit
-        fit_func_partial = lambda r, log_M200: self._V_rot_sq_fit_model(r, log_M200, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
+        # Ensure ydata are finite and positive
+        ydata = np.where(~np.isfinite(ydata) | (ydata <= 0), 1e-6, ydata)
+
+        # Perform the fit; ensure model output is finite at initial p0
+        def fit_func_partial(r, log_M200):
+            vals = self._V_rot_sq_fit_model(r, log_M200, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
+            return np.where(~np.isfinite(vals) | (vals <= 0), 1e-6, vals)
+
         popt, pcov = curve_fit(fit_func_partial, xdata, ydata, p0=p0, bounds=(lb, ub))
         # popt is an array (shape (1,)); extract scalar value
         log_M200_fit = float(popt[0])

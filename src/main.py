@@ -79,8 +79,9 @@ def main():
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq, r_d)
+    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
 
+    # r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_burkert(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
 
 
     print("#######################################################")
@@ -101,7 +102,8 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # 
-    plot_util.plot_rv_curve(r_rot_map=r_stellar, v_rot_map=V_stellar, title="Star Circular")
+    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational", 
+                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
 
     plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational", 
                             r_rot2_map=r_obs_fitted, v_rot2_map=V_drift, title2="Drift Rotational")

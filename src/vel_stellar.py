@@ -1,3 +1,4 @@
+from ast import mod
 from bdb import effective
 from math import log
 from operator import le
@@ -127,7 +128,6 @@ class Stellar:
 
         return mass_r, r_bins
 
-    @deprecated(reason="To use Mass Density method instead", version="0.1.0")
     def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
         print("")
         print("#######################################################")
@@ -142,13 +142,13 @@ class Stellar:
         print("Verification with DRPALL stellar mass:")
         _mass_err2_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_2) / total_stellar_mass_2
         _mass_err1_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_1) / total_stellar_mass_1
+        print(f"  Stellar Mass (DRPALL): (Sersic) {total_stellar_mass_1:,} M solar, (Elpetro) {total_stellar_mass_2:,} M solar")
         if abs(_mass_err2_percent) < 0.03:
             print(f"  FIREFLY total stellar mass matches DRPALL Elpetro stellar mass within {abs(_mass_err2_percent):.1%}")
         elif abs(_mass_err1_percent) < 0.03:
             print(f"  FIREFLY total stellar mass matches DRPALL Sersic stellar mass within {abs(_mass_err1_percent):.1%}")
         else:
             print("  WARNING: FIREFLY total stellar mass does not match DRPALL stellar masses within 3%")
-            print(f"  Stellar Mass (DRPALL): (Sersic) {total_stellar_mass_1:,} M solar, (Elpetro) {total_stellar_mass_2:,} M solar")
 
         _radius_eff, azimuth = self.firefly_util.get_radius_eff(PLATE_IFU)
         print(f"Radius Eff shape: {_radius_eff.shape}, Unit: effective radius, range [{np.nanmin(_radius_eff[azimuth>=0]):.3f}, {np.nanmax(_radius_eff):.3f}]")
@@ -204,19 +204,26 @@ class Stellar:
 
     # Exponential Disk Model fitting function
     # Sigma(R) = Sigma_0 * exp(-R / R_d)
-    def _stellar_density_fit_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
         return Sigma_0 * np.exp(-R / R_d)
 
+    def _stellar_density_fit_profile(self, R: np.ndarray, log_Sigma_0: float, R_d: float) -> np.ndarray:
+        Sigma_0 = 10**log_Sigma_0
+        return Sigma_0 * np.exp(-R / R_d)
+    
     # Central Surface Mass Density Fitting
     def _stellar_central_density_fit(self, radius: np.ndarray, density: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         radius_filter = radius[radius>r_min]
         density_filter = density[radius>r_min]
 
-        initial_guess = [1e8, 3.0]  # Initial guess for Sigma_0, R_d
-        popt, pcov = curve_fit(self._stellar_density_fit_profile, radius_filter, density_filter, p0=initial_guess, maxfev=10000)
+        p0 = [7, 3.0]  # Initial guess for Sigma_0, R_d
+        lb = [6, 0.1]  # Lower bound
+        ub = [10, 10.0]  # Upper bound
+        popt, pcov = curve_fit(self._stellar_density_fit_profile, radius_filter, density_filter, p0=p0, bounds=(lb, ub), method='trf')
 
-        sigma_0_fitted, r_d_fitted = popt
-        print(f"Fitted parameters: Sigma_0={popt[0]:.3e}, R_d={popt[1]:.3f}")
+        log_sigma_0_fitted, r_d_fitted = popt
+        sigma_0_fitted = 10**log_sigma_0_fitted
+        print(f"Fitted parameters: Sigma_0={sigma_0_fitted:.3e}, R_d={r_d_fitted:.3f}")
         return sigma_0_fitted, r_d_fitted
 
     def _calc_stellar_central_density(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[float, float]:
@@ -224,6 +231,7 @@ class Stellar:
         _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
 
         _density, _ = self.firefly_util.get_stellar_density_cell(PLATE_IFU)
+        _density = _density * 0.49  # convert from M_solar / kpc^2/h^2 to M_solar / kpc^2, assuming h = 0.7
         print(f"Stellar Mass Density shape: {_density.shape}, Unit: M solar / kpc^2, range [{np.nanmin(_density[_density>=0]):.3f}, {np.nanmax(_density):,.1f}] M solar / kpc^2")
 
         sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
@@ -291,7 +299,7 @@ class Stellar:
         # ------------------------------------------------------
         # 获取密度参数: Density(R) = Sigma_0 * exp(-R / R_d)
         density_0, r_d = self._calc_stellar_central_density(self.PLATE_IFU, radius_fit)
-        density_fit = self._stellar_density_fit_profile(radius_fit, density_0, r_d)
+        density_fit = self._stellar_density_profile(radius_fit, density_0, r_d)
         
         # 获取速度弥散参数: sigma_R^2(R) = sigma_0^2 * exp(-R / h_sigma)
         # 【重要】：您需要确保 _fit_stellar_sigmaR 能返回拟合出的尺度长度 h_sigma
@@ -381,7 +389,7 @@ class Stellar:
 
     def calc_stellar_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
-        density = self._stellar_density_fit_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
+        density = self._stellar_density_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         return radius_fitted, density
 
     def get_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
@@ -422,10 +430,16 @@ def main() -> None:
     incl = vel_rot.get_inc_rad()
 
     stellar.set_PLATE_IFU(PLATE_IFU)
+    mass_map = stellar._get_stellar_mass(PLATE_IFU)
+    print("#######################################################")
+    print("# calculate stellar mass M(r)")
+    print("#######################################################")
+    print(f"Mass shape: {mass_map[1].shape}, Unit: M solar, range [{np.nanmin(mass_map[1]):.3f}, {np.nanmax(mass_map[1]):,.1f}] M solar")
+
+
+
     r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_sorted)
     r_drift, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_sorted, incl=incl)
-
-
     print("#######################################################")
     print("# calculate stellar rotation velocity V(r)")
     print("#######################################################")

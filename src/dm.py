@@ -10,7 +10,7 @@ from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
-from vel_stellar import Stellar
+from vel_stellar import G, Stellar
 from vel_rot import PLATE_IFU, VelRot
 
 
@@ -29,12 +29,6 @@ class DmNfw:
     # V_dm: use NFW profile to fit
     # V_drift^2 = 2 * sigma_0^2 * (R / R_d) : sigma_0  will be fitted, R_d has been calculated
     ########################################################################################
-
-    # V_obs^2 = V_circ^2 - V_drift^2
-    # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
-    def _v_drift_sq_profile(self, radius: np.ndarray, sigma_0: float, r_d: float) -> np.ndarray:
-        v_drift_sq = 2 * np.square(sigma_0) * (radius / r_d)
-        return v_drift_sq
     
     ########################################################################################
     # NFW Dark Matter Halo Profile:
@@ -119,10 +113,11 @@ class DmNfw:
         return 5.74 * (M200 / M_pivot)**(-0.097)
 
 
-    def _vel_dm_sq_profile(self, radius_kpc, M200, z=0.04, h=0.7):
+    def _vel_dm_sq_profile(self, radius_kpc, M200, c=None, z=0.04, h=0.7):
         V200 = self._calc_V200_from_M200(M200, z)
         r200 = self._calc_r200_from_V200(V200, z)
-        c = self._calc_c_from_M200(M200, h)
+        if c is None:
+            c = self._calc_c_from_M200(M200, h)
 
         x = radius_kpc / r200
         x = np.where(x == 0, 1e-6, x)
@@ -134,10 +129,47 @@ class DmNfw:
         V_dm = np.sqrt(V_dm_sq)
         V_dm_max_val = float(np.nanmax(V_dm))
         radius_max_val = float(np.nanmax(radius_kpc))
-        print(f"M200={M200:.3e} Msun, V200={V200:.2f} km/s, r200={r200:.2f} kpc, c={c:.2f}, radius={radius_max_val:.2f} kpc -> V_dm={V_dm_max_val:.2f} km/s")
+        # print(f"M200={M200:.3e} Msun, V200={V200:.2f} km/s, r200={r200:.2f} kpc, c={c:.2f}, radius max={radius_max_val:.2f} kpc -> V_dm max={V_dm_max_val:.2f} km/s")
 
         return V_dm_sq
     
+    def _vel_dm_sq_burkert(self, radius_kpc, log_rho0, rc):
+        """
+        计算 Burkert 轮廓的暗物质速度平方 V_dm^2(r)
+        
+        参数:
+        radius_kpc (ndarray): 半径 (kpc)
+        log_rho0 (float): log10(rho0)，核心密度 (Msun/kpc^3)
+        rc (float): 核心半径 (kpc)
+        """
+        
+        # 参数转换
+        rho0 = 10**log_rho0
+        
+        # 避免 r=0 时的除零
+        r = np.where(radius_kpc == 0, 1e-6, radius_kpc)
+        
+        # 质量 M(r) 公式中的项
+        term1 = np.log(1 + r / rc)
+        term2 = 0.5 * np.log(1 + (r / rc)**2)
+        term3 = np.arctan(r / rc)
+        
+        # 质量 M(r)
+        M_r = 4 * np.pi * rho0 * (rc**3) * (term1 - term2 + term3)
+        
+        # 速度平方 V^2 = G * M(r) / r
+        # G in (kpc/Msun) * (km/s)^2
+        G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+        V_dm_sq = G * M_r / r
+        
+        # 报告结果 (可选)
+        V_dm = np.sqrt(V_dm_sq)
+        V_dm_max_val = float(np.nanmax(V_dm))
+        radius_max_val = float(np.nanmax(radius_kpc))
+        # print(f"Burkert Fit: log_rho0={log_rho0:.3f}, rc={rc:.3f}, radius max={radius_max_val:.2f} kpc -> V_dm max={V_dm_max_val:.2f} km/s")
+
+        return V_dm_sq
+
     def _calc_M200_from_rho_rs(self, rho_s: float, r_s: float, z: float=0.04, h: float=0.7):
         # M200 = 4 * pi * rho_s * r_s^3 * [ ln(1 + c) - c/(1 + c) ]
         H_si = self._calc_H_si(z)   # s^-1
@@ -159,17 +191,26 @@ class DmNfw:
     
 
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
-    def _V_rot_sq_fit_model(self, radius: np.ndarray, log_M200: float, v_star_sq: np.ndarray, v_drift_sq: np.ndarray, z: float=0.04, h: float=0.7) -> np.ndarray:
+    def _V_rot_sq_fit_model(self, radius: np.ndarray, log_M200: float, c: float, upsilon_star: float, v_star_sq: np.ndarray, v_drift_sq: np.ndarray, z: float=0.04, h: float=0.7) -> np.ndarray:
         M200 = 10**log_M200
-        v_dm_sq = self._vel_dm_sq_profile(radius, M200, z=z, h=h)
-        v_rot_sq = v_star_sq + v_dm_sq - v_drift_sq
+        v_dm_sq = self._vel_dm_sq_profile(radius, M200, c=c, z=z, h=h)
+        v_rot_sq = v_dm_sq + (v_star_sq * upsilon_star)  - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
 
-        print(f"Fit M200={M200:.3e} Msun -> V_rot: {np.sqrt(np.nanmax(v_rot_sq)):.2f}, V_dm: {np.sqrt(np.nanmax(v_dm_sq)):.2f}, V_star: {np.sqrt(np.nanmax(v_star_sq)):.2f}, V_drift: {np.sqrt(np.nanmax(v_drift_sq)):.2f}")
+        # print(f"Fit M200={M200:.3e} Msun -> V_rot max: {np.sqrt(np.nanmax(v_rot_sq)):.2f}, V_dm max: {np.sqrt(np.nanmax(v_dm_sq)):.2f}, V_star max: {np.sqrt(np.nanmax(v_star_sq)):.2f}, V_drift max: {np.sqrt(np.nanmax(v_drift_sq)):.2f}")
+        return v_rot_sq
+        
+    
+    def _V_rot_sq_burkert_fit_model(self, radius: np.ndarray, log_rho0: float, rc: float, upsilon_star: float, v_star_sq: np.ndarray, v_drift_sq: np.ndarray) -> np.ndarray:
+        v_dm_sq = self._vel_dm_sq_burkert(radius, log_rho0, rc)
+        v_rot_sq = v_dm_sq + (v_star_sq * upsilon_star)  - v_drift_sq
+        v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
+
+        # print(f"Burkert Fit: log_rho0={log_rho0:.3f}, rc={rc:.3f} -> V_rot max: {np.sqrt(np.nanmax(v_rot_sq)):.2f}, V_dm max: {np.sqrt(np.nanmax(v_dm_sq)):.2f}, V_star max: {np.sqrt(np.nanmax(v_star_sq)):.2f}, V_drift max: {np.sqrt(np.nanmax(v_drift_sq)):.2f}")
         return v_rot_sq
 
     # used the minimum χ 2 method for fitting
-    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, r_d: float, z: float=0.04, h: float=0.7):
+    def _dm_nfw_fit(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, z: float=0.04, h: float=0.7):
         """
         Fits the Dark Matter Halo Mass (M200) keeping Stellar Mass fixed.
         """
@@ -196,30 +237,21 @@ class DmNfw:
         # 2. Define the Optimization Wrapper
         # Input r matches xdata structure. 
         # Uses closure to access vel_star_sq_valid, vel_drift_sq_valid
-        def fit_func_partial(r, log_M200):
-            # [Correction 1]: Convert log mass to linear mass
-            M200_val = 10**log_M200
-            
-            # Calculate Model V^2 = V_star^2 + V_dm^2 - V_drift^2
-            # Assuming _V_rot_sq_fit_model takes linear M200
-            vals = self._V_rot_sq_fit_model(r, log_M200, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
-            
-            # [Correction 2]: Do NOT clip negative values here. 
-            # Let the optimizer see the large error if the model goes negative.
-            # Only handle Infs/NaNs to prevent crashes.
+        def fit_func_partial(r, log_M200, c, upsilon_star):         
+            vals = self._V_rot_sq_fit_model(r, log_M200, c, upsilon_star, vel_star_sq_valid, vel_drift_sq_valid, z=z, h=h)
             vals = np.nan_to_num(vals, nan=1e9, posinf=1e9, neginf=-1e9)
             return vals
 
         # 3. Setup Optimization
-        p0 = [11.5]  # Initial guess: log10(M200)
-        lb = [10.0]  # Lower bound
-        ub = [15.0]  # Upper bound
-        
+        p0 = [12, 5.0, 1.0]  # Initial guess: log10(M200), concentration, upsilon_star
+        lb = [10.0, 0.5, 0.999]  # Lower bound
+        ub = [15.0, 100.0, 1.001]  # Upper bound
+
         try:
             # Perform Fit
             popt, pcov = curve_fit(fit_func_partial, radius_valid, ydata, p0=p0, bounds=(lb, ub), method='trf')
-            
-            log_M200_fit = popt[0]
+
+            log_M200_fit, c_fit, upsilon_star_fit = popt
             M200_fit = 10**log_M200_fit
             
         except RuntimeError:
@@ -228,8 +260,8 @@ class DmNfw:
 
         # 4. Generate Fit Curves for Output (Full Radius)
         # Calculate the final model curve using the full radius array
-        vel_obs_sq_fit = self._V_rot_sq_fit_model(radius, log_M200_fit, vel_star_sq, vel_drift_sq, z=z, h=h)
-        vel_dm_sq_fit = self._vel_dm_sq_profile(radius, M200_fit, z=z, h=h)
+        vel_obs_sq_fit = self._V_rot_sq_fit_model(radius, log_M200_fit, c_fit, upsilon_star_fit, vel_star_sq, vel_drift_sq, z=z, h=h)
+        vel_dm_sq_fit = self._vel_dm_sq_profile(radius, M200_fit, c=c_fit, z=z, h=h)
 
         # [Correction 3]: Safe Sqrt for output
         # Use np.maximum(0) to avoid RuntimeWarnings for visualization if model dips slightly below zero
@@ -238,9 +270,75 @@ class DmNfw:
 
         print("Fitted DM NFW parameters:")
         print(f"  log_M200: {log_M200_fit:.3f} -> M200: {M200_fit:.3e} Msun")
-        # print(f"pcovariance matrix:\n{pcov}")
+        print(f"  c: {c_fit:.3f}")
+        print(f"  upsilon_star: {upsilon_star_fit:.3f}")
+        print(f"pcovariance matrix:\n{pcov}")
 
         return M200_fit, radius, vel_total_fit, vel_dm_fit
+
+    def _dm_burkert_fit(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, z: float=0.04, h: float=0.7):
+        # 1. Data Masking
+        # Ensure we don't have NaNs and avoid the very center (resolution limits)
+        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) & 
+                    (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
+        
+        # Apply mask to ALL component arrays
+        radius_valid = radius[valid_mask]
+        vel_obs_valid = vel_obs[valid_mask]
+        vel_star_sq_valid = vel_star_sq[valid_mask]
+        vel_drift_sq_valid = vel_drift_sq[valid_mask]
+        
+        # 拟合目标：观测速度的平方 (V_obs^2)
+        # Fitting V^2 allows linear combination of components and handles negative contributions gracefully during math
+        ydata = vel_obs_valid**2
+        
+        # Check if we have enough data points
+        if len(ydata) < 5:
+            print("Warning: Not enough valid data points for fitting.")
+            return np.nan, radius, np.full_like(radius, np.nan), np.full_like(radius, np.nan)
+
+        # 2. Define the Optimization Wrapper
+        # Input r matches xdata structure. 
+        # Uses closure to access vel_star_sq_valid, vel_drift_sq_valid
+        def fit_func_partial(r, log_rho0, rc, upsilon_star):         
+            vals = self._V_rot_sq_burkert_fit_model(r, log_rho0, rc, upsilon_star, vel_star_sq_valid, vel_drift_sq_valid)
+            vals = np.nan_to_num(vals, nan=1e9, posinf=1e9, neginf=-1e9)
+            return vals
+
+        # 3. Setup Optimization
+        p0 = [8.0, 3.0, 0.5]  # Initial guess: log_rho0, rc, upsilon
+        lb = [7.0, 0.1, 0.1]  # Lower bound
+        ub = [10.0, 50.0, 1.0]  # Upper bound
+
+        try:
+            # Perform Fit
+            popt, pcov = curve_fit(fit_func_partial, radius_valid, ydata, p0=p0, bounds=(lb, ub), method='trf')
+
+            log_rho0_fit, rc_fit, upsilon_star_fit = popt
+            rho0_fit = 10**log_rho0_fit
+            
+        except RuntimeError:
+            print("Fitting failed: Optimal parameters not found.")
+            return np.nan, radius, np.zeros_like(radius), np.zeros_like(radius)
+
+        # 4. Generate Fit Curves for Output (Full Radius)
+        # Calculate the final model curve using the full radius array
+        vel_obs_sq_fit = self._V_rot_sq_burkert_fit_model(radius, log_rho0_fit, rc_fit, upsilon_star_fit, vel_star_sq, vel_drift_sq)
+        vel_dm_sq_fit = self._vel_dm_sq_burkert(radius, log_rho0_fit, rc_fit)
+                                                
+
+        # [Correction 3]: Safe Sqrt for output
+        # Use np.maximum(0) to avoid RuntimeWarnings for visualization if model dips slightly below zero
+        vel_total_fit = np.sqrt(np.maximum(vel_obs_sq_fit, 0))
+        vel_dm_fit = np.sqrt(np.maximum(vel_dm_sq_fit, 0))
+
+        print("Fitted DM burkert parameters:")
+        print(f"  rho0_fit: {rho0_fit:.3e}")
+        print(f"  rc_fit: {rc_fit:.3f}")
+        print(f"  upsilon_star: {upsilon_star_fit:.3f}")
+        print(f"pcovariance matrix:\n{pcov}")
+
+        return rho0_fit, radius, vel_total_fit, vel_dm_fit
 
     ################################################################################
     # public methods
@@ -249,11 +347,16 @@ class DmNfw:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray, r_d: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_obs, vel_star_sq, V_drift_sq, r_d, z=z)
+        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_obs, vel_star_sq, V_drift_sq, z=z)
         return M200_fit, radius_fit, vel_total, vel_dm
     
+    def fit_dm_burkert(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        z = self._get_z()
+        rho0_fit, radius_fit, vel_total, vel_dm =self._dm_burkert_fit(radius, vel_obs, vel_star_sq, V_drift_sq, z=z)
+        return radius_fit, vel_total, vel_dm
+
 
 ######################################################
 # main function for test

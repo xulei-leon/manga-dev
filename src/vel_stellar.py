@@ -13,7 +13,7 @@ from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
 import scipy.special as special
 from scipy import stats
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize
 from scipy.signal import savgol_filter
 from scipy.interpolate import interp1d
 
@@ -114,20 +114,6 @@ class Stellar:
         v_baryon_sq = v_bulge_sq + v_disk_sq
         return v_baryon_sq
 
-
-    # Miyamoto-Nagai approximate thick-disk (useful quick approximation)
-    def _vel_sq_disk_MN(self, r: np.ndarray, M_d: float, a: float, b: float) -> np.ndarray:
-        denom1 = np.power(r*r + (a + b)*(a + b), 1.5)
-        v_sq = G * M_d * r*r / denom1
-        return v_sq
-
-    def _vel_baryon_MN(self, r: np.ndarray, MB: float, a: float, MD: float, ad: float, bd: float) -> np.ndarray:
-        v_bulge_sq = self._vel_sq_bulge_hernquist(r, MB, a)
-        v_disk_sq = self._vel_sq_disk_MN(r, MD, ad, bd)
-        v_baryon_sq = v_bulge_sq + v_disk_sq
-        v_baryon = np.sqrt(v_baryon_sq)
-        return v_baryon
-
     @staticmethod
     def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         mass_cell = np.asarray(mass_cell)
@@ -184,7 +170,9 @@ class Stellar:
         return radius_h_kpc_map, mass_map
 
     # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
-    def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
+    def _stellar_mass_model(self, r: np.ndarray, log_MB: float, a: float, log_MD: float, rd: float) -> np.ndarray:
+        MB = 10 ** log_MB
+        MD = 10 ** log_MD
         bulge_mass = MB * np.square(r) / np.square(r + a)
         disk_mass = MD * (1.0 - (1.0 + r / rd) * np.exp(-r / rd))
         total_mass = bulge_mass + disk_mass
@@ -200,13 +188,15 @@ class Stellar:
         mass_max = np.nanmax(mass)
         print(f"Fitting Stellar Mass M(r): radius max {radius_max:.3f} kpc, mass  {mass_max:.3e} M solar")
 
-        p0 = [0.7 * mass_max, 0.5, 0.3 * mass_max, radius_mean]  # Initial guess for MB, a, MD, rd
-        lb = [0, 1e-4, 0, 1e-4]  # Lower bound
-        ub = [10*mass_max, radius_max, 10*mass_max, radius_max]  # Upper bound
+        p0 = [np.log10(mass_max * 0.3) - 1, 0.5, np.log10(mass_max * 0.7), radius_mean]  # Initial guess for log_MB, a, log_MD, rd
+        lb = [-np.inf, 0.5, -np.inf, 1e-4]  # Lower bound
+        ub = [np.log10(mass_max * 0.5), radius_max, np.log10(mass_max * 0.9), radius_max]  # Upper bound
 
         popt, pcov = curve_fit(self._stellar_mass_model, radius_filter, mass_filter, p0=p0, bounds=(lb, ub), method='trf')
-        mb_fit, a_fit, md_fit, rd_fit = popt        
-        print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
+        log_mb_fit, a_fit, log_md_fit, rd_fit = popt
+        mb_fit = 10**log_mb_fit
+        md_fit = 10**log_md_fit
+        print(f"Fitted parameters: MB={mb_fit:.3e}, a={a_fit:.3f}, MD={md_fit:.3e}, rd={rd_fit:.3f}")
         print(f"  Parameter uncertainties: {np.sqrt(np.diag(pcov))}")
 
         mass_fit = self._stellar_mass_model(radius_fitted, *popt)
@@ -215,6 +205,82 @@ class Stellar:
         
         return mass_fit, mb_fit, a_fit, md_fit, rd_fit
     
+
+    def _stellar_mass_fit_minimize(self, radius: np.ndarray, mass: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple:
+        # --- 1. 数据预处理 ---
+        mask = (radius > r_min) & np.isfinite(mass) & np.isfinite(radius)
+        radius_filter = radius[mask]
+        mass_filter = mass[mask]
+
+        radius_max = np.nanmax(radius)
+        radius_mean = np.nanmean(radius)
+        mass_max = np.nanmax(mass)
+
+        print(f"Fitting Stellar Mass: R_max {radius_max:.3f} kpc, M_max {mass_max:.3e} M_sun")
+
+        # --- 2. 归一化 (Normalization) ---
+        # 将质量缩放到 0~1 之间，大幅提高拟合稳定性
+        mass_norm = mass_filter / mass_max
+        
+        # Model function (注意：这里计算的是归一化后的质量比例)
+        def _mass_model_norm(MB_norm, a, MD_norm, R_d, r):
+            r_safe = np.maximum(r, 1e-6)
+            # 公式不变，但 MB 和 MD 代表的是 "倍数"
+            bulge_mass = MB_norm * np.square(r_safe) / np.square(r_safe + a)
+            disk_mass = MD_norm * (1.0 - (1.0 + r_safe / R_d) * np.exp(-r_safe / R_d))
+            return bulge_mass + disk_mass
+
+        def _residuals(params):
+            # 计算残差
+            model_norm = _mass_model_norm(*params, radius_filter)
+            return np.sum((mass_norm - model_norm) ** 2)
+
+        # --- 3. 设定 Bounds 和 Initial Guess ---
+        
+        # 初始猜测：
+        # 关键调整：假设观测边界处的质量只占渐进总质量的 60%，所以总倍数猜测为 1.0/0.6 ≈ 1.6
+        # MB_norm ~ 0.4, MD_norm ~ 1.2
+        p0 = [0.4, 1.0, 1.2, radius_mean]
+
+        bounds = [
+            (0, 10.0),           # MB_norm: 允许核球是观测最大值的10倍 (归一化后就是10)
+            (0.01, radius_max),  # a: 核球尺度
+            (0, 20.0),           # MD_norm: 允许盘是观测最大值的20倍 (关键！)
+            (0.01, radius_max * 5.0) # rd: 盘尺度
+        ]
+
+        # --- 4. 执行拟合 ---
+        # 移除 constraints，完全依靠 data 驱动
+        result = minimize(_residuals, p0, bounds=bounds, method='SLSQP', tol=1e-6)
+
+        mb_norm_fit, a_fit, md_norm_fit, rd_fit = result.x
+
+        # --- 5. 还原物理量 ---
+        # 将归一化的参数乘回 mass_max
+        mb_fit = mb_norm_fit * mass_max
+        md_fit = md_norm_fit * mass_max
+        
+        print(f"Fitted params: MB={mb_fit:.2e}, a={a_fit:.2f}, MD={md_fit:.2e}, rd={rd_fit:.2f}")
+        print(f"Asymptotic Total: {mb_fit + md_fit:.2e} (Ratio to Obs Max: {(mb_fit+md_fit)/mass_max:.2f}x)")
+
+        # --- 6. 生成最终曲线 (排序后) ---
+        sort_idx = np.argsort(radius_fitted)
+        radius_fitted_sorted = radius_fitted[sort_idx]
+        
+        # 使用还原后的真实物理量计算最终曲线
+        def _mass_model_real(MB, a, MD, R_d, r):
+            r_safe = np.maximum(r, 1e-6)
+            bulge = MB * np.square(r_safe) / np.square(r_safe + a)
+            disk = MD * (1.0 - (1.0 + r_safe / R_d) * np.exp(-r_safe / R_d))
+            return bulge + disk
+
+        mass_fit = _mass_model_real(mb_fit, a_fit, md_fit, rd_fit, radius_fitted_sorted)
+        
+        fit_max_at_obs = np.max(mass_fit[radius_fitted_sorted <= radius_max])
+        print(f"Model mass at R_max: {fit_max_at_obs:.2e} (Target: {mass_max:.2e})")
+
+        return mass_fit, mb_fit, a_fit, md_fit, rd_fit
+
     ################################################################################
     # Mass Density Method
     ################################################################################
@@ -422,7 +488,19 @@ class Stellar:
         radius, vel_sq = self.get_stellar_vel_sq_by_mass(radius_fitted)
         vel_map = np.sqrt(vel_sq)
         return radius, vel_map
+    
+    def get_stellar_vel_sq_by_mass2(self, radius_fitted: np.ndarray):
+        radius, mass = self._get_stellar_mass(self.PLATE_IFU)
+        mass_fitted, MB_fit, a_fit, MD_fit, rd_fit = self._stellar_mass_fit_minimize(radius, mass, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
 
+        vel_sq = self._stellar_vel_sq_mass_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
+        return radius_fitted, vel_sq
+    
+    def get_stellar_vel_by_mass2(self, radius_fitted: np.ndarray):
+        radius, vel_sq = self.get_stellar_vel_sq_by_mass2(radius_fitted)
+        vel_map = np.sqrt(vel_sq)
+        return radius, vel_map
+    
 
     def get_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
         vel_drift_sq = self._calc_stellar_vel_drift_sq(radius_fitted, incl)
@@ -457,49 +535,54 @@ def main() -> None:
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
 
     _, radius_h_kpc_map, _ = maps_util.get_radius_map()
-    radius_sorted = np.sort(radius_h_kpc_map[np.isfinite(radius_h_kpc_map)])
-    radius_sorted = np.unique(radius_sorted)
+    radius_max = np.nanmax(radius_h_kpc_map)
+    radius_fit = np.linspace(0.0, radius_max, num=1000)
     incl = vel_rot.get_inc_rad()
 
     stellar.set_PLATE_IFU(PLATE_IFU)
-    mass_map = stellar._get_stellar_mass(PLATE_IFU)
+    _, mass_map = stellar._get_stellar_mass(PLATE_IFU)
+    r_map_by_mass, vel_map_by_mass = stellar.get_stellar_vel_by_mass(radius_fitted=radius_fit)
+    r_map_by_mass2, vel_map_by_mass2 = stellar.get_stellar_vel_by_mass2(radius_fitted=radius_fit)
+    
     print("#######################################################")
     print("# calculate stellar mass M(r)")
     print("#######################################################")
-    print(f"Mass shape: {mass_map[1].shape}, Unit: M solar, range [{np.nanmin(mass_map[1]):.3f}, {np.nanmax(mass_map[1]):,.1f}] M solar")
+    print(f"Mass shape: {mass_map.shape}, range: [{np.nanmin(mass_map):.3f}, {np.nanmax(mass_map):,.1f}] M solar")
+    print(f"Velocity stellar shape by mass: {vel_map_by_mass.shape}, range: [{np.nanmin(vel_map_by_mass):.3f}, {np.nanmax(vel_map_by_mass):.3f}]")
+    print("")
 
 
 
-    r_map, vel_map = stellar.get_stellar_vel_by_density(radius_fitted=radius_sorted)
-    r_map_2, vel_map_2 = stellar.get_stellar_vel_by_mass(radius_fitted=radius_sorted)
-
-    print("#######################################################")
-    r_drift, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_sorted, incl=incl)
+    r_map, vel_map = stellar.get_stellar_vel_by_density(radius_fitted=radius_fit)
+    r_drift, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_fit, incl=incl)
     print("#######################################################")
     print("# calculate stellar rotation velocity V(r)")
     print("#######################################################")
     print(f"Velocity stellar shape: {vel_map.shape}, range: [{np.nanmin(vel_map):.3f}, {np.nanmax(vel_map):.3f}]")
     print(f"Velocity Drift shape: {vel_drift_map.shape}, range: [{np.nanmin(vel_drift_map):.3f}, {np.nanmax(vel_drift_map):.3f}]")
 
-    valid = ~np.isnan(r_drift) & ~np.isnan(vel_drift_map)
-    if not np.any(valid):
-        print("No valid (r_drift, vel_drift) pairs")
-    else:
-        pairs = np.column_stack((r_drift[valid], vel_drift_map[valid]))
-        print("(r_drift, vel_drift) pairs:")
-        # sample 20 radii uniformly between min and max r and interpolate velocities
-        idx_sort = np.argsort(pairs[:, 0])
-        r_vals = pairs[idx_sort, 0]
-        v_vals = pairs[idx_sort, 1]
-        r_uniform = np.linspace(r_vals[0], r_vals[-1], 20)
-        v_uniform = np.interp(r_uniform, r_vals, v_vals)
-        for r, v in zip(r_uniform, v_uniform):
-            print(f"{r:.6f}, {v:.6f}")
+    # valid = ~np.isnan(r_drift) & ~np.isnan(vel_drift_map)
+    # if not np.any(valid):
+    #     print("No valid (r_drift, vel_drift) pairs")
+    # else:
+    #     pairs = np.column_stack((r_drift[valid], vel_drift_map[valid]))
+    #     print("(r_drift, vel_drift) pairs:")
+    #     # sample 20 radii uniformly between min and max r and interpolate velocities
+    #     idx_sort = np.argsort(pairs[:, 0])
+    #     r_vals = pairs[idx_sort, 0]
+    #     v_vals = pairs[idx_sort, 1]
+    #     r_uniform = np.linspace(r_vals[0], r_vals[-1], 20)
+    #     v_uniform = np.interp(r_uniform, r_vals, v_vals)
+    #     for r, v in zip(r_uniform, v_uniform):
+    #         print(f"{r:.6f}, {v:.6f}")
     
 
     plot_util.plot_rv_curve(r_map, vel_map, title="Stellar by density",
-                            r_rot2_map=r_map_2, v_rot2_map=vel_map_2, title2="Stellar by mass")
+                            r_rot2_map=r_map_by_mass, v_rot2_map=vel_map_by_mass, title2="Stellar by mass")
 
+    plot_util.plot_rv_curve(r_map_by_mass, vel_map_by_mass, title="Stellar by mass",
+                            r_rot2_map=r_map_by_mass2, v_rot2_map=vel_map_by_mass2, title2="Stellar by mass2")
+    
     return
 
 if __name__ == "__main__":

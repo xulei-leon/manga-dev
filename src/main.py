@@ -60,8 +60,8 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
-    r_stellar, V_stellar = stellar.get_stellar_vel_by_mass(radius_fitted=radius_fit)
-    r_stellar, V_stellar_sq = stellar.get_stellar_vel_sq_by_mass(radius_fitted=radius_fit)
+    r_stellar, V_stellar = stellar.get_stellar_vel_by_mass2(radius_fitted=radius_fit)
+    r_stellar, V_stellar_sq = stellar.get_stellar_vel_sq_by_mass2(radius_fitted=radius_fit)
 
     r_drift, V_drift_sq = stellar.get_stellar_vel_drift_sq(radius_fit, inc_rad)
     V_drift = np.sqrt(V_drift_sq)

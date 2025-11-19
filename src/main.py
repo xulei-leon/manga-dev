@@ -42,11 +42,11 @@ def main():
 
     radius_fit = vel_rot.get_radius_fit(count=1000)
 
-    r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs()
-    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel(r_gas_obs_map, V_gas_obs_map, phi_gas_map, radius_fit=radius_fit)
+    r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_vel_los(type='gas')
+    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_vel_rot(r_gas_obs_map, V_gas_obs_map, phi_gas_map, radius_fit=radius_fit)
 
-    r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs()
-    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=radius_fit)
+    r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_vel_los(type='stellar')
+    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_vel_rot(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=radius_fit)
 
     r_obs_map = r_gas_obs_map
     V_obs_map = V_gas_obs_map

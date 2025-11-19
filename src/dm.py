@@ -10,8 +10,6 @@ from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
-from vel_stellar import G, Stellar
-from vel_rot import PLATE_IFU, VelRot
 
 
 class DmNfw:

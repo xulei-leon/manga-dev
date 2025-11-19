@@ -470,10 +470,10 @@ class Stellar:
     def get_stellar_vel_sq_by_density(self, radius_fitted: np.ndarray) -> np.ndarray:
         sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
         vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
-        return radius_fitted, vel_sq, sigma_0_fitted, r_d_fitted
+        return radius_fitted, vel_sq
 
     def get_stellar_vel_by_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        radius, vel_sq, _, _ = self.get_stellar_vel_sq_by_density(radius_fitted)
+        radius, vel_sq = self.get_stellar_vel_sq_by_density(radius_fitted)
         vel_map = np.sqrt(vel_sq)
         return radius, vel_map
 
@@ -578,7 +578,7 @@ def main() -> None:
     
 
     plot_util.plot_rv_curve(r_map, vel_map, title="Stellar by density",
-                            r_rot2_map=r_map_by_mass, v_rot2_map=vel_map_by_mass, title2="Stellar by mass")
+                            r_rot2_map=r_map_by_mass2, v_rot2_map=vel_map_by_mass2, title2="Stellar by mass2")
 
     plot_util.plot_rv_curve(r_map_by_mass, vel_map_by_mass, title="Stellar by mass",
                             r_rot2_map=r_map_by_mass2, v_rot2_map=vel_map_by_mass2, title2="Stellar by mass2")

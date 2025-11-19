@@ -90,17 +90,43 @@ class Stellar:
     ################################################################################
 
     # The RC of the baryonic disk model (V_baryon) was derived by a method in Noordermeer (2008).
+
+    # Hernquist bulge + Freeman thin exponential disk
+    def _vel_sq_bulge_hernquist(self, r: np.ndarray, MB: float, a: float) -> np.ndarray:
+        r = np.where(r == 0, 1e-6, r)  # avoid division by zero
+        v_sq = G * MB * r / (r + a)**2
+        return v_sq
+    
     # V_baryon^2(r) = (2 * G * M_baryon / R_d) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-    def _stellar_vel_sq_mass_profile(self, R: np.ndarray, M_baryon: float, R_d: float) -> np.ndarray:
-        # FIXME: handle R = 0 case
-        R = np.where(R == 0, 1e-6, R)  # avoid division by zero
-        y = R / (2.0 * R_d)
+    def _vel_sq_disk_freeman(self, r: np.ndarray, M_d: float, R_d: float) -> np.ndarray:
+        r = np.where(r == 0, 1e-6, r)  # avoid division by zero
+        y = r / (2.0 * R_d)
         I_0 = special.i0(y)
         I_1 = special.i1(y)
         K_0 = special.k0(y)
         K_1 = special.k1(y)
-        V2 = (2.0 * G * M_baryon / R_d) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
-        return V2
+        v_sq = (2.0 * G * M_d / R_d) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
+        return v_sq
+    
+    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, MB: float, a: float, MD: float, R_d: float) -> np.ndarray:
+        v_bulge_sq = self._vel_sq_bulge_hernquist(r, MB, a)
+        v_disk_sq = self._vel_sq_disk_freeman(r, MD, R_d)
+        v_baryon_sq = v_bulge_sq + v_disk_sq
+        return v_baryon_sq
+
+
+    # Miyamoto-Nagai approximate thick-disk (useful quick approximation)
+    def _vel_sq_disk_MN(self, r: np.ndarray, M_d: float, a: float, b: float) -> np.ndarray:
+        denom1 = np.power(r*r + (a + b)*(a + b), 1.5)
+        v_sq = G * M_d * r*r / denom1
+        return v_sq
+
+    def _vel_baryon_MN(self, r: np.ndarray, MB: float, a: float, MD: float, ad: float, bd: float) -> np.ndarray:
+        v_bulge_sq = self._vel_sq_bulge_hernquist(r, MB, a)
+        v_disk_sq = self._vel_sq_disk_MN(r, MD, ad, bd)
+        v_baryon_sq = v_bulge_sq + v_disk_sq
+        v_baryon = np.sqrt(v_baryon_sq)
+        return v_baryon
 
     @staticmethod
     def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -129,11 +155,6 @@ class Stellar:
         return mass_r, r_bins
 
     def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        print("")
-        print("#######################################################")
-        print("# 1. calculate stellar M(r)")
-        print("#######################################################")
-
         mass_stellar_cell, mass_stellar_cell_err = self.firefly_util.get_stellar_mass_cell(PLATE_IFU)
         print(f"Stellar Mass shape: {mass_stellar_cell.shape}, Unit: M solar, total: {np.nansum(mass_stellar_cell):,.1f} M solar")
 
@@ -165,22 +186,35 @@ class Stellar:
     # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
     def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
         bulge_mass = MB * np.square(r) / np.square(r + a)
-        disk_mass = MD * (1 - (1 + r / rd) * np.exp(-r / rd))
+        disk_mass = MD * (1.0 - (1.0 + r / rd) * np.exp(-r / rd))
         total_mass = bulge_mass + disk_mass
         return total_mass
 
     # used the minimum χ 2 method for fitting
-    @deprecated(reason="To use Mass Density method instead", version="0.1.0")
     def _stellar_mass_fit(self, radius: np.ndarray, mass: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> np.ndarray:
         radius_filter = radius[radius>r_min]
         mass_filter = mass[radius>r_min]
 
-        initial_guess = [1e10, 1.0, 1e10, 3.0]  # Initial guess for MB, a, MD, rd
-        popt, pcov = curve_fit(self._stellar_mass_model, radius_filter, mass_filter, p0=initial_guess, maxfev=10000)
-        fitted_mass = self._stellar_mass_model(radius_fitted, *popt)
-        print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
-        return radius_fitted, fitted_mass
+        radius_max = np.nanmax(radius)
+        radius_mean = np.nanmean(radius)
+        mass_max = np.nanmax(mass)
+        print(f"Fitting Stellar Mass M(r): radius max {radius_max:.3f} kpc, mass  {mass_max:.3e} M solar")
 
+        p0 = [0.7 * mass_max, 0.5, 0.3 * mass_max, radius_mean]  # Initial guess for MB, a, MD, rd
+        lb = [0, 1e-4, 0, 1e-4]  # Lower bound
+        ub = [10*mass_max, radius_max, 10*mass_max, radius_max]  # Upper bound
+
+        popt, pcov = curve_fit(self._stellar_mass_model, radius_filter, mass_filter, p0=p0, bounds=(lb, ub), method='trf')
+        mb_fit, a_fit, md_fit, rd_fit = popt        
+        print(f"Fitted parameters: MB={popt[0]:.3e}, a={popt[1]:.3f}, MD={popt[2]:.3e}, rd={popt[3]:.3f}")
+        print(f"  Parameter uncertainties: {np.sqrt(np.diag(pcov))}")
+
+        mass_fit = self._stellar_mass_model(radius_fitted, *popt)
+        mass_fit_max = np.nanmax(mass_fit)
+        print(f"Fitted mass max: {mass_fit_max:.3e} M solar")
+        
+        return mass_fit, mb_fit, a_fit, md_fit, rd_fit
+    
     ################################################################################
     # Mass Density Method
     ################################################################################
@@ -231,7 +265,6 @@ class Stellar:
         _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
 
         _density, _ = self.firefly_util.get_stellar_density_cell(PLATE_IFU)
-        _density = _density * 0.49  # convert from M_solar / kpc^2/h^2 to M_solar / kpc^2, assuming h = 0.7
         print(f"Stellar Mass Density shape: {_density.shape}, Unit: M solar / kpc^2, range [{np.nanmin(_density[_density>=0]):.3f}, {np.nanmax(_density):,.1f}] M solar / kpc^2")
 
         sigma_0_fitted, r_d_fitted = self._stellar_central_density_fit(_radius_h_kpc, _density, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
@@ -368,29 +401,28 @@ class Stellar:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    def get_stellar_vel(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
-        vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
-        vel_map = np.sqrt(vel_sq)
-        return radius_fitted, vel_map
-
-    def get_stellar_vel_sq(self, radius_fitted: np.ndarray) -> np.ndarray:
+    def get_stellar_vel_sq_by_density(self, radius_fitted: np.ndarray) -> np.ndarray:
         sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
         vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         return radius_fitted, vel_sq, sigma_0_fitted, r_d_fitted
 
-    def get_stellar_density_0(self, radius_fitted: np.ndarray) -> float:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
-        return sigma_0_fitted
-    
-    def calc_stellar_vel_sq(self, radius, density_0, r_d) -> tuple[np.ndarray, np.ndarray]:
-        vel_sq = self._stellar_vel_sq_profile(radius, density_0, r_d)
-        return radius, vel_sq
+    def get_stellar_vel_by_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        radius, vel_sq, _, _ = self.get_stellar_vel_sq_by_density(radius_fitted)
+        vel_map = np.sqrt(vel_sq)
+        return radius, vel_map
 
-    def calc_stellar_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
-        density = self._stellar_density_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
-        return radius_fitted, density
+    def get_stellar_vel_sq_by_mass(self, radius_fitted: np.ndarray):
+        radius, mass = self._get_stellar_mass(self.PLATE_IFU)
+        mass_fitted, MB_fit, a_fit, MD_fit, rd_fit = self._stellar_mass_fit(radius, mass, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
+
+        vel_sq = self._stellar_vel_sq_mass_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
+        return radius_fitted, vel_sq
+    
+    def get_stellar_vel_by_mass(self, radius_fitted: np.ndarray):
+        radius, vel_sq = self.get_stellar_vel_sq_by_mass(radius_fitted)
+        vel_map = np.sqrt(vel_sq)
+        return radius, vel_map
+
 
     def get_stellar_vel_drift_sq(self, radius_fitted: np.ndarray, incl:float) -> np.ndarray:
         vel_drift_sq = self._calc_stellar_vel_drift_sq(radius_fitted, incl)
@@ -438,7 +470,10 @@ def main() -> None:
 
 
 
-    r_map, vel_map = stellar.get_stellar_vel(radius_fitted=radius_sorted)
+    r_map, vel_map = stellar.get_stellar_vel_by_density(radius_fitted=radius_sorted)
+    r_map_2, vel_map_2 = stellar.get_stellar_vel_by_mass(radius_fitted=radius_sorted)
+
+    print("#######################################################")
     r_drift, vel_drift_map = stellar.get_stellar_vel_drift(radius_fitted=radius_sorted, incl=incl)
     print("#######################################################")
     print("# calculate stellar rotation velocity V(r)")
@@ -462,8 +497,9 @@ def main() -> None:
             print(f"{r:.6f}, {v:.6f}")
     
 
-    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar",
-                            r_rot2_map=r_drift, v_rot2_map=vel_drift_map, title2="Drift")
+    plot_util.plot_rv_curve(r_map, vel_map, title="Stellar by density",
+                            r_rot2_map=r_map_2, v_rot2_map=vel_map_2, title2="Stellar by mass")
+
     return
 
 if __name__ == "__main__":

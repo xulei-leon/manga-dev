@@ -251,8 +251,14 @@ class VelRot:
         radius_map = self._get_radius()
         radius_sorted = np.sort(radius_map[np.isfinite(radius_map)])
         radius_sorted = np.unique(radius_sorted)
-
         return radius_sorted
+    
+    def get_radius_fit(self, count: int=100) -> np.ndarray:
+        radius_map = self._get_radius()
+        radius_max = np.nanmax(radius_map)
+
+        radius_fit = np.linspace(0.0, radius_max, num=count)
+        return radius_fit
 
 
 ######################################################

@@ -40,18 +40,18 @@ def main():
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
 
-    r_sorted = vel_rot.get_radius_sort()
+    radius_fit = vel_rot.get_radius_fit(count=1000)
 
-    # r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs()
-    # r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel(r_gas_obs_map, V_gas_obs_map, phi_gas_map, radius_fit=r_sorted)
+    r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs()
+    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel(r_gas_obs_map, V_gas_obs_map, phi_gas_map, radius_fit=radius_fit)
 
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs()
-    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=r_sorted)
+    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=radius_fit)
 
-    r_obs_map = r_stellar_obs_map
-    V_obs_map = V_stellar_obs_map
-    r_obs_fitted = r_stellar_rot_fitted
-    V_obs_fitted = V_stellar_rot_fitted
+    r_obs_map = r_gas_obs_map
+    V_obs_map = V_gas_obs_map
+    r_obs_fitted = r_gas_rot_fitted
+    V_obs_fitted = V_gas_rot_fitted
 
     inc_rad = vel_rot.get_inc_rad()
 
@@ -60,11 +60,10 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
-    r_stellar, V_stellar = stellar.get_stellar_vel(radius_fitted=r_obs_fitted)
-    r_stellar, V_stellar_sq, _, r_d = stellar.get_stellar_vel_sq(radius_fitted=r_obs_fitted)
-    _, stellar_density_map = stellar.calc_stellar_density(radius_fitted=r_obs_fitted)
+    r_stellar, V_stellar = stellar.get_stellar_vel_by_mass(radius_fitted=radius_fit)
+    r_stellar, V_stellar_sq = stellar.get_stellar_vel_sq_by_mass(radius_fitted=radius_fit)
 
-    r_drift, V_drift_sq = stellar.get_stellar_vel_drift_sq(r_obs_fitted, inc_rad)
+    r_drift, V_drift_sq = stellar.get_stellar_vel_drift_sq(radius_fit, inc_rad)
     V_drift = np.sqrt(V_drift_sq)
     print(f"V_drift values at specific radii:")
     for r_target in [1, 2, 3, 4, 5, 6, 7, 8]:

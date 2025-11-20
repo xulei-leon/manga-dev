@@ -43,7 +43,7 @@ class FitsUtil:
 
         if not (ret_path).exists():
             print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
-            dl_success = self.dl_maps(plateifu)
+            dl_success = self.dl_maps(plateifu, filename)
             if not dl_success:
                 raise FileNotFoundError(f"Unable to obtain MAPS file: {filename}")
         return ret_path

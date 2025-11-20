@@ -83,12 +83,17 @@ class MapsUtil:
 
     #  ECOOPA: Position angle for ellip. coo
     #  ECOOELL: Ellipticity (1-b/a) for ellip. coo
-    def get_pa_inc(self) -> tuple[float | None, float | None]:
-        """Return (position angle in degrees, inclination in degrees) from MAPS header or (None, None)."""
+    def get_pa(self) -> tuple[float | None, float | None]:
         hdr = self.hdu['PRIMARY'].header
         pa_val = hdr.get('ECOOPA', None)
+        return pa_val
+    
+    def get_ba(self) -> float | None:
+        hdr = self.hdu['PRIMARY'].header
         ellip_val = hdr.get('ECOOELL', None)
-        return pa_val, ellip_val
+        if ellip_val is not None:
+            return 1 - ellip_val
+        return None
 
 
     # BIN_LWELLCOO

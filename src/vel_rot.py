@@ -86,11 +86,12 @@ class VelRot:
         inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
         return inc_rad
 
+
     @staticmethod
     def _calc_phi_delta(phi, phi_0=0.0):
         """Normalize azimuth angles to [-pi/2, +pi/2] relative to the major axis."""
         return ((phi - phi_0) + np.pi/2) % np.pi - np.pi/2
-    
+   
     # PA: The position angle of the major axis of the galaxy, measured from north to east.
     # b/a: The axis ratio (b/a) of the galaxy
     def _calc_pa_inc(self) -> float:
@@ -104,6 +105,7 @@ class VelRot:
 
         return pa, inc
 
+    
     # Filter the velocity map with SNR above the threshold and within ±phi_limit of the major axis.
     def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, azimuth_map: np.ndarray, snr_threshold: float = 10.0, phi_limit_deg: float = 60.0) -> np.ndarray:
         phi_delta = self._calc_phi_delta(azimuth_map)
@@ -114,7 +116,7 @@ class VelRot:
         vel_map_filtered[valid_mask] = vel_map[valid_mask]
         return vel_map_filtered
     
-    def _get_vel_los(self, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_vel_obs(self, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         offset_x, offset_y = self.maps_util.get_sky_offsets()
         self._debug(f"Sky offsets shape: {offset_x.shape}, X offset: [{np.nanmin(offset_x):.3f}, {np.nanmax(offset_x):.3f}] arcsec")
 
@@ -173,113 +175,101 @@ class VelRot:
     ################################################################################
     # rotation curve fitting procedures
     ################################################################################
-
+    # rotation curve fitting procedures
+    ################################################################################
     # Formula: V(r) = Vc * tanh(r / Rt) + s_out * r
-    # sout is the slope of the RC at large radii r >> Rt
+    # s_out is the slope of the RC at large radii r >> Rt
     # Rt is the turnover radius where the rotation curve transitions from rising to flat.
     def _vel_rot_profile(self, r, Vc, Rt, s_out) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + s_out * r
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
-    # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
-    # Formula: V_obs = V_rot * (sin(i) * cos(phi_delta))
-    def _calc_vel_los_from_rot(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray) -> np.ndarray:
-        phi_delta = self._calc_phi_delta(phi, phi_0=0.0)
-        correction = np.sin(inc) * np.cos(phi_delta)
+    # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis.
+    # Formula: V_obs = V_rot * (sin(i) * cos(phi - phi_0))
+    def _calc_vel_obs_from_rot(self, vel_rot: np.ndarray, phi: np.ndarray, inc: float, phi_0: float) -> np.ndarray:
+        correction = np.sin(inc) * np.cos(phi - phi_0)
         return vel_rot * correction
 
-    #  V_obs = (Vc * tanh(r / Rt) + s_out * r) * (sin(i) * cos(phi_delta))
-    def _vel_los_fit_model(self, r, Vc, Rt, s_out, inc, phi) -> np.ndarray:
+    #  V_obs = (Vc * tanh(r / Rt) + s_out * r) * (sin(i) * cos(phi - phi_0))
+    def _vel_obs_fit_model(self, r:np.ndarray, phi:np.ndarray, Vc:float, Rt:float, s_out:float, inc:float, phi_0:float) -> np.ndarray:
         r = np.asarray(r, dtype=float)
+        phi = np.asarray(phi, dtype=float)
         vel_rot = self._vel_rot_profile(r, Vc, Rt, s_out)
-        vel_los = self._calc_vel_los_from_rot(vel_rot, inc, phi)
-        return vel_los
+        vel_obs = self._calc_vel_obs_from_rot(vel_rot, phi, inc, phi_0)
+        return vel_obs
     
     # used the minimum χ 2 method for fitting
-    def _rot_curve_fit(self, radius_map: np.ndarray, vel_los_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
-        """Fit the rotation curve using the experience curve function."""
-        
-        # 1. 数据清洗
-        # 确保移除 NaN 和 Inf
-        valid_mask = np.isfinite(vel_los_map) & np.isfinite(radius_map) & np.isfinite(phi_map)
-        
-        # 提取有效数据
-        # 注意：物理半径 r 必须为正数用于计算 V_rot (tanh函数定义域)
-        radius_valid_abs = np.abs(radius_map[valid_mask]) 
+    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None):
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & np.isfinite(phi_map) & (radius_map > 0.1)
+        radius_valid = radius_map[valid_mask]
         phi_valid = phi_map[valid_mask]
-        vel_valid = np.abs(vel_los_map[valid_mask])
+        vel_valid = vel_obs_map[valid_mask]   # KEEP sign!
 
-        # 2. 计算固定的倾角 (Inc)
-        _, inc_fixed = self._calc_pa_inc()
-        
-        # 保护性检查：如果倾角过小（接近面朝上），投影修正会产生巨大的数字
-        sin_inc = np.abs(np.sin(inc_fixed))
-        if sin_inc < 0.1: # 约 5.7 度
-            self._debug(f"Warning: Inclination is very small ({np.degrees(inc_fixed):.1f} deg). V_rot calculation might be unstable.")
-            sin_inc = 0.1 # 避免除零或过度放大
+        # get photometric/initial inclination (ensure in radians)
+        pa_fixed, inc_fixed = self._calc_pa_inc()
+        phi0_guess = pa_fixed
 
-        # 3. 初始猜测 (Initial Guess)
-        # 使用 99分位数代替 max，防止极端噪点影响初始值
-        v_max_guess = np.nanpercentile(np.abs(vel_valid), 99)
-        Vc0 = v_max_guess / sin_inc
-        
-        # Rt0: 猜测转折半径。通常在有效半径的中位数附近
-        Rt0 = np.nanmedian(radius_valid_abs) / 2.0
-        if Rt0 == 0: Rt0 = 1.0
-        
-        # s_out0: 外围斜率。初始化为 0 (平坦) 是最安全的
-        s_out0 = 0.0 
+        # clip inc to a reasonable range for fitting
+        inc_fixed = np.clip(inc_fixed, np.radians(10.0), np.radians(80.0))
 
-        initial_guess = [Vc0, Rt0, s_out0]
+        if np.abs(np.sin(inc_fixed)) < 0.05:
+            self._debug(f"Warning: Inclination is very small ({np.degrees(inc_fixed):.1f} deg). Fit may be unstable.")
 
-        # 4. 构建多变量输入数据 (X_data)
-        # 将 半径(abs) 和 角度(phi) 堆叠成 (2, N) 的数组
-        # 这样 curve_fit 会同时传入 r 和 phi，确保几何投影的符号计算正确
-        X_data = np.vstack((radius_valid_abs, phi_valid))
+        # -----------------------------
+        # 1) Fix inclination to photometric value (main change)
+        #    Only fit Vc, Rt, s_out, phi_0 to avoid unphysical i=90°
+        # -----------------------------
+        # initial guesses
 
-        # 定义拟合包装函数：解包 X 得到 r 和 phi
-        def fit_wrapper(X, Vc, Rt, s_out):
-            r = X[0]   # 绝对值半径
-            phi = X[1] # 对应的方位角
-            # 调用您现有的物理模型
-            return self._vel_los_fit_model(r, Vc, Rt, s_out, inc_fixed, phi)
-        
-        # 5. 设置边界 (Bounds)
-        # Vc: [0, 3000] - 速度必须为正
-        # Rt: [0.01, 1000] - 转折半径必须为正且非零
-        # s_out: [-50, 50] - 斜率可正可负，限制范围防止过拟合
-        bounds = ([0.0, 1e-3, -50.0], [3000.0, 1000.0, 50.0]) 
+        # Bounds (wider Vc so the fit does not stick at the upper limit)
+        inc_val = float(inc_fixed)   # fixed in model, not fitted
+        # Vc in km/s, Rt in kpc/h, s_out in (km/s)/kpc, phi_0 in rad
+        p0 = [271, 1.5, -6.0, np.radians(100)]
+        lb = [0.0,   0.05, -50.0, -2*np.pi]   # Vc, Rt, s_out, phi_0
+        ub = [800.0, 15.0,  50.0,  2*np.pi]
+
+
+
+        # Parameter order: Vc, Rt, s_out, phi_0
+
+        X_data = np.column_stack((radius_valid, phi_valid))
+        Y_data = vel_valid
+
+        def fit_func_partial(x, Vc, Rt, s_out, phi_0):
+            r = x[:, 0]
+            phi = x[:, 1]
+            return self._vel_obs_fit_model(r, phi, Vc, Rt, s_out, inc_val, phi_0)
 
         try:
-            # maxfev 增加到 10000 以确保在数据点很多时能收敛
-            popt, pcov = curve_fit(fit_wrapper, X_data, vel_valid, p0=initial_guess, bounds=bounds, maxfev=10000)
-            Vc_fit, Rt_fit, s_out_fit = popt
-            
-            # 计算参数误差 (标准差)
+            popt, pcov = curve_fit(
+                fit_func_partial,
+                X_data,
+                Y_data,
+                p0=p0,
+                bounds=(lb, ub),
+                method='trf',
+                max_nfev=20000,
+            )
+            Vc_fit, Rt_fit, s_out_fit, phi_0_fit = popt
             perr = np.sqrt(np.diag(pcov))
         except Exception as e:
             self._debug(f"Fitting failed: {e}")
-            # 拟合失败时的默认回退值
-            Vc_fit, Rt_fit, s_out_fit = 0.0, 1.0, 0.0
-            perr = [0, 0, 0]
+            Vc_fit, Rt_fit, s_out_fit, phi_0_fit = p0
+            perr = [np.nan]*4
+       
+        phi_0_deg = np.degrees(phi_0_fit) % 360.0
 
-        self._debug("Fitted parameters:")
+        self._debug("Fitted parameters (inc fixed to photometric):")
         self._debug(f"  Vc:    {Vc_fit:.3f} +/- {perr[0]:.3f} km/s")
         self._debug(f"  Rt:    {Rt_fit:.3f} +/- {perr[1]:.3f} kpc/h")
         self._debug(f"  s_out: {s_out_fit:.3f} +/- {perr[2]:.3f} (km/s)/kpc")
+        self._debug(f"  inc:   {np.degrees(inc_val):.3f} deg (fixed, photometric)")
+        self._debug(f"  phi_0: {phi_0_deg:.3f} +/- {np.degrees(perr[3]):.3f} deg")
 
-        # 6. 生成拟合结果曲线
         if radius_fit is None:
-            radius_fit = radius_map # 使用原始输入
-        
-        # 计算纯物理旋转曲线 (用于展示 V_rot，均为正值)
-        # 注意：这里传入 abs(radius_fit) 确保输出仅展示物理速度大小
-        radius_fit_abs = np.abs(radius_fit)
-        vel_rot_fitted = self._vel_rot_profile(radius_fit_abs, Vc_fit, Rt_fit, s_out_fit)
-        
-        # 如果需要返回拟合的观测速度(带符号)，则需要传入对应的 phi_fit
-        # 但通常 _rot_curve_fit 返回的是去投影后的 V_rot 曲线
-        
+            radius_fit = radius_map
+
+        vel_rot_fitted = self._vel_rot_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit)
         return radius_fit, vel_rot_fitted
 
     ################################################################################
@@ -287,12 +277,12 @@ class VelRot:
     ################################################################################
 
     # Line-of-Sight Velocity Maps
-    def get_vel_los(self, type: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        radius_map, vel_los_map, phi_map = self._get_vel_los(type=type)
-        return radius_map, vel_los_map, phi_map
+    def get_vel_obs(self, type: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        radius_map, vel_obs_map, phi_map = self._get_vel_obs(type=type)
+        return radius_map, vel_obs_map, phi_map
 
-    def fit_vel_rot(self, radius_map, vel_los_map, phi_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted =  self._rot_curve_fit(radius_map, vel_los_map, phi_map, radius_fit=radius_fit)
+    def fit_vel_rot(self, radius_map, vel_obs_map, phi_map, radius_fit=None):
+        radius_fitted, vel_rot_fitted =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map, radius_fit=radius_fit)
         return radius_fitted, vel_rot_fitted
 
     def get_inc_rad(self):
@@ -311,7 +301,7 @@ class VelRot:
 # main function for test
 ######################################################
 def main():
-    PLATE_IFU = "8723-12705"
+    PLATE_IFU = "7957-3701"
 
     root_dir = Path(__file__).resolve().parent.parent
     fits_util = FitsUtil(root_dir / "data")
@@ -329,7 +319,7 @@ def main():
     plot_util = PlotUtil(fits_util)
 
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, log_level=logging.DEBUG)
-    r_obs_map, V_obs_map, phi_map = vel_rot.get_vel_los("gas")
+    r_obs_map, V_obs_map, phi_map = vel_rot.get_vel_obs("gas")
     r_rot_fitted, V_rot_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, phi_map)
 
     print("#######################################################")

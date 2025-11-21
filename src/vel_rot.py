@@ -69,14 +69,9 @@ class VelRot:
         inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
         return inc_rad
 
-    @staticmethod
-    def _calc_phi_delta(phi, phi_0=0.0):
-        """Normalize azimuth angles to [-pi/2, +pi/2] relative to the major axis."""
-        return ((phi - phi_0) + np.pi/2) % np.pi - np.pi/2
-
     # Filter the velocity map with SNR above the threshold and within ±phi_limit of the major axis.
-    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, azimuth_map: np.ndarray, snr_threshold: float = 10.0, phi_limit_deg: float = 60.0) -> np.ndarray:
-        phi_delta = self._calc_phi_delta(azimuth_map)
+    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, phi_delta: np.ndarray, snr_threshold: float = 10.0, phi_limit_deg: float = 60.0) -> np.ndarray:
+        phi_delta = (phi_delta + np.pi/2) % np.pi - np.pi/2
         phi_limit_rad = np.radians(phi_limit_deg)
         valid_mask = ((snr_map >= snr_threshold) & (np.abs(phi_delta) <= phi_limit_rad) & np.isfinite(vel_map))
 
@@ -98,11 +93,6 @@ class VelRot:
         return pa, inc
 
     def _get_vel_obs(self, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        print("")
-        print("#######################################################")
-        print("# Galaxy Parameters")
-        print("#######################################################")
-
         offset_x, offset_y = self.maps_util.get_sky_offsets()
         print(f"Sky offsets shape: {offset_x.shape}, X offset: [{np.nanmin(offset_x):.3f}, {np.nanmax(offset_x):.3f}] arcsec")
 
@@ -119,12 +109,6 @@ class VelRot:
         ra_map, dec_map = self.maps_util.get_skycoo_map()
         print(f"RA map: [{np.nanmin(ra_map):.6f}, {np.nanmax(ra_map):.6f}] deg,", f"Dec map: [{np.nanmin(dec_map):.6f}, {np.nanmax(dec_map):.6f}] deg")
 
-
-        print("")
-        print("#######################################################")
-        print("# Galaxy Velocity")
-        print("#######################################################")
-
         ## Get the gas velocity map (H-alpha)
         v_obs_gas_map, _gv_unit, _gv_ivar = self.maps_util.get_eml_vel_map()
         print(f"Gas velocity map shape: {v_obs_gas_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(v_obs_gas_map):.3f}, {np.nanmax(v_obs_gas_map):.3f}] {_gv_unit}")
@@ -137,11 +121,6 @@ class VelRot:
         stellar_uindx = self.maps_util.get_stellar_uindx()
         print(f"Stellar Unique indices shape: {stellar_uindx.shape}")
 
-
-        print("")
-        print("#######################################################")
-        print("# Filter Velocity Processing")
-        print("#######################################################")
         # Velocity correction
         if type == 'gas':
             v_obs_map = v_obs_gas_map
@@ -179,42 +158,42 @@ class VelRot:
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
     # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
-    # Formula: V_obs = V_rot * (sin(i) * cos(phi_delta))
-    def _calc_vel_obs_from_rot(self, vel_rot: np.ndarray, inc: float, phi: np.ndarray, phi_0: float) -> np.ndarray:
-        phi_delta = self._calc_phi_delta(phi, phi_0=0.0)
+    # Formula: V_obs = V_rot * (sin(i) * cos(phi - phi_0))
+    def _calc_vel_obs_from_rot(self, vel_rot: np.ndarray, inc: float, phi_delta: np.ndarray) -> np.ndarray:
+        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly 
         correction = np.sin(inc) * np.cos(phi_delta)
         return vel_rot * correction
 
-    #  V_obs = (Vc * tanh(r / Rt) + s_out * r) * (sin(i) * cos(phi - phi_0))
-    def _vel_obs_fit_profile(self, r, Vc, Rt, s_out, inc, phi, phi_0) -> np.ndarray:
+    #  V_obs = (Vc * tanh(r / Rt) + s_out * r) * (sin(i) * cos(phi_delta))
+    def _vel_obs_fit_profile(self, r, Vc, Rt, s_out, inc, phi_delta) -> np.ndarray:
         r = np.asarray(r, dtype=float)
         vel_rot = self.__vel_rot_profile(r, Vc, Rt, s_out)
-        vel_obs = self._calc_vel_obs_from_rot(vel_rot, inc, phi, phi_0)
+        vel_obs = self._calc_vel_obs_from_rot(vel_rot, inc, phi_delta)
         return vel_obs
 
     # used the minimum χ 2 method for fitting
-    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
+    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_delta_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
         """Fit the rotation curve using the experience curve function."""
         # Flatten the maps and remove NaN values
-        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.1) & np.isfinite(phi_map)
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.1) & np.isfinite(phi_delta_map)
         radius_valid = radius_map[valid_mask]
-        phi_valid = phi_map[valid_mask]
+        phi_delta_valid = phi_delta_map[valid_mask]
         vel_valid = vel_obs_map[valid_mask]
-        vel_valid = np.abs(vel_valid)
+        # vel_valid = np.abs(vel_valid)
         # radius_valid = np.where(vel_valid < 0, -np.abs(radius_valid), np.abs(radius_valid))
 
         phi_0, inc_0 = self._calc_pa_inc()
         def fit_func_partial(r, Vc, Rt, s_out, inc):
-            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc, phi=phi_valid, phi_0=phi_0)
+            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc, phi_delta_valid)
 
         Xdata = radius_valid
         Ydata = vel_valid
 
         p0 = [100.0, 2.0, 0.1, np.deg2rad(45.0)]  # Initial guesses for Vc, Rt, s_out, inc
-        lb = [1e-6, 1e-6, -50.0, 1e-6]
-        ub = [500.0, 20, 50.0, np.pi/2]
+        lb = [1e-6, 1e-6, -50.0, 1e-6]  # Lower bounds
+        ub = [500.0, 20, 50.0, np.pi/2]  # Upper bounds
 
-        popt, _ = curve_fit(fit_func_partial, Xdata, Ydata, p0=p0, bounds=(lb, ub), method='trf')
+        popt, pcov = curve_fit(fit_func_partial, Xdata, Ydata, p0=p0, bounds=(lb, ub), method='trf')
         Vc_fit, Rt_fit, s_out_fit, inc_fit = popt
 
         print(f"IFU [{self.PLATE_IFU}] Fitted parameters:")
@@ -223,6 +202,13 @@ class VelRot:
         print(f"  s_out: {s_out_fit:.3f} km/s")
         print(f"  i: {np.degrees(inc_fit):.3f} deg")
         print(f"  phi_0: {np.degrees(phi_0):.3f} deg")
+
+        print(f" error estimates:")
+        perr = np.sqrt(np.diag(pcov))
+        print(f"  Vc error: {perr[0]:.3f} km/s")
+        print(f"  Rt error: {perr[1]:.3f} kpc/h")
+        print(f"  s_out error: {perr[2]:.3f} km/s")
+        print(f"  i error: {np.degrees(perr[3]):.3f} deg")
 
         if radius_fit is None:
             radius_fit = radius_map
@@ -266,7 +252,7 @@ class VelRot:
 # main function for test
 ######################################################
 def main():
-    PLATE_IFU = "7957-3701"
+    PLATE_IFU = "8723-12703"
 
     root_dir = Path(__file__).resolve().parent.parent
     fits_util = FitsUtil(root_dir / "data")
@@ -292,7 +278,9 @@ def main():
     print("#######################################################")
     print("# calculate results")
     print("#######################################################")
+    print(f"Obs Radius shape: {r_obs_map.shape}, range: [{np.nanmin(r_obs_map):.3f}, {np.nanmax(r_obs_map):.3f}] kpc/h")
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
+    print(f"Obs Phi shape: {phi_map.shape}, range: [{np.nanmin(phi_map):.3f}, {np.nanmax(phi_map):.3f}] rad")
     print(f"Fitted Rot Velocity shape: {V_rot_fitted.shape}, range: [{np.nanmin(V_rot_fitted):.3f}, {np.nanmax(V_rot_fitted):.3f}]")
 
     plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs")

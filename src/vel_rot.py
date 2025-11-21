@@ -153,7 +153,7 @@ class VelRot:
     ################################################################################
 
     # Formula: V(r) = Vc * tanh(r / Rt) + s_out * r
-    def __vel_rot_profile(self, r, Vc, Rt, s_out) -> np.ndarray:
+    def __vel_rot_profile(self, r: np.ndarray, Vc, Rt, s_out) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + s_out * r
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
@@ -183,32 +183,36 @@ class VelRot:
         # radius_valid = np.where(vel_valid < 0, -np.abs(radius_valid), np.abs(radius_valid))
 
         phi_0, inc_0 = self._calc_pa_inc()
-        def fit_func_partial(r, Vc, Rt, s_out, inc):
-            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc, phi_delta_valid)
+        
+        # Fix inclination to the photometric value to avoid Vc-sin(i) degeneracy
+        def fit_func_partial(r, Vc, Rt, s_out):
+            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc_0, phi_delta_valid)
 
         Xdata = radius_valid
         Ydata = vel_valid
 
-        p0 = [100.0, 2.0, 0.1, np.deg2rad(45.0)]  # Initial guesses for Vc, Rt, s_out, inc
-        lb = [1e-6, 1e-6, -50.0, 1e-6]  # Lower bounds
-        ub = [500.0, 20, 50.0, np.pi/2]  # Upper bounds
+        # Adjusted initial guesses and bounds based on expected values (Rt~2.4, s_out~2.9)
+        p0 = [150.0, 2.5, 3.0]  # Initial guesses for Vc, Rt, s_out
+        lb = [1e-6, 0.1, -50.0]  # Lower bounds
+        ub = [500.0, 20.0, 50.0]  # Upper bounds
 
         popt, pcov = curve_fit(fit_func_partial, Xdata, Ydata, p0=p0, bounds=(lb, ub), method='trf')
-        Vc_fit, Rt_fit, s_out_fit, inc_fit = popt
+        Vc_fit, Rt_fit, s_out_fit = popt
+        inc_fit = inc_0
 
         print(f"IFU [{self.PLATE_IFU}] Fitted parameters:")
-        print(f"  Vc: {Vc_fit:.3f} km/s")
-        print(f"  Rt: {Rt_fit:.3f} kpc/h")
-        print(f"  s_out: {s_out_fit:.3f} km/s")
-        print(f"  i: {np.degrees(inc_fit):.3f} deg")
-        print(f"  phi_0: {np.degrees(phi_0):.3f} deg")
+        print(f"Fit  Vc: {Vc_fit:.3f} km/s")
+        print(f"Fit  Rt: {Rt_fit:.3f} kpc/h")
+        print(f"Fit  s_out: {s_out_fit:.3f} km/s")
+        print(f"fixed  i: {np.degrees(inc_fit):.3f} deg")
+        print(f"fixed  phi_0: {np.degrees(phi_0):.3f} deg")
 
         print(f" error estimates:")
         perr = np.sqrt(np.diag(pcov))
         print(f"  Vc error: {perr[0]:.3f} km/s")
         print(f"  Rt error: {perr[1]:.3f} kpc/h")
         print(f"  s_out error: {perr[2]:.3f} km/s")
-        print(f"  i error: {np.degrees(perr[3]):.3f} deg")
+
 
         if radius_fit is None:
             radius_fit = radius_map

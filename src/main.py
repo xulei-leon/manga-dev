@@ -16,7 +16,7 @@ fits_util = FitsUtil(root_dir / "data")
 
 
 def main():
-    PLATE_IFU = "8723-12705"
+    PLATE_IFU = "8723-12703"
 
     print("#######################################################")
     print("# 1. load necessary files")
@@ -39,6 +39,7 @@ def main():
     print("# 2. calculate rot rotation velocity V(r)")
     print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
+    vel_rot.set_PLATE_IFU(PLATE_IFU)
 
     radius_fit = vel_rot.get_radius_fit(count=1000)
 

@@ -10,7 +10,7 @@ from astropy.io import fits
 from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
 from scipy import stats
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize
 from matplotlib import colors
 
 # my imports
@@ -152,9 +152,6 @@ class VelRot:
     # rotation curve fitting procedures
     ################################################################################
 
-    # Formula: V(r) = Vc * tanh(r / Rt) + s_out * r
-    def __vel_rot_profile(self, r: np.ndarray, Vc, Rt, s_out) -> np.ndarray:
-        return Vc * np.tanh(r / Rt) + s_out * r
 
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
     # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
@@ -162,64 +159,117 @@ class VelRot:
     def _calc_vel_obs_from_rot(self, vel_rot: np.ndarray, inc: float, phi_delta: np.ndarray) -> np.ndarray:
         phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly 
         correction = np.sin(inc) * np.cos(phi_delta)
-        return vel_rot * correction
+        vel_obs = vel_rot * correction
+        return vel_obs
+    
+    def _calc_vel_rot_from_obs(self, vel_obs: np.ndarray, inc: float, phi_delta: np.ndarray) -> np.ndarray:
+        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly 
+        correction = np.sin(inc) * np.cos(phi_delta)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            vel_rot = np.where(correction != 0, vel_obs / correction, np.nan)
+        vel_rot = np.where(vel_obs < 0, -vel_rot, vel_rot)
+        return vel_rot
+
+
+    # Formula: V(r) = Vc * tanh(r / Rt) + s_out * r
+    def _vel_rot_profile(self, r: np.ndarray, Vc: float, Rt: float, s_out: float) -> np.ndarray:
+        return Vc * np.tanh(r / Rt) + s_out * r
+
 
     #  V_obs = (Vc * tanh(r / Rt) + s_out * r) * (sin(i) * cos(phi_delta))
-    def _vel_obs_fit_profile(self, r, Vc, Rt, s_out, inc, phi_delta) -> np.ndarray:
-        r = np.asarray(r, dtype=float)
-        vel_rot = self.__vel_rot_profile(r, Vc, Rt, s_out)
+    def _vel_obs_fit_profile(self, r: np.ndarray, Vc: float, Rt: float, s_out: float, inc: float, phi_delta: np.ndarray) -> np.ndarray:
+        vel_rot = self._vel_rot_profile(r, Vc, Rt, s_out)
         vel_obs = self._calc_vel_obs_from_rot(vel_rot, inc, phi_delta)
         return vel_obs
-
+    
     # used the minimum χ 2 method for fitting
-    def _rot_curve_fit(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_delta_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
+    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, phi_delta_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
         """Fit the rotation curve using the experience curve function."""
         # Flatten the maps and remove NaN values
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.1) & np.isfinite(phi_delta_map)
         radius_valid = radius_map[valid_mask]
         phi_delta_valid = phi_delta_map[valid_mask]
         vel_valid = vel_obs_map[valid_mask]
-        # vel_valid = np.abs(vel_valid)
-        # radius_valid = np.where(vel_valid < 0, -np.abs(radius_valid), np.abs(radius_valid))
+
 
         phi_0, inc_0 = self._calc_pa_inc()
         
         # Fix inclination to the photometric value to avoid Vc-sin(i) degeneracy
         def fit_func_partial(r, Vc, Rt, s_out):
-            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc_0, phi_delta_valid)
+            return self._vel_obs_fit_profile(r, Vc, Rt, s_out, inc_0, phi_delta_valid)       
 
         Xdata = radius_valid
         Ydata = vel_valid
 
+        r_max = np.nanmax(radius_valid)
+        
         # Adjusted initial guesses and bounds based on expected values (Rt~2.4, s_out~2.9)
-        p0 = [150.0, 2.5, 3.0]  # Initial guesses for Vc, Rt, s_out
-        lb = [1e-6, 0.1, -50.0]  # Lower bounds
-        ub = [500.0, 20.0, 50.0]  # Upper bounds
+        p0 = [100.0, r_max*0.5, 0.0]  # Initial guesses for Vc, Rt, s_out
+        lb = [1e-6, r_max*0.1, -50.0]  # Lower bounds
+        ub = [500.0, r_max, 50.0]  # Upper bounds
 
         popt, pcov = curve_fit(fit_func_partial, Xdata, Ydata, p0=p0, bounds=(lb, ub), method='trf')
         Vc_fit, Rt_fit, s_out_fit = popt
         inc_fit = inc_0
 
-        print(f"IFU [{self.PLATE_IFU}] Fitted parameters:")
+        print(f"\n------------  IFU [{self.PLATE_IFU}] Fitted parameters  ------------")
         print(f"Fit  Vc: {Vc_fit:.3f} km/s")
         print(f"Fit  Rt: {Rt_fit:.3f} kpc/h")
         print(f"Fit  s_out: {s_out_fit:.3f} km/s")
         print(f"fixed  i: {np.degrees(inc_fit):.3f} deg")
-        print(f"fixed  phi_0: {np.degrees(phi_0):.3f} deg")
+        print(f"Fixed  phi_0: {np.degrees(phi_0):.3f} deg")
 
         print(f" error estimates:")
         perr = np.sqrt(np.diag(pcov))
         print(f"  Vc error: {perr[0]:.3f} km/s")
         print(f"  Rt error: {perr[1]:.3f} kpc/h")
         print(f"  s_out error: {perr[2]:.3f} km/s")
+        print("------------------------------------------------------------------------------\n")
 
 
         if radius_fit is None:
             radius_fit = radius_map
 
-        vel_rot_fitted = self.__vel_rot_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit)
-        return radius_fit, vel_rot_fitted, (Vc_fit, Rt_fit, s_out_fit)
+        vel_rot_fitted = self._vel_rot_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit)
+        return radius_fit, vel_rot_fitted
+    
 
+    #  used the minimize method for fitting
+    def _fit_vel_rot_minimize(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
+        """Fit the rotation curve using the minimize method."""
+        # Flatten the maps and remove NaN values
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.1)
+        radius_valid = radius_map[valid_mask]
+        vel_valid = vel_obs_map[valid_mask]
+        vel_valid = np.abs(vel_valid)
+
+        # Fix inclination to the photometric value to avoid Vc-sin(i) degeneracy
+        def residuals(params):
+            Vc, Rt, s_out = params
+            vel_model = self._vel_rot_profile(radius_valid, Vc, Rt, s_out)
+            return np.sum((vel_valid - vel_model) ** 2)
+        
+        r_max = np.nanmax(radius_valid)
+
+        # Initial guesses for Vc, Rt, s_out
+        initial_guess = [100.0, r_max*0.5, 0.0]
+        bounds = [(1e-6, 500.0), (r_max*0.1, r_max), (-50.0, 50.0)]
+
+        result = minimize(residuals, initial_guess, bounds=bounds, method='SLSQP')
+        Vc_fit, Rt_fit, s_out_fit = result.x
+
+        print(f"\n------------  IFU [{self.PLATE_IFU}] Fitted parameters (minimize)  ------------")
+        print(f"Fit  Vc: {Vc_fit:.3f} km/s")
+        print(f"Fit  Rt: {Rt_fit:.3f} kpc/h")
+        print(f"Fit  s_out: {s_out_fit:.3f} km/s")
+        print("------------------------------------------------------------------------------\n")
+
+        if radius_fit is None:
+            radius_fit = radius_map
+
+        vel_rot_fitted = self._vel_rot_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit)
+        vel_rot_fitted = np.where(vel_obs_map < 0, -vel_rot_fitted, vel_rot_fitted)
+        return radius_fit, vel_rot_fitted
 
     ################################################################################
     # public methods
@@ -237,12 +287,22 @@ class VelRot:
         return radius_map, vel_obs_map, phi_map
 
     def fit_rot_vel(self, radius_map, vel_obs_map, phi_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted, _ =  self._rot_curve_fit(radius_map, vel_obs_map, phi_map, radius_fit=radius_fit)
+        radius_fitted, vel_rot_fitted =  self._fit_vel_rot(radius_map, vel_obs_map, phi_map, radius_fit=radius_fit)
+        return radius_fitted, vel_rot_fitted
+    
+    def fit_rot_vel_minimize(self, radius_map, vel_obs_map, radius_fit=None):
+        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_minimize(radius_map, vel_obs_map, radius_fit=radius_fit)
         return radius_fitted, vel_rot_fitted
 
     def get_inc_rad(self):
         _, inc_rad = self._calc_pa_inc()
         return inc_rad
+    
+    def get_vel_obs_deprojected(self):
+        r_map, v_obs_map, phi_map = self._get_vel_obs(type='gas')
+        inc_rad = self.get_inc_rad()
+        v_rot_map = self._calc_vel_rot_from_obs(v_obs_map, inc_rad, phi_map)
+        return r_map, v_rot_map
     
     def get_radius_fit(self, count: int=100) -> np.ndarray:
         radius_map = self._get_radius()
@@ -277,7 +337,9 @@ def main():
     vel_rot.set_PLATE_IFU(PLATE_IFU)
     r_fit = vel_rot.get_radius_fit(count=1000)
     r_obs_map, V_obs_map, phi_map = vel_rot.get_gas_vel_obs()
+    _, V_obs_map_deprojected = vel_rot.get_vel_obs_deprojected()
     r_rot_fitted, V_rot_fitted = vel_rot.fit_rot_vel(r_obs_map, V_obs_map, phi_map, radius_fit=r_fit)
+    r_rot_fitted_mini, V_rot_fitted_mini = vel_rot.fit_rot_vel_minimize(r_obs_map, V_obs_map_deprojected, radius_fit=r_obs_map)
 
     print("#######################################################")
     print("# calculate results")
@@ -286,9 +348,10 @@ def main():
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
     print(f"Obs Phi shape: {phi_map.shape}, range: [{np.nanmin(phi_map):.3f}, {np.nanmax(phi_map):.3f}] rad")
     print(f"Fitted Rot Velocity shape: {V_rot_fitted.shape}, range: [{np.nanmin(V_rot_fitted):.3f}, {np.nanmax(V_rot_fitted):.3f}]")
+    print(f"Fitted Rot Velocity (Minimize) shape: {V_rot_fitted_mini.shape}, range: [{np.nanmin(V_rot_fitted_mini):.3f}, {np.nanmax(V_rot_fitted_mini):.3f}]")
 
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs")
     plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_rot_fitted, title2="Rot Fitted")
+    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deprojected", r_rot2_map=r_rot_fitted_mini, v_rot2_map=V_rot_fitted_mini, title2="Rot Fitted Minimize")
     return
 
 

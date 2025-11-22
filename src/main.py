@@ -43,14 +43,14 @@ def main():
 
     radius_fit = vel_rot.get_radius_fit(count=1000)
 
-    r_gas_obs_map, V_gas_obs_map, phi_gas_map = vel_rot.get_gas_vel_obs()
-    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel(r_gas_obs_map, V_gas_obs_map, phi_gas_map, radius_fit=radius_fit)
+    r_gas_obs_map, V_obs_gas_deprojected = vel_rot.get_vel_obs_deprojected()
+    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel_minimize(r_gas_obs_map, V_obs_gas_deprojected, radius_fit=radius_fit)
 
     r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs()
     r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=radius_fit)
 
     r_obs_map = r_gas_obs_map
-    V_obs_map = V_gas_obs_map
+    V_obs_map = V_obs_gas_deprojected
     r_obs_fitted = r_gas_rot_fitted
     V_obs_fitted = V_gas_rot_fitted
 
@@ -79,7 +79,7 @@ def main():
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    M200_fit, r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
+    r_dm_fit, V_dm_fit, V_total_fit = dm_nfw.fit_dm_nfw_minimize(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
 
     # r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_burkert(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
 

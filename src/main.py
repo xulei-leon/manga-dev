@@ -16,7 +16,7 @@ fits_util = FitsUtil(root_dir / "data")
 
 
 def main():
-    PLATE_IFU = "8723-12703"
+    PLATE_IFU = "8723-12705"
 
     print("#######################################################")
     print("# 1. load necessary files")
@@ -79,8 +79,12 @@ def main():
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    r_dm_fit, V_dm_fit, V_total_fit = dm_nfw.fit_dm_nfw_minimize(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
+    dm_nfw.set_stellar_util(stellar)
+    total_stellar_mass = stellar.get_stellar_total_mass()
+    print(f"Total stellar mass: {total_stellar_mass:.2e} M_sun")
 
+    # _, r_dm_fit, V_dm_fit, V_total_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
+    r_dm_fit,  V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw_minimize(r_obs_fitted, V_obs_fitted)
     # r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_burkert(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
 
 
@@ -90,9 +94,9 @@ def main():
     print(f"V_obs_map shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):,.1f}, {np.nanmax(V_obs_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):,.1f}, {np.nanmax(V_obs_fitted):,.1f}] km/s")
     print(f"V_stellar shape: {V_stellar.shape}, range: [{np.nanmin(V_stellar):,.1f}, {np.nanmax(V_stellar):,.1f}] km/s")
-    print(f"V_drift shape: {V_drift.shape}, range: [{np.nanmin(V_drift):,.1f}, {np.nanmax(V_drift):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
+    print(f"V_stellar_fit shape: {V_stellar_fit.shape}, range: [{np.nanmin(V_stellar_fit):,.1f}, {np.nanmax(V_stellar_fit):,.1f}] km/s")
 
     ########################################################
     ## plot velocity map
@@ -105,11 +109,12 @@ def main():
     plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational", 
                             r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational", 
-                            r_rot2_map=r_obs_fitted, v_rot2_map=V_drift, title2="Drift Rotational")
+    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
+                        r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit Dark Matter")
+    
+    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
+                            r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Stellar")
 
-    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fitted Total", 
-                        r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Dark Matter")
     return
 
 if __name__ == "__main__":

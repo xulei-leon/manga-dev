@@ -390,7 +390,7 @@ def main():
     r_obs_map, V_obs_map, phi_map = vel_rot.get_gas_vel_obs()
     _, V_obs_map_deprojected = vel_rot.get_vel_obs_deprojected()
     r_rot_fitted, V_rot_fitted = vel_rot.fit_rot_vel(r_obs_map, V_obs_map, phi_map, radius_fit=r_fit)
-    r_rot_fitted_mini, V_rot_fitted_mini = vel_rot.fit_rot_vel_minimize(r_obs_map, V_obs_map_deprojected, radius_fit=r_fit)
+    r_rot_fitted_mini, V_rot_fitted_mini = vel_rot.fit_rot_vel_minimize(r_obs_map, V_obs_map_deprojected, radius_fit=r_obs_map)
 
     print("#######################################################")
     print("# calculate results")

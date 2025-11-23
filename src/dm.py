@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from re import M
+from re import M, S
 import numpy as np
 from scipy.optimize import curve_fit, minimize
 from astropy import constants as const
@@ -29,6 +29,14 @@ class DmNfw:
     # V_dm: use NFW profile to fit
     # V_drift^2 = 2 * sigma_0^2 * (R / R_d) : sigma_0  will be fitted, R_d has been calculated
     ########################################################################################
+        
+    ################################################################
+    # Drift Correction: V_drift^2 = 2 * sigma_0^2 * (R / R_d)
+    ################################################################
+    def _vel_drift_sq_profile(self, radius: np.ndarray, sigma_0:float, Re: float):
+        Rd = Re / 1.678
+        vel_drift_sq = 2 * sigma_0**2 * (radius / Rd)
+        return vel_drift_sq
     
     ########################################################################################
     # NFW Dark Matter Halo Profile:
@@ -87,9 +95,12 @@ class DmNfw:
         r200_kpc = r200_Mpc * 1e3  # convert to kpc
         return r200_kpc # in kpc
     
+    # x = r / r200
     def _calc_x_from_r200(self, radius_kpc: np.ndarray, r200_kpc: float) -> np.ndarray:
         return radius_kpc / r200_kpc
 
+   # c = r200 / rss
+   # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
     def _calc_c_from_M200(self, M200: float, h: float) -> float:
         M_pivot = 2e12 / h
         return 5.74 * (M200 / M_pivot)**(-0.097)
@@ -113,7 +124,7 @@ class DmNfw:
         if c is None:
             c = self._calc_c_from_M200(M200, h)
 
-        x = radius_kpc / r200
+        x = self._calc_x_from_r200(radius_kpc, r200)
         x = np.where(x == 0, 1e-6, x)
 
         num = np.log(1 + c*x) - (c*x)/(1 + c*x)
@@ -340,8 +351,11 @@ class DmNfw:
     ################################################################################
 
     # formula: Vdm ^ 2 = (V200 ^2 / x) * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
-    def _vel_dm_sq_profile_V200(self, radius_kpc: np.ndarray, V200: float, c: float, z: float) -> np.ndarray:
+    def _vel_dm_sq_profile_V200(self, radius_kpc: np.ndarray, V200: float, z: float, c: float=None) -> np.ndarray:
         r200 = self._calc_r200_from_V200(V200, z)
+        M200 = self._calc_M200_from_V200(V200, z)
+        if c is None:
+            c = self._calc_c_from_M200(M200, h=0.7)
         x = self._calc_x_from_r200(radius_kpc, r200)
         x = np.where(x == 0, 1e-6, x)  # avoid division by zero
 
@@ -352,13 +366,30 @@ class DmNfw:
         return V_dm_sq
 
 
-    def _vel_rot_sq_fit_model_V200(self, radius: np.ndarray, V200: float, c: float, upsilon_star: float, v_star_sq: np.ndarray, v_drift_sq: np.ndarray, z: float=0.04) -> np.ndarray:
-        v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, c, z=z)
-        v_rot_sq = v_dm_sq + (v_star_sq * upsilon_star)  - v_drift_sq
+    def _vel_rot_sq_fit_model_V200_density(self, radius: np.ndarray, V200: float, log_Sigma_0: float, R_d: float, z: float, c: float=None, upsilon_star: float=1.0) -> np.ndarray:
+        v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, z, c=c)
+        Sigma_0 = 10**log_Sigma_0
+        v_star_sq = self.stellar_util._stellar_vel_sq_density_profile(radius, Sigma_0, R_d)
+        v_rot_sq = v_dm_sq + upsilon_star * v_star_sq
+        v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
+        return v_rot_sq
+    
+    def _vel_rot_sq_fit_model_V200_mass(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, b_d_ratio: float, a: float, R_d: float) -> np.ndarray:
+        v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, z, c)
+        v_star_sq = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, b_d_ratio, a, R_d)
+        v_rot_sq = v_dm_sq + v_star_sq
+        v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
+        return v_rot_sq
+    
+    def _vel_rot_sq_fit_model_V200_mass_drift(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, Re: float, sigma_0: float) -> np.ndarray:
+        v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, z, c)
+        v_star_sq = self.stellar_util._stellar_vel_sq_disk_profile(radius, M_star, Re)
+        v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
+        v_rot_sq = v_dm_sq + v_star_sq - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
         return v_rot_sq
 
-    def _dm_nfw_fit_minimize(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, vel_drift_sq: np.ndarray, z: float=0.04, h: float=0.7):
+    def _dm_nfw_fit_minimize(self, radius: np.ndarray, vel_obs: np.ndarray):
         """
         Fits the Dark Matter Halo Mass (M200) keeping Stellar Mass fixed using minimize method.
         """
@@ -370,9 +401,11 @@ class DmNfw:
         # Apply mask to ALL component arrays
         radius_valid = radius[valid_mask]
         vel_obs_valid = vel_obs[valid_mask]
-        vel_star_sq_valid = vel_star_sq[valid_mask]
-        vel_drift_sq_valid = vel_drift_sq[valid_mask]
-        
+
+
+        # geg parameters from stellar_util
+        _, M_star = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
+        z = self._get_z()
         ydata = vel_obs_valid**2
         
         # Check if we have enough data points
@@ -382,36 +415,49 @@ class DmNfw:
 
         # Uses closure to access vel_star_sq_valid, vel_drift_sq_valid
         def fit_func_partial(params):         
-            V200, c = params
-            vals = self._vel_rot_sq_fit_model_V200(radius_valid, V200, c, 1.0, vel_star_sq_valid, vel_drift_sq_valid, z=z)
-            vals = np.nan_to_num(vals, nan=1e9, posinf=1e9, neginf=-1e9)
+            V200, c, Re, sigma_0 = params
+            vals = self._vel_rot_sq_fit_model_V200_mass_drift(radius_valid, V200, M_star, z, c, Re, sigma_0)
             residuals = vals - ydata
             return np.sum(residuals**2)
 
-        p0 = [100, 5.0]  #
-        bounds = [(50.0, 500.0), (4.0, 25.0)]  # Bounds
+        p0 = [200.0, 10.0, 2.0, 20.0]  # Initial guess: V200, c, Re, sigma_0
+         # Lower and upper bounds
+        bounds = [(50.0, 500.0),   # V200 bounds
+                  (0.5, 100.0),   # c bounds
+                  (0.1, 20.0),    # Re bounds
+                  (5.0, 100.0)]   # sigma_0 bounds
 
         try:
             # Perform Fit
             result = minimize(fit_func_partial, p0, bounds=bounds, method='L-BFGS-B')
-    
-            V200_fit, c_fit = result.x
+            V200_fit, c_fit, Re_fit, sigma_0_fit = result.x
         except RuntimeError:
             print("Fitting failed: Optimal parameters not found.")
             return np.nan, radius, np.zeros_like(radius), np.zeros_like(radius)
         
-        # 4. Generate Fit Curves for Output (Full Radius)
-        # Calculate the final model curve using the full radius array
-        vel_obs_sq_fit = self._vel_rot_sq_fit_model_V200(radius, V200_fit, c_fit, 1.0, vel_star_sq, vel_drift_sq, z=z)
-        vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_fit, c=c_fit, z=z)
-        # [Correction 3]: Safe Sqrt for output
-        # Use np.maximum(0) to avoid RuntimeWarnings for visualization if model dips slightly below zero
+        M200_fit = self._calc_M200_from_V200(V200_fit, z)
+        r200_fit = self._calc_r200_from_V200(V200_fit, z)
+
+        vel_obs_sq_fit = self._vel_rot_sq_fit_model_V200_mass_drift(radius, V200_fit, M_star, z, c_fit, Re_fit, sigma_0_fit)
+        vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_fit, z, c=c_fit)
+        vel_star_sq_fit = self.stellar_util._stellar_vel_sq_disk_profile(radius, M_star, Re_fit)
+
         vel_total_fit = np.sqrt(np.maximum(vel_obs_sq_fit, 0))
         vel_dm_fit = np.sqrt(np.maximum(vel_dm_sq_fit, 0))
+        vel_star_fit = np.sqrt(np.maximum(vel_star_sq_fit, 0))
+
         print("Fitted DM NFW parameters (minimize):")
-        print(f"  V200: {V200_fit:.3f} km/s")
-        print(f"  c: {c_fit:.3f}")
-        return radius, vel_dm_fit, vel_total_fit
+        print(f" Fitted: V200: {V200_fit:.3f} km/s")
+        print(f" Fitted: c: {c_fit:.3f}")
+        print(f" Fitted: Re: {Re_fit:.3f} kpc")
+        print(f" Fitted: sigma_0: {sigma_0_fit:.3f} km/s")
+        print(f" Calculated: M200: {M200_fit:.3e} Msun")
+        print(f" Calculated: r200: {r200_fit:.3f} kpc")
+
+        # calculate error estimate
+        return radius, vel_total_fit, vel_dm_fit, vel_star_fit
+
+
 
 
     ################################################################################
@@ -419,6 +465,10 @@ class DmNfw:
     ################################################################################
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
+        return
+    
+    def set_stellar_util(self, stellar_util: Stellar) -> None:
+        self.stellar_util = stellar_util
         return
 
     def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -431,10 +481,10 @@ class DmNfw:
         rho0_fit, radius_fit, vel_total, vel_dm =self._dm_burkert_fit(radius, vel_obs, vel_star_sq, V_drift_sq, z=z)
         return radius_fit, vel_total, vel_dm
     
-    def fit_dm_nfw_minimize(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def fit_dm_nfw_minimize(self, radius: np.ndarray, vel_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        radius_fit, vel_dm ,vel_total = self._dm_nfw_fit_minimize(radius, vel_obs, vel_star_sq, V_drift_sq, z=z)
-        return radius_fit, vel_dm, vel_total
+        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._dm_nfw_fit_minimize(radius, vel_obs)
+        return radius_fit, vel_total, vel_dm_fit, vel_star_fit
 
 
 ######################################################
@@ -481,9 +531,15 @@ def main():
     V200 = 200
     c = 10
     print(f"V200: {V200:.2f} km/s, c: {c:.2f}")
+    Hz = dm_nfw._calc_Hz_kpc(z)
+    print(f"Hz: {Hz:.2f} km/s/Mpc")
     r200 = dm_nfw._calc_r200_from_V200(V200, z)
     M200 = dm_nfw._calc_M200_from_V200(V200, z)
     print(f"Calculated r200: {r200:.2f} kpc, M200 from V200: {M200:.3e} Msun")
+    x = dm_nfw._calc_x_from_r200(radius_fit, r200)
+    print(f"Calculated x  shape: {x.shape}, range: {np.nanmin(x):.5f} - {np.nanmax(x):.5f}")
+    c = dm_nfw._calc_c_from_M200(M200, h=0.7)
+    print(f"Calculated c from M200: {c:.2f}")
     
     vel_dm_sq = dm_nfw._vel_dm_sq_profile_V200(radius_fit, V200, c, z)
     vel_dm = np.sqrt(vel_dm_sq)

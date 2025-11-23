@@ -92,27 +92,43 @@ class Stellar:
     # The RC of the baryonic disk model (V_baryon) was derived by a method in Noordermeer (2008).
 
     # Hernquist bulge + Freeman thin exponential disk
+    # V_bulge^2(r) = (G * MB * r) / (r + a)^2
     def _vel_sq_bulge_hernquist(self, r: np.ndarray, MB: float, a: float) -> np.ndarray:
         r = np.where(r == 0, 1e-6, r)  # avoid division by zero
         v_sq = G * MB * r / (r + a)**2
         return v_sq
     
-    # V_baryon^2(r) = (2 * G * M_baryon / R_d) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-    def _vel_sq_disk_freeman(self, r: np.ndarray, M_d: float, R_d: float) -> np.ndarray:
+    # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    def _vel_sq_disk_freeman(self, r: np.ndarray, M_d: float, Rd: float) -> np.ndarray:
         r = np.where(r == 0, 1e-6, r)  # avoid division by zero
-        y = r / (2.0 * R_d)
+        y = r / (2.0 * Rd)
         I_0 = special.i0(y)
         I_1 = special.i1(y)
         K_0 = special.k0(y)
         K_1 = special.k1(y)
-        v_sq = (2.0 * G * M_d / R_d) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
+        v_sq = (2.0 * G * M_d / Rd) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
         return v_sq
     
-    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, MB: float, a: float, MD: float, R_d: float) -> np.ndarray:
+    # formula: V_baryon^2 =  (G * MB * r) / (r + a)^2 + (2 * G * MD / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    def _stellar_vel_sq_mass_parts_profile(self, r: np.ndarray, MB: float, a: float, MD: float, Rd: float) -> np.ndarray:
         v_bulge_sq = self._vel_sq_bulge_hernquist(r, MB, a)
-        v_disk_sq = self._vel_sq_disk_freeman(r, MD, R_d)
+        v_disk_sq = self._vel_sq_disk_freeman(r, MD, Rd)
         v_baryon_sq = v_bulge_sq + v_disk_sq
         return v_baryon_sq
+    
+
+    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, b_d_ratio: float, a: float, Rd: float) -> np.ndarray:
+        MB = b_d_ratio * M_star
+        MD = (1 - b_d_ratio) * M_star
+        v_baryon_sq = self._stellar_vel_sq_mass_parts_profile(r, MB, a, MD, Rd)
+        return v_baryon_sq
+    
+    # M_star: total mass of star
+    # Re: Half-mass radius
+    def _stellar_vel_sq_disk_profile(self, r: np.ndarray, M_star: float, Re: float):
+        Rd = Re / 1.678
+        return self._vel_sq_disk_freeman(r, M_star, Rd)
+
 
     @staticmethod
     def _calc_mass_of_radius(mass_cell: np.ndarray, radius: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -205,7 +221,14 @@ class Stellar:
         
         return mass_fit, mb_fit, a_fit, md_fit, rd_fit
     
-
+    # Model function (Normalization version)
+    # M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
+    def _stellar_mass_model_norm(self, MB, a, MD, Rd, r):
+        r_safe = np.maximum(r, 1e-6)
+        bulge_mass = MB * np.square(r_safe) / np.square(r_safe + a)
+        disk_mass = MD * (1.0 - (1.0 + r_safe / Rd) * np.exp(-r_safe / Rd))
+        return bulge_mass + disk_mass
+        
     def _stellar_mass_fit_minimize(self, radius: np.ndarray, mass: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple:
         # --- 1. 数据预处理 ---
         mask = (radius > r_min) & np.isfinite(mass) & np.isfinite(radius)
@@ -222,17 +245,9 @@ class Stellar:
         # 将质量缩放到 0~1 之间，大幅提高拟合稳定性
         mass_norm = mass_filter / mass_max
         
-        # Model function (注意：这里计算的是归一化后的质量比例)
-        def _mass_model_norm(MB_norm, a, MD_norm, R_d, r):
-            r_safe = np.maximum(r, 1e-6)
-            # 公式不变，但 MB 和 MD 代表的是 "倍数"
-            bulge_mass = MB_norm * np.square(r_safe) / np.square(r_safe + a)
-            disk_mass = MD_norm * (1.0 - (1.0 + r_safe / R_d) * np.exp(-r_safe / R_d))
-            return bulge_mass + disk_mass
-
         def _residuals(params):
             # 计算残差
-            model_norm = _mass_model_norm(*params, radius_filter)
+            model_norm = self._stellar_mass_model_norm(*params, radius_filter)
             return np.sum((mass_norm - model_norm) ** 2)
 
         # --- 3. 设定 Bounds 和 Initial Guess ---
@@ -251,7 +266,7 @@ class Stellar:
 
         # --- 4. 执行拟合 ---
         # 移除 constraints，完全依靠 data 驱动
-        result = minimize(_residuals, p0, bounds=bounds, method='SLSQP', tol=1e-6)
+        result = minimize(_residuals, p0, bounds=bounds, method='L-BFGS-B', tol=1e-6)
 
         mb_norm_fit, a_fit, md_norm_fit, rd_fit = result.x
 
@@ -268,10 +283,10 @@ class Stellar:
         radius_fitted_sorted = radius_fitted[sort_idx]
         
         # 使用还原后的真实物理量计算最终曲线
-        def _mass_model_real(MB, a, MD, R_d, r):
+        def _mass_model_real(MB, a, MD, Rd, r):
             r_safe = np.maximum(r, 1e-6)
             bulge = MB * np.square(r_safe) / np.square(r_safe + a)
-            disk = MD * (1.0 - (1.0 + r_safe / R_d) * np.exp(-r_safe / R_d))
+            disk = MD * (1.0 - (1.0 + r_safe / Rd) * np.exp(-r_safe / Rd))
             return bulge + disk
 
         mass_fit = _mass_model_real(mb_fit, a_fit, md_fit, rd_fit, radius_fitted_sorted)
@@ -286,44 +301,44 @@ class Stellar:
     ################################################################################
 
     # Exponential Disk rotation velocity formula
-    # V^2(R) = 4 * pi * G * Sigma_0 * R_d * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-    # where y = R / (2 * R_d)
-    def _stellar_vel_sq_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
+    # V^2(R) = 4 * pi * G * Sigma_0 * Rd * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    # where y = R / (2 * Rd)
+    def _stellar_vel_sq_density_profile(self, R: np.ndarray, Sigma_0: float, Rd: float) -> np.ndarray:
         # FIXME: handle R = 0 case
         R = np.where(R == 0, 1e-6, R)  # avoid division by zero
 
-        y = R / (2.0 * R_d)
+        y = R / (2.0 * Rd)
         I_0 = special.i0(y)
         I_1 = special.i1(y)
         K_0 = special.k0(y)
         K_1 = special.k1(y)
 
-        V2 = 4.0 * np.pi * G * Sigma_0 * R_d * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
+        V2 = 4.0 * np.pi * G * Sigma_0 * Rd * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
         return V2
 
 
     # Exponential Disk Model fitting function
-    # Sigma(R) = Sigma_0 * exp(-R / R_d)
-    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, R_d: float) -> np.ndarray:
-        return Sigma_0 * np.exp(-R / R_d)
+    # Sigma(R) = Sigma_0 * exp(-R / Rd)
+    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, Rd: float) -> np.ndarray:
+        return Sigma_0 * np.exp(-R / Rd)
 
-    def _stellar_density_fit_profile(self, R: np.ndarray, log_Sigma_0: float, R_d: float) -> np.ndarray:
+    def _stellar_density_fit_profile(self, R: np.ndarray, log_Sigma_0: float, Rd: float) -> np.ndarray:
         Sigma_0 = 10**log_Sigma_0
-        return Sigma_0 * np.exp(-R / R_d)
+        return Sigma_0 * np.exp(-R / Rd)
     
     # Central Surface Mass Density Fitting
     def _stellar_central_density_fit(self, radius: np.ndarray, density: np.ndarray, r_min: float, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         radius_filter = radius[radius>r_min]
         density_filter = density[radius>r_min]
 
-        p0 = [7, 3.0]  # Initial guess for Sigma_0, R_d
+        p0 = [7, 3.0]  # Initial guess for Sigma_0, Rd
         lb = [6, 0.1]  # Lower bound
         ub = [10, 10.0]  # Upper bound
         popt, pcov = curve_fit(self._stellar_density_fit_profile, radius_filter, density_filter, p0=p0, bounds=(lb, ub), method='trf')
 
         log_sigma_0_fitted, r_d_fitted = popt
         sigma_0_fitted = 10**log_sigma_0_fitted
-        print(f"Fitted parameters: Sigma_0={sigma_0_fitted:.3e}, R_d={r_d_fitted:.3f}")
+        print(f"Fitted parameters: Sigma_0={sigma_0_fitted:.3e}, Rd={r_d_fitted:.3f}")
         return sigma_0_fitted, r_d_fitted
 
     def _calc_stellar_central_density(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[float, float]:
@@ -396,13 +411,13 @@ class Stellar:
         
         # 1. 获取基础数据和拟合参数
         # ------------------------------------------------------
-        # 获取密度参数: Density(R) = Sigma_0 * exp(-R / R_d)
+        # 获取密度参数: Density(R) = Sigma_0 * exp(-R / Rd)
         density_0, r_d = self._calc_stellar_central_density(self.PLATE_IFU, radius_fit)
         density_fit = self._stellar_density_profile(radius_fit, density_0, r_d)
         
         # 获取速度弥散参数: sigma_R^2(R) = sigma_0^2 * exp(-R / h_sigma)
         # 【重要】：您需要确保 _fit_stellar_sigmaR 能返回拟合出的尺度长度 h_sigma
-        # 如果您的拟合模型固定了 h_sigma = R_d / 2，则直接使用 R_d / 2
+        # 如果您的拟合模型固定了 h_sigma = Rd / 2，则直接使用 Rd / 2
         sigma_ast_sq_map = self._get_stellar_sigma_ast_sq()
         _, radius_sigma_map, _ = self.maps_util.get_radius_map()
         
@@ -410,7 +425,7 @@ class Stellar:
         # 如果您现在的代码只返回数组，您需要修改该函数或在此处手动指定衰减关系
         sigma_R_sq = self._fit_stellar_sigmaR(radius_sigma_map, sigma_ast_sq_map, incl, radius_fit=radius_fit)
         
-        # 【假设场景 A】：完全基于理论假设 (sigma_R^2 随 R_d/2 衰减)
+        # 【假设场景 A】：完全基于理论假设 (sigma_R^2 随 Rd/2 衰减)
         # 这是最物理、最平滑的做法，不需要从 sigma 数据中拟合尺度
         h_sigma = r_d / 2.0 
         
@@ -423,7 +438,7 @@ class Stellar:
 
         # 3. 解析求导 (Analytical Derivative)
         # ------------------------------------------------------
-        # 公式: dS/dR = -S * (1/R_d + 1/h_sigma)
+        # 公式: dS/dR = -S * (1/Rd + 1/h_sigma)
         # 这一步完全消除了数值差分带来的锯齿噪声
         decay_factor = (1.0 / r_d) + (1.0 / h_sigma)
         dS_dR = -S * decay_factor  # 这是一个平滑的负值数组
@@ -469,7 +484,7 @@ class Stellar:
 
     def get_stellar_vel_sq_by_density(self, radius_fitted: np.ndarray) -> np.ndarray:
         sigma_0_fitted, r_d_fitted = self._calc_stellar_central_density(self.PLATE_IFU, radius_fitted)
-        vel_sq = self._stellar_vel_sq_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
+        vel_sq = self._stellar_vel_sq_density_profile(radius_fitted, sigma_0_fitted, r_d_fitted)
         return radius_fitted, vel_sq
 
     def get_stellar_vel_by_density(self, radius_fitted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -481,8 +496,13 @@ class Stellar:
         radius, mass = self._get_stellar_mass(self.PLATE_IFU)
         mass_fitted, MB_fit, a_fit, MD_fit, rd_fit = self._stellar_mass_fit(radius, mass, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
 
-        vel_sq = self._stellar_vel_sq_mass_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
+        vel_sq = self._stellar_vel_sq_mass_parts_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
         return radius_fitted, vel_sq
+    
+    def get_stellar_total_mass(self):
+        _, mass = self._get_stellar_mass(self.PLATE_IFU)
+        total_mass = np.nanmax(mass)
+        return total_mass
     
     def get_stellar_vel_by_mass(self, radius_fitted: np.ndarray):
         radius, vel_sq = self.get_stellar_vel_sq_by_mass(radius_fitted)
@@ -493,7 +513,7 @@ class Stellar:
         radius, mass = self._get_stellar_mass(self.PLATE_IFU)
         mass_fitted, MB_fit, a_fit, MD_fit, rd_fit = self._stellar_mass_fit_minimize(radius, mass, r_min=RADIUS_MIN_KPC, radius_fitted=radius_fitted)
 
-        vel_sq = self._stellar_vel_sq_mass_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
+        vel_sq = self._stellar_vel_sq_mass_parts_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
         return radius_fitted, vel_sq
     
     def get_stellar_vel_by_mass2(self, radius_fitted: np.ndarray):

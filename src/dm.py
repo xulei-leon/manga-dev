@@ -374,16 +374,17 @@ class DmNfw:
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
         return v_rot_sq
     
-    def _vel_rot_sq_fit_model_V200_mass(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, b_d_ratio: float, a: float, R_d: float) -> np.ndarray:
+    def _vel_rot_sq_fit_model_V200_mass(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, f_bulge: float, a: float, Re: float, sigma_0: float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, z, c)
-        v_star_sq = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, b_d_ratio, a, R_d)
-        v_rot_sq = v_dm_sq + v_star_sq
+        v_star_sq = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, Re, f_bulge, a)
+        v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
+        v_rot_sq = v_dm_sq + v_star_sq - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
         return v_rot_sq
     
-    def _vel_rot_sq_fit_model_V200_mass_drift(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, Re: float, sigma_0: float) -> np.ndarray:
+    def _vel_rot_sq_fit_model_V200_mass_disk(self, radius: np.ndarray, V200: float, M_star: float, z: float, c: float, Re: float, sigma_0: float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, z, c)
-        v_star_sq = self.stellar_util._stellar_vel_sq_disk_profile(radius, M_star, Re)
+        v_star_sq = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, Re)
         v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
         v_rot_sq = v_dm_sq + v_star_sq - v_drift_sq
         v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
@@ -404,7 +405,8 @@ class DmNfw:
 
 
         # geg parameters from stellar_util
-        _, M_star = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
+        radius_max = np.nanmax(radius_valid)
+        M_star = self.stellar_util.get_stellar_total_mass(radius_max)
         z = self._get_z()
         ydata = vel_obs_valid**2
         
@@ -415,22 +417,24 @@ class DmNfw:
 
         # Uses closure to access vel_star_sq_valid, vel_drift_sq_valid
         def fit_func_partial(params):         
-            V200, c, Re, sigma_0 = params
-            vals = self._vel_rot_sq_fit_model_V200_mass_drift(radius_valid, V200, M_star, z, c, Re, sigma_0)
+            V200, c, f_bulge, a, Re, sigma_0 = params
+            vals = self._vel_rot_sq_fit_model_V200_mass(radius_valid, V200, M_star, z, c, f_bulge, a, Re, sigma_0)
             residuals = vals - ydata
             return np.sum(residuals**2)
 
-        p0 = [200.0, 10.0, 2.0, 20.0]  # Initial guess: V200, c, Re, sigma_0
+        p0 = [200.0, 10.0, 0.1, 1.0, 3.0, 20.0]  # Initial guess: V200, c, f_bulge, a, Re, sigma_0
          # Lower and upper bounds
-        bounds = [(50.0, 500.0),   # V200 bounds
-                  (0.5, 100.0),   # c bounds
-                  (0.1, 20.0),    # Re bounds
-                  (5.0, 100.0)]   # sigma_0 bounds
+        bounds = [(50.0, 2000.0),   # V200 bounds
+                  (0.5, 100.0),     # c bounds
+                  (0.01, 1.0),      # f_bulge ratios bounds
+                  (0.1, 10.0),      # a bounds
+                  (0.1, 20.0),      # Re bounds
+                  (5.0, 100.0)]     # sigma_0 bounds
 
         try:
             # Perform Fit
             result = minimize(fit_func_partial, p0, bounds=bounds, method='L-BFGS-B')
-            V200_fit, c_fit, Re_fit, sigma_0_fit = result.x
+            V200_fit, c_fit, f_bulge_fit, a_fit, Re_fit, sigma_0_fit = result.x
         except RuntimeError:
             print("Fitting failed: Optimal parameters not found.")
             return np.nan, radius, np.zeros_like(radius), np.zeros_like(radius)
@@ -438,9 +442,9 @@ class DmNfw:
         M200_fit = self._calc_M200_from_V200(V200_fit, z)
         r200_fit = self._calc_r200_from_V200(V200_fit, z)
 
-        vel_obs_sq_fit = self._vel_rot_sq_fit_model_V200_mass_drift(radius, V200_fit, M_star, z, c_fit, Re_fit, sigma_0_fit)
+        vel_obs_sq_fit = self._vel_rot_sq_fit_model_V200_mass(radius, V200_fit, M_star, z, c_fit, f_bulge_fit, a_fit, Re_fit, sigma_0_fit)
         vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_fit, z, c=c_fit)
-        vel_star_sq_fit = self.stellar_util._stellar_vel_sq_disk_profile(radius, M_star, Re_fit)
+        vel_star_sq_fit = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, Re_fit, f_bulge_fit, a_fit)
 
         vel_total_fit = np.sqrt(np.maximum(vel_obs_sq_fit, 0))
         vel_dm_fit = np.sqrt(np.maximum(vel_dm_sq_fit, 0))
@@ -449,6 +453,8 @@ class DmNfw:
         print("Fitted DM NFW parameters (minimize):")
         print(f" Fitted: V200: {V200_fit:.3f} km/s")
         print(f" Fitted: c: {c_fit:.3f}")
+        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}")
+        print(f" Fitted: a: {a_fit:.3f} kpc")
         print(f" Fitted: Re: {Re_fit:.3f} kpc")
         print(f" Fitted: sigma_0: {sigma_0_fit:.3f} km/s")
         print(f" Calculated: M200: {M200_fit:.3e} Msun")

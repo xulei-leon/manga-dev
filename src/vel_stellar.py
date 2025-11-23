@@ -117,9 +117,10 @@ class Stellar:
         return v_baryon_sq
     
 
-    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, b_d_ratio: float, a: float, Rd: float) -> np.ndarray:
-        MB = b_d_ratio * M_star
-        MD = (1 - b_d_ratio) * M_star
+    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float, a: float) -> np.ndarray:
+        Rd = Re / 1.678
+        MB = f_bulge * M_star
+        MD = (1 - f_bulge) * M_star
         v_baryon_sq = self._stellar_vel_sq_mass_parts_profile(r, MB, a, MD, Rd)
         return v_baryon_sq
     
@@ -499,10 +500,11 @@ class Stellar:
         vel_sq = self._stellar_vel_sq_mass_parts_profile(radius_fitted, MB_fit, a_fit, MD_fit, rd_fit)
         return radius_fitted, vel_sq
     
-    def get_stellar_total_mass(self):
-        _, mass = self._get_stellar_mass(self.PLATE_IFU)
-        total_mass = np.nanmax(mass)
-        return total_mass
+    # get mass within radius r
+    def get_stellar_total_mass(self, r: float) -> float:
+        radius, mass = self._get_stellar_mass(self.PLATE_IFU)
+        mass_interp = np.interp(r, radius, mass, left=0.0, right=np.nanmax(mass))
+        return mass_interp
     
     def get_stellar_vel_by_mass(self, radius_fitted: np.ndarray):
         radius, vel_sq = self.get_stellar_vel_sq_by_mass(radius_fitted)

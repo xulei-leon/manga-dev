@@ -16,7 +16,7 @@ fits_util = FitsUtil(root_dir / "data")
 
 
 def main():
-    PLATE_IFU = "8723-12705"
+    PLATE_IFU = "8723-12703"
 
     print("#######################################################")
     print("# 1. load necessary files")
@@ -80,7 +80,7 @@ def main():
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
-    total_stellar_mass = stellar.get_stellar_total_mass()
+    total_stellar_mass = stellar.get_stellar_total_mass(np.nanmax(radius_fit))
     print(f"Total stellar mass: {total_stellar_mass:.2e} M_sun")
 
     # _, r_dm_fit, V_dm_fit, V_total_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)

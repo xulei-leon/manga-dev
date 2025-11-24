@@ -61,17 +61,7 @@ def main():
     print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
-    r_stellar, V_stellar = stellar.get_stellar_vel_by_density(radius_fitted=radius_fit)
-    r_stellar, V_stellar_sq = stellar.get_stellar_vel_sq_by_density(radius_fitted=radius_fit)
 
-    r_drift, V_drift_sq = stellar.get_stellar_vel_drift_sq(radius_fit, inc_rad)
-    V_drift = np.sqrt(V_drift_sq)
-    print(f"V_drift values at specific radii:")
-    for r_target in [1, 2, 3, 4, 5, 6, 7, 8]:
-        idx = np.argmin(np.abs(r_drift - r_target))
-        actual_r = r_drift[idx]
-        actual_v = V_drift[idx]
-        print(f"  r ≈ {actual_r:.2f}: V_drift = {actual_v:.2f} km/s")
 
 
     print("#######################################################")
@@ -93,7 +83,6 @@ def main():
     print("#######################################################")
     print(f"V_obs_map shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):,.1f}, {np.nanmax(V_obs_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):,.1f}, {np.nanmax(V_obs_fitted):,.1f}] km/s")
-    print(f"V_stellar shape: {V_stellar.shape}, range: [{np.nanmin(V_stellar):,.1f}, {np.nanmax(V_stellar):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
     print(f"V_stellar_fit shape: {V_stellar_fit.shape}, range: [{np.nanmin(V_stellar_fit):,.1f}, {np.nanmax(V_stellar_fit):,.1f}] km/s")
@@ -106,8 +95,7 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational", 
-                            r_rot2_map=r_stellar, v_rot2_map=V_stellar, title2="Star Circular")
+    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational")
 
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
                         r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit Dark Matter")

@@ -173,7 +173,7 @@ class DmNfw:
         # Ensure we don't have NaNs and avoid the very center (resolution limits)
         valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) & 
                     (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
-        
+
         # Apply mask to ALL component arrays
         radius_valid = radius[valid_mask]
         vel_obs_valid = vel_obs[valid_mask]
@@ -183,34 +183,39 @@ class DmNfw:
         M_star = self.stellar_util.get_stellar_total_mass(radius_max)
         z = self._get_z()
         ydata = vel_obs_valid**2
-        
+
         # Check if we have enough data points
         if len(ydata) < 5:
             print("Warning: Not enough valid data points for fitting.")
             return np.nan, radius, np.full_like(radius, np.nan), np.full_like(radius, np.nan)
 
         def fit_func_partial(params):         
-            _M200_norm, _c, _Re, _sigma_0, _f_bulge, _a = params
+            _M200_norm, _c, _Re, _sigma_0 = params[0:4]
+            f_bulge, a = params[4:6] if len(params) >=6 else (None, None)
             _M200 = self._calc_M200_from_norm(_M200_norm, M_star)
-            vals = self._V_rot_sq_fit_model(radius_valid, _M200, _c, z, M_star, _Re, _sigma_0, _f_bulge, _a)
+            vals = self._V_rot_sq_fit_model(radius_valid, _M200, _c, z, M_star, _Re, _sigma_0, f_bulge, a)
             residuals = vals - ydata
             fit_error = np.mean(residuals**2)
             return fit_error
 
         # to normalize the mass of M200
-        p0 = [1e2, 10.0, 3.0, 20.0, 0.1, 1]  # Initial guess: M200_norm, c, Re, sigma_0, f_bulge, a
-         # Lower and upper bounds
-        bounds = [(1e1, 1e4),       # M200_norm bounds
-                  (0.5, 100.0),     # c bounds
-                  (0.1, 20.0),      # Re bounds
-                  (5.0, 100.0),     # sigma_0 bounds
-                  (0.01, 0.99),     # f_bulge ratios bounds
-                  (0.1, 10)]        # a bounds
+        p0 = [1e2, 10.0, 3.0, 20.0, 0.1, 1.0]  # Initial guess: M200_norm, c, Re, sigma_0, f_bulge, a
+        # p0 = [1e2, 10.0, 3.0, 20.0]  # Initial guess: M200_norm, c, Re, sigma_0
+        # Lower and upper bounds
+        bounds = [
+                    (1e1, 1e4),       # M200_norm bounds
+                    (0.5, 100.0),     # c bounds
+                    (0.1, 20.0),      # Re bounds
+                    (5.0, 100.0),     # sigma_0 bounds
+                    (0.01, 0.99),     # f_bulge ratios bounds
+                    (0.01, 10)        # a bounds
+                ]        
 
         try:
             # Perform Fit
             result = minimize(fit_func_partial, p0, bounds=bounds, method='L-BFGS-B')
-            M200_norm_fit, c_fit, Re_fit, sigma_0_fit, f_bulge_fit, a_fit = result.x
+            M200_norm_fit, c_fit, Re_fit, sigma_0_fit = result.x[0:4]
+            f_bulge_fit, a_fit = result.x[4:6] if len(result.x) >=6 else (None, None)
             M200_fit = self._calc_M200_from_norm(M200_norm_fit, M_star)
         except RuntimeError:
             print("Fitting failed: Optimal parameters not found.")
@@ -232,8 +237,8 @@ class DmNfw:
         print(f" Fitted: c: {c_fit:.3f}")
         print(f" Fitted: Re: {Re_fit:.3f} kpc")
         print(f" Fitted: sigma_0: {sigma_0_fit:.3f} km/s")
-        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}")
-        print(f" Fitted: a: {a_fit:.3f} kpc")
+        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}") if f_bulge_fit is not None else None
+        print(f" Fitted: a: {a_fit:.3f} kpc") if a_fit is not None else None
         print(f" Calculated: V200: {V200_fit:.3f} km/s")
         print(f" Calculated: r200: {r200_fit:.3f} kpc")
 

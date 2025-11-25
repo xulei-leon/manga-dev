@@ -83,16 +83,19 @@ def main():
     # plot galaxy image
     plot_util.plot_galaxy_image(PLATE_IFU)
 
-    # 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Rot",
-                            r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Fitted Rot")
+    # plot RC curves
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Raw",
+                            r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fit")
 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Rot",
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Raw",
+                            r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
+
+    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Observed Fit",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
                         r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
-    
+
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
                             r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 

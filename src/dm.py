@@ -156,13 +156,11 @@ class DmNfw:
 
 
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
-    def _V_rot_sq_fit_model(self, radius: np.ndarray, M200: float, c: float, z: float, M_star: float, Re:float, f_bulge:float, a:float, sigma_0:float) -> np.ndarray:
+    def _V_rot_sq_fit_model(self, radius: np.ndarray, M200: float, c: float, z: float, M_star: float, Re:float, sigma_0:float, f_bulge:float, a:float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_M200(radius, M200, c=c, z=z)
-        v_star_sq = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, Re, f_bulge, a)
+        v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re, f_bulge, a)
         v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
         v_rot_sq = v_dm_sq + v_star_sq  - v_drift_sq
-        v_rot_sq = np.where(v_rot_sq <= 0, 1e-6, v_rot_sq)  # avoid negative values
-
         return v_rot_sq
         
 
@@ -192,26 +190,27 @@ class DmNfw:
             return np.nan, radius, np.full_like(radius, np.nan), np.full_like(radius, np.nan)
 
         def fit_func_partial(params):         
-            M200_norm, c, f_bulge, a, Re, sigma_0 = params
-            M200 = self._calc_M200_from_norm(M200_norm, M_star)
-            vals = self._V_rot_sq_fit_model(radius_valid, M200, c, z, M_star, f_bulge, a, Re, sigma_0)
+            _M200_norm, _c, _Re, _sigma_0, _f_bulge, _a = params
+            _M200 = self._calc_M200_from_norm(_M200_norm, M_star)
+            vals = self._V_rot_sq_fit_model(radius_valid, _M200, _c, z, M_star, _Re, _sigma_0, _f_bulge, _a)
             residuals = vals - ydata
-            return np.sum(residuals**2)
+            fit_error = np.mean(residuals**2)
+            return fit_error
 
         # to normalize the mass of M200
-        p0 = [300, 10.0, 0.1, 1.0, 3.0, 20.0]  # Initial guess: M200_norm, c, f_bulge, a, Re, sigma_0
+        p0 = [1e2, 10.0, 3.0, 20.0, 0.1, 1]  # Initial guess: M200_norm, c, Re, sigma_0, f_bulge, a
          # Lower and upper bounds
-        bounds = [(1e1, 1e4),     # M200_norm bounds
+        bounds = [(1e1, 1e4),       # M200_norm bounds
                   (0.5, 100.0),     # c bounds
-                  (0.01, 1.0),      # f_bulge ratios bounds
-                  (0.1, 10.0),      # a bounds
                   (0.1, 20.0),      # Re bounds
-                  (5.0, 100.0)]     # sigma_0 bounds
+                  (5.0, 100.0),     # sigma_0 bounds
+                  (0.01, 0.99),     # f_bulge ratios bounds
+                  (0.1, 10)]        # a bounds
 
         try:
             # Perform Fit
             result = minimize(fit_func_partial, p0, bounds=bounds, method='L-BFGS-B')
-            M200_norm_fit, c_fit, f_bulge_fit, a_fit, Re_fit, sigma_0_fit = result.x
+            M200_norm_fit, c_fit, Re_fit, sigma_0_fit, f_bulge_fit, a_fit = result.x
             M200_fit = self._calc_M200_from_norm(M200_norm_fit, M_star)
         except RuntimeError:
             print("Fitting failed: Optimal parameters not found.")
@@ -220,9 +219,9 @@ class DmNfw:
         V200_fit = self._calc_V200_from_M200(M200_fit, z)
         r200_fit = self._calc_r200_from_V200(V200_fit, z)
 
-        vel_obs_sq_fit = self._V_rot_sq_fit_model(radius, M200_fit, c_fit, z, M_star, Re_fit, f_bulge_fit, a_fit, sigma_0_fit)
+        vel_obs_sq_fit = self._V_rot_sq_fit_model(radius, M200_fit, c_fit, z, M_star, Re_fit, sigma_0_fit, f_bulge_fit, a_fit)
         vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_fit, c=c_fit, z=z)
-        vel_star_sq_fit = self.stellar_util._stellar_vel_sq_mass_profile(radius, M_star, Re_fit, f_bulge_fit, a_fit)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re_fit, f_bulge_fit, a_fit)
 
         vel_total_fit = np.sqrt(np.maximum(vel_obs_sq_fit, 0))
         vel_dm_fit = np.sqrt(np.maximum(vel_dm_sq_fit, 0))
@@ -231,10 +230,10 @@ class DmNfw:
         print("Fitted DM NFW parameters (minimize):")
         print(f" Fitted: M200: {M200_fit:.3e} Msun")
         print(f" Fitted: c: {c_fit:.3f}")
-        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}")
-        print(f" Fitted: a: {a_fit:.3f} kpc")
         print(f" Fitted: Re: {Re_fit:.3f} kpc")
         print(f" Fitted: sigma_0: {sigma_0_fit:.3f} km/s")
+        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}")
+        print(f" Fitted: a: {a_fit:.3f} kpc")
         print(f" Calculated: V200: {V200_fit:.3f} km/s")
         print(f" Calculated: r200: {r200_fit:.3f} kpc")
 

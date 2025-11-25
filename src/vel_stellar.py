@@ -214,8 +214,11 @@ class Stellar:
         mass_interp = np.interp(r, radius, mass, left=0.0, right=np.nanmax(mass))
         return mass_interp
     
-    def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float, a: float) -> np.ndarray:
-        return self._stellar_vel_sq_mass_profile(r, M_star, Re, f_bulge, a)
+    def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
+        if (f_bulge is not None) and (a is not None):
+            return self._stellar_vel_sq_mass_profile(r, M_star, Re, f_bulge, a)
+        else:
+            return self._stellar_vel_sq_disk_profile(r, M_star, Re)
     
 
 ######################################################

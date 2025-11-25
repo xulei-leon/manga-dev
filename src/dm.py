@@ -22,8 +22,9 @@ class DmNfw:
 
     ########################################################################################
     # Use the following equation to fit DM profile:
+    # ignoring gas contribution for simplification
     ########################################################################################
-    # V_obs^2  =  V_star^2 + V_gas^2 + V_dm^2 - V_drift^2
+    # V_obs^2  =  V_star^2 + V_dm^2 - V_drift^2
     ########################################################################################
         
 
@@ -126,32 +127,10 @@ class DmNfw:
         return vel_drift_sq
     
 
-    def _vel_dm_sq_profile_M200(self, radius_kpc, M200, c=None, z=0.04, h=0.7):
-        V200 = self._calc_V200_from_M200(M200, z)
-        r200 = self._calc_r200_from_V200(V200, z)
-        if c is None:
-            c = self._calc_c_from_M200(M200, h)
-
-        x = self._calc_x_from_r200(radius_kpc, r200)
-        x = np.where(x == 0, 1e-6, x)
-
-        num = np.log(1 + c*x) - (c*x)/(1 + c*x)
-        den = np.log(1 + c) - c/(1 + c)
-
-        V_dm_sq = (V200**2 / x) * (num / den)
-        V_dm = np.sqrt(V_dm_sq)
-        V_dm_max_val = float(np.nanmax(V_dm))
-        radius_max_val = float(np.nanmax(radius_kpc))
-        # print(f"M200={M200:.3e} Msun, V200={V200:.2f} km/s, r200={r200:.2f} kpc, c={c:.2f}, radius max={radius_max_val:.2f} kpc -> V_dm max={V_dm_max_val:.2f} km/s")
-
-        return V_dm_sq
-    
-        # formula: Vdm ^ 2 = (V200 ^2 / x) * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
-    def _vel_dm_sq_profile_V200(self, radius_kpc: np.ndarray, V200: float, z: float, c: float=None) -> np.ndarray:
+    # formula: Vdm ^ 2 = (V200 ^2 / x) * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
+    def _vel_dm_sq_profile_V200(self, radius_kpc: np.ndarray, V200: float, c: float, z: float) -> np.ndarray:
         r200 = self._calc_r200_from_V200(V200, z)
         M200 = self._calc_M200_from_V200(V200, z)
-        if c is None:
-            c = self._calc_c_from_M200(M200, h=0.7)
         x = self._calc_x_from_r200(radius_kpc, r200)
         x = np.where(x == 0, 1e-6, x)  # avoid division by zero
 
@@ -161,7 +140,21 @@ class DmNfw:
         V_dm_sq = (V200**2 / x) * (num / den)
         return V_dm_sq
 
-   
+ 
+    def _vel_dm_sq_profile_M200(self, radius_kpc, M200, c, z):
+        V200 = self._calc_V200_from_M200(M200, z)
+        r200 = self._calc_r200_from_V200(V200, z)
+
+        x = self._calc_x_from_r200(radius_kpc, r200)
+        x = np.where(x == 0, 1e-6, x)
+
+        num = np.log(1 + c*x) - (c*x)/(1 + c*x)
+        den = np.log(1 + c) - c/(1 + c)
+
+        V_dm_sq = (V200**2 / x) * (num / den)
+        return V_dm_sq
+
+
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
     def _V_rot_sq_fit_model(self, radius: np.ndarray, M200: float, c: float, z: float, M_star: float, Re:float, f_bulge:float, a:float, sigma_0:float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_M200(radius, M200, c=c, z=z)
@@ -259,13 +252,8 @@ class DmNfw:
     def set_stellar_util(self, stellar_util: Stellar) -> None:
         self.stellar_util = stellar_util
         return
-
-    def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray, vel_star_sq: np.ndarray, V_drift_sq: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        z = self._get_z()
-        M200_fit, radius_fit, vel_total, vel_dm = self._dm_nfw_fit(radius, vel_obs, vel_star_sq, V_drift_sq, z=z)
-        return M200_fit, radius_fit, vel_total, vel_dm
         
-    def fit_dm_nfw_minimize(self, radius: np.ndarray, vel_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
         radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._dm_nfw_fit_minimize(radius, vel_obs)
         return radius_fit, vel_total, vel_dm_fit, vel_star_fit
@@ -307,7 +295,7 @@ def main():
     c = dm_nfw._calc_c_from_M200(M200, h=0.7)
     print(f"Calculated V200: {V200:.2f} km/s, r200: {r200:.2f} kpc, c: {c:.2f}")
 
-    vel_dm_sq = dm_nfw._vel_dm_sq_profile_M200(radius_fit, M200, z=z)  # Example usage
+    vel_dm_sq = dm_nfw._vel_dm_sq_profile_M200(radius_fit, M200, c, z)  # Example usage
     vel_dm = np.sqrt(vel_dm_sq)
     print(f"Calculated V_DM  shape: {vel_dm.shape}, range: {np.nanmin(vel_dm):.2f} - {np.nanmax(vel_dm):.2f} km/s")
 

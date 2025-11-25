@@ -46,15 +46,10 @@ def main():
     r_gas_obs_map, V_obs_gas_deprojected = vel_rot.get_vel_obs_deprojected()
     r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel_minimize(r_gas_obs_map, V_obs_gas_deprojected, radius_fit=radius_fit)
 
-    r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map = vel_rot.get_stellar_vel_obs()
-    r_stellar_rot_fitted, V_stellar_rot_fitted = vel_rot.fit_rot_vel(r_stellar_obs_map, V_stellar_obs_map, phi_stellar_map, radius_fit=radius_fit)
-
     r_obs_map = r_gas_obs_map
     V_obs_map = V_obs_gas_deprojected
     r_obs_fitted = r_gas_rot_fitted
     V_obs_fitted = V_gas_rot_fitted
-
-    inc_rad = vel_rot.get_inc_rad()
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
@@ -62,20 +57,14 @@ def main():
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
 
-
-
     print("#######################################################")
     print("# 4. calculate dark-matter rotation velocity V(r)")
     print("#######################################################")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
-    total_stellar_mass = stellar.get_stellar_total_mass(np.nanmax(radius_fit))
-    print(f"Total stellar mass: {total_stellar_mass:.2e} M_sun")
 
-    # _, r_dm_fit, V_dm_fit, V_total_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
-    r_dm_fit,  V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw_minimize(r_obs_fitted, V_obs_fitted)
-    # r_dm_fit, V_total_fit, V_dm_fit = dm_nfw.fit_dm_burkert(r_obs_fitted, V_obs_fitted, V_stellar_sq, V_drift_sq)
+    r_dm_fit,  V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted)
 
 
     print("#######################################################")
@@ -95,13 +84,17 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Fitted Rotational")
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Rot",
+                            r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Fitted Rot")
+
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Rot",
+                            r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
-                        r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit Dark Matter")
+                        r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
     
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
-                            r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Stellar")
+                            r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
     return
 

@@ -146,7 +146,7 @@ class PlotUtil:
         plt.show()
 
     # plot r-v curve
-    def plot_rv_curve(self, r_rot_map: np.ndarray, v_rot_map: np.ndarray, title: str="", r_rot2_map: np.ndarray=None, v_rot2_map: np.ndarray=None, title2: str=""):
+    def plot_rv_curve(self, r_rot_map: np.ndarray, v_rot_map: np.ndarray, title: str="", r_rot2_map: np.ndarray=None, v_rot2_map: np.ndarray=None, title2: str="", residuals: np.ndarray=None):
         # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
         r_rot_map = np.asarray(r_rot_map, dtype=float)
         v_rot_map = np.asarray(v_rot_map, dtype=float)
@@ -166,6 +166,11 @@ class PlotUtil:
             # Mask invalid values for stellar velocity
             valid_stellar = np.isfinite(r2_signed) & np.isfinite(v_rot2_map)
             ax.scatter(r2_signed[valid_stellar], v_rot2_map[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
+
+            if residuals is not None:
+                residuals = np.asarray(residuals, dtype=float)
+                ax.scatter(r2_signed[valid_stellar], residuals[valid_stellar], s=2, color='green', alpha=0.2, label='Residuals')
+                ax.axhline(0, color='black', linestyle='-')
 
         ax.set_title(f"Galaxy Rotation Curve (R-V)")
         ax.set_xlabel("Radius R (kpc/h)")

@@ -11,7 +11,6 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from vel_stellar import G, Stellar
-from vel_rot import PLATE_IFU, VelRot
 
 
 class DmNfw:
@@ -232,15 +231,17 @@ class DmNfw:
         vel_dm_fit = np.sqrt(np.maximum(vel_dm_sq_fit, 0))
         vel_star_fit = np.sqrt(np.maximum(vel_star_sq_fit, 0))
 
-        print("Fitted DM NFW parameters (minimize):")
-        print(f" Fitted: M200: {M200_fit:.3e} Msun")
-        print(f" Fitted: c: {c_fit:.3f}")
-        print(f" Fitted: Re: {Re_fit:.3f} kpc")
-        print(f" Fitted: sigma_0: {sigma_0_fit:.3f} km/s")
-        print(f" Fitted: f_bulge: {f_bulge_fit:.3f}") if f_bulge_fit is not None else None
-        print(f" Fitted: a: {a_fit:.3f} kpc") if a_fit is not None else None
-        print(f" Calculated: V200: {V200_fit:.3f} km/s")
-        print(f" Calculated: r200: {r200_fit:.3f} kpc")
+        print(f"\n------------ Fitted Dark Matter NFW (minimize) ------------")
+        print(f" IFU                : {self.PLATE_IFU}")
+        print(f" Fitted: M200       : {M200_fit:.3e} Msun")
+        print(f" Fitted: c          : {c_fit:.3f}")
+        print(f" Fitted: Re         : {Re_fit:.3f} kpc")
+        print(f" Fitted: sigma_0    : {sigma_0_fit:.3f} km/s")
+        print(f" Fitted: f_bulge    : {f_bulge_fit:.3f}") if f_bulge_fit is not None else None
+        print(f" Fitted: a          : {a_fit:.3f} kpc") if a_fit is not None else None
+        print(f" Calculated: V200   : {V200_fit:.3f} km/s")
+        print(f" Calculated: r200   : {r200_fit:.3f} kpc")
+        print("------------------------------------------------------------\n")
 
         # calculate error estimate
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit

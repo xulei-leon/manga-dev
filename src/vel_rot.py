@@ -22,17 +22,20 @@ from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
 
 
-
-
-PLATE_IFU = "8723-12705"
-# PLATE_IFU = "8723-12703"
-
+######################################################################
 # constants definitions
+######################################################################
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 DEFAULT_BETA = 0.5   # sigma_phi^2 / sigma_R^2
 DEFAULT_GAMMA = 0.6  # sigma_z / sigma_R
+
+
+
+######################################################################
+# class
+######################################################################
 
 class VelRot:
     drpall_util = None
@@ -84,64 +87,65 @@ class VelRot:
     def _calc_pa_inc(self) -> float:
         phi = self.maps_util.get_pa()
         ba = self.maps_util.get_ba()
-        print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {ba:.3f}")
+        # print(f"Position Angle PA from MAPS header: {phi:.2f} deg,", f"Inclination b/a from MAPS header: {ba:.3f}")
 
         inc = self._calc_inc(ba, ba_0=BA_0)
-        print(f"Calculated Inclination i: {np.degrees(inc):.2f} deg")
+        # print(f"Calculated Inclination i: {np.degrees(inc):.2f} deg")
         # Convert PA from degrees to radians and rotate so North is at +90°
         pa = np.mod(np.radians(phi), 2 * np.pi)
         return pa, inc
 
-    def _get_vel_obs(self, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_vel_obs_raw(self, type: str='gas') -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         offset_x, offset_y = self.maps_util.get_sky_offsets()
-        print(f"Sky offsets shape: {offset_x.shape}, X offset: [{np.nanmin(offset_x):.3f}, {np.nanmax(offset_x):.3f}] arcsec")
+        # print(f"Sky offsets shape: {offset_x.shape}, X offset: [{np.nanmin(offset_x):.3f}, {np.nanmax(offset_x):.3f}] arcsec")
 
         # R: radial distance map
         radius_map, radius_h_kpc_map, azimuth_map = self.maps_util.get_radius_map()
-        print(f"r_map: [{np.nanmin(radius_map):.3f}, {np.nanmax(radius_map):.3f}] spaxel,", f"shape: {radius_map.shape}")
-        print(f"r_h_kpc_map: [{np.nanmin(radius_h_kpc_map):.3f}, {np.nanmax(radius_h_kpc_map):.3f}] kpc,", f"shape: {radius_h_kpc_map.shape}")
-        print(f"azimuth_map: [{np.nanmin(azimuth_map):.3f}, {np.nanmax(azimuth_map):.3f}] deg,", f"shape: {azimuth_map.shape}")
+        # print(f"r_map: [{np.nanmin(radius_map):.3f}, {np.nanmax(radius_map):.3f}] spaxel,", f"shape: {radius_map.shape}")
+        # print(f"r_h_kpc_map: [{np.nanmin(radius_h_kpc_map):.3f}, {np.nanmax(radius_h_kpc_map):.3f}] kpc,", f"shape: {radius_h_kpc_map.shape}")
+        # print(f"azimuth_map: [{np.nanmin(azimuth_map):.3f}, {np.nanmax(azimuth_map):.3f}] deg,", f"shape: {azimuth_map.shape}")
 
         # SNR: signal-to-noise ratio map
         snr_map = self.maps_util.get_snr_map()
-        print(f"SNR map shape: {snr_map.shape}, SNR range: [{np.nanmin(snr_map):.3f}, {np.nanmax(snr_map):.3f}]")
+        # print(f"SNR map shape: {snr_map.shape}, SNR range: [{np.nanmin(snr_map):.3f}, {np.nanmax(snr_map):.3f}]")
 
         ra_map, dec_map = self.maps_util.get_skycoo_map()
-        print(f"RA map: [{np.nanmin(ra_map):.6f}, {np.nanmax(ra_map):.6f}] deg,", f"Dec map: [{np.nanmin(dec_map):.6f}, {np.nanmax(dec_map):.6f}] deg")
+        # print(f"RA map: [{np.nanmin(ra_map):.6f}, {np.nanmax(ra_map):.6f}] deg,", f"Dec map: [{np.nanmin(dec_map):.6f}, {np.nanmax(dec_map):.6f}] deg")
 
         ## Get the gas velocity map (H-alpha)
         v_obs_gas_map, _gv_unit, _gv_ivar = self.maps_util.get_eml_vel_map()
-        print(f"Gas velocity map shape: {v_obs_gas_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(v_obs_gas_map):.3f}, {np.nanmax(v_obs_gas_map):.3f}] {_gv_unit}")
+        # print(f"Gas velocity map shape: {v_obs_gas_map.shape}, Unit: {_gv_unit}, Velocity: [{np.nanmin(v_obs_gas_map):.3f}, {np.nanmax(v_obs_gas_map):.3f}] {_gv_unit}")
         eml_uindx = self.maps_util.get_emli_uindx()
-        print(f"Gas Unique indices shape: {eml_uindx.shape}")
+        # print(f"Gas Unique indices shape: {eml_uindx.shape}")
 
         ## Get the stellar velocity map
-        v_obs_stellar_map, _sv_unit, _ = self.maps_util.get_stellar_vel_map()
-        print(f"Stellar velocity map shape: {v_obs_stellar_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(v_obs_stellar_map):.3f}, {np.nanmax(v_obs_stellar_map):.3f}] {_sv_unit}")
+        v_obs_stellar_map, _sv_unit, _sv_ivar = self.maps_util.get_stellar_vel_map()
+        # print(f"Stellar velocity map shape: {v_obs_stellar_map.shape}, Unit: {_sv_unit}, Velocity: [{np.nanmin(v_obs_stellar_map):.3f}, {np.nanmax(v_obs_stellar_map):.3f}] {_sv_unit}")
         stellar_uindx = self.maps_util.get_stellar_uindx()
-        print(f"Stellar Unique indices shape: {stellar_uindx.shape}")
+        # print(f"Stellar Unique indices shape: {stellar_uindx.shape}")
 
         # Velocity correction
         if type == 'gas':
             v_obs_map = v_obs_gas_map
             v_unit = _gv_unit
-            v_uindx = eml_uindx
+            v_ivar = _gv_ivar
         else:
             v_obs_map = v_obs_stellar_map
             v_unit = _sv_unit
-            v_uindx = stellar_uindx
+            v_ivar = _sv_ivar
         
         azimuth_rad_map = np.radians(azimuth_map)
 
         filtered_vel_map = self._vel_map_filter(v_obs_map, snr_map, azimuth_rad_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
-        print(f"Filtered Velocity map shape: {filtered_vel_map.shape}, Unit: {v_unit}, Range: [{np.nanmin(filtered_vel_map):.3f}, {np.nanmax(filtered_vel_map):.3f}]")
-        print(f"Velocity data before filtering: {np.sum(np.isfinite(v_obs_map))}, after filtering: {np.sum(np.isfinite(filtered_vel_map))}")
+        # print(f"Filtered Velocity map shape: {filtered_vel_map.shape}, Unit: {v_unit}, Range: [{np.nanmin(filtered_vel_map):.3f}, {np.nanmax(filtered_vel_map):.3f}]")
+        # print(f"Velocity data before filtering: {np.sum(np.isfinite(v_obs_map))}, after filtering: {np.sum(np.isfinite(filtered_vel_map))}")
 
-        v_obs_map = filtered_vel_map
         r_obs_map = radius_h_kpc_map
+        v_obs_map = filtered_vel_map
+        ivar_obs_map = v_ivar
         phi_obs_map = azimuth_rad_map
 
-        return r_obs_map, v_obs_map, phi_obs_map
+        return r_obs_map, v_obs_map, ivar_obs_map, phi_obs_map
     
     def _get_radius(self) -> np.ndarray:
         _, radius_h_kpc_map, _ = self.maps_util.get_radius_map()
@@ -173,6 +177,9 @@ class VelRot:
 
 
     # Formula: V(r) = Vc * tanh(r / Rt) + s_out * r
+    # Vc: Vc is the asymptotic circular velocity at large radii
+    # Rt: Rt is the turnover radius where the hyperbolic tangent term begins to be flat
+    # s_out: sout is the slope of the RC at large radii r >> Rt
     def _vel_rot_tanh_sout_profile(self, r: np.ndarray, Vc: float, Rt: float, s_out: float) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + s_out * r
     
@@ -192,47 +199,61 @@ class VelRot:
     ################################################################################
     # Fitting methods
     ################################################################################
-    
+   
     #  used the minimize method for fitting
-    def _fit_vel_rot_tanh_minimize(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
-        """Fit the rotation curve using the minimize method."""
-        # Flatten the maps and remove NaN values
-        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.1)
+    def _fit_vel_rot_tanh(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
         vel_valid = vel_obs_map[valid_mask]
         vel_valid = np.abs(vel_valid)
+        ivar_map_valid = ivar_map[valid_mask]
 
-        # Fix inclination to the photometric value to avoid Vc-sin(i) degeneracy
-        def residuals(params):
+        ivar_map_valid = np.where(np.isfinite(ivar_map_valid), ivar_map_valid, 1e-6)
+        ivar_map_valid = np.where(ivar_map_valid > 0, ivar_map_valid, 1e-6)
+
+        phi_0, inc_0 = self._calc_pa_inc()
+
+        # ivar: Inverse Variance
+        # ivar = 1 / sigma^2
+        # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
+        def _loss_function(params):
             Vc, Rt, Sout = params
             vel_model = self._vel_rot_tanh_sout_profile(radius_valid, Vc, Rt, Sout)
-            return np.sum((vel_valid - vel_model) ** 2)
-        
-        phi_0, inc_0 = self._calc_pa_inc()
+            residuals = vel_valid - vel_model
+            loss = np.sum(ivar_map_valid * (residuals ** 2))
+            return loss
 
         r_max = np.nanmax(radius_valid)
         v_obs_max = np.nanmax(vel_valid)
         Vc_0 = v_obs_max / np.sin(inc_0)
         
         # Initial guesses for Vc, Rt, Sout
-        initial_guess = [Vc_0, r_max*0.2, 0.0]
-        bounds = [(50, 500.0), (r_max*0.1, r_max), (-50.0, 50.0)]
+        initial_guess = [Vc_0, r_max*0.1, 0.0]
+        bounds = [(20, 500.0), (r_max*0.01, r_max*1.0), (-50.0, 50.0)]
 
-        result = minimize(residuals, initial_guess, bounds=bounds, method='L-BFGS-B')
+        result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
         Vc_fit, Rt_fit, Sout_fit = result.x
 
-        print(f"\n------------  IFU [{self.PLATE_IFU}] Fitted parameters (minimize)  ------------")
-        print(f"Fit  Vc: {Vc_fit:.3f} km/s")
-        print(f"Fit  Rt: {Rt_fit:.3f} kpc/h")
-        print(f"Fit  s_out: {Sout_fit:.3f} km/s")
+        print(f"\n------------ Fitted Total Rotational Velocity (minimize) ------------")
+        print(f" IFU        : {self.PLATE_IFU}")
+        print(f" Fit  Vc    : {Vc_fit:.3f} km/s")
+        print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h")
+        print(f" Fit  s_out : {Sout_fit:.3f} km/s")
         print("------------------------------------------------------------------------------\n")
 
         if radius_fit is None:
             radius_fit = radius_map
 
         vel_rot_fitted = self._vel_rot_tanh_sout_profile(radius_fit, Vc_fit, Rt_fit, Sout_fit)
-        # vel_rot_fitted = np.where(vel_obs_map < 0, -vel_rot_fitted, vel_rot_fitted)
         return radius_fit, vel_rot_fitted
+    
+    # ivar = 1 / sigma^2
+    def _calc_residuals(self, vel_obs, vel_fit, ivar):
+        residuals = np.abs(vel_obs) - vel_fit
+        # standardized residuals = residuals / sigma
+        # sigma = np.sqrt(1 / ivar)
+        standardized_residuals = residuals * np.sqrt(ivar)
+        return residuals, standardized_residuals
 
     ################################################################################
     # public methods
@@ -241,30 +262,30 @@ class VelRot:
         self.PLATE_IFU = plate_ifu
         return
 
-    def get_vel_obs(self):
-        radius_map, vel_obs_map, phi_map = self._get_vel_obs(type='gas')
-        return radius_map, vel_obs_map, phi_map
-
-    def fit_rot_vel_minimize(self, radius_map, vel_obs_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_tanh_minimize(radius_map, vel_obs_map, radius_fit=radius_fit)
-        return radius_fitted, vel_rot_fitted
-
     def get_inc_rad(self):
         _, inc_rad = self._calc_pa_inc()
         return inc_rad
-    
-    def get_vel_obs_deprojected(self):
-        r_map, v_obs_map, phi_map = self._get_vel_obs(type='gas')
-        inc_rad = self.get_inc_rad()
-        v_rot_map = self._vel_rot_disproject_profile(v_obs_map, inc_rad, phi_map)
-        return r_map, v_rot_map
-    
+
     def get_radius_fit(self, count: int=100) -> np.ndarray:
         radius_map = self._get_radius()
         radius_max = np.nanmax(radius_map)
 
         radius_fit = np.linspace(0.0, radius_max, num=count)
         return radius_fit
+
+    def get_vel_obs_raw(self):
+        r_map, vel_obs_map, ivar_map, _ = self._get_vel_obs_raw(type='gas')
+        return r_map, vel_obs_map, ivar_map
+
+    def get_vel_obs(self):
+        r_map, v_obs_map, ivar_map, phi_map = self._get_vel_obs_raw(type='gas')
+        inc_rad = self.get_inc_rad()
+        v_rot_map = self._vel_rot_disproject_profile(v_obs_map, inc_rad, phi_map)
+        return r_map, v_rot_map, ivar_map
+
+    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, radius_fit=None):
+        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_tanh(radius_map, vel_obs_map, ivar_map, radius_fit=radius_fit)
+        return radius_fitted, vel_rot_fitted
 
 
 ######################################################
@@ -291,23 +312,22 @@ def main():
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
     r_fit = vel_rot.get_radius_fit(count=1000)
-    r_obs_map, V_obs_map, phi_map = vel_rot.get_vel_obs()
-    _, V_obs_map_deprojected = vel_rot.get_vel_obs_deprojected()
-    r_rot_fitted, V_rot_fitted = vel_rot.fit_rot_vel(r_obs_map, V_obs_map, phi_map, radius_fit=r_fit)
-    r_rot_fitted_mini, V_rot_fitted_mini = vel_rot.fit_rot_vel_minimize(r_obs_map, V_obs_map_deprojected, radius_fit=r_obs_map)
+    r_obs_map, V_obs_map, ivar_obs_map = vel_rot.get_vel_obs_raw()
+    _, V_obs_map_deprojected, ivar_obs_map = vel_rot.get_vel_obs()
+    r_rot_fit, V_rot_fit = vel_rot.fit_vel_rot(r_obs_map, V_obs_map_deprojected, ivar_obs_map, radius_fit=r_obs_map)
+    residuals, std_residuals = vel_rot._calc_residuals(V_obs_map_deprojected, V_rot_fit, ivar_obs_map)
 
     print("#######################################################")
     print("# calculate results")
     print("#######################################################")
     print(f"Obs Radius shape: {r_obs_map.shape}, range: [{np.nanmin(r_obs_map):.3f}, {np.nanmax(r_obs_map):.3f}] kpc/h")
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
-    print(f"Obs Phi shape: {phi_map.shape}, range: [{np.nanmin(phi_map):.3f}, {np.nanmax(phi_map):.3f}] rad")
-    print(f"Fitted Rot Velocity shape: {V_rot_fitted.shape}, range: [{np.nanmin(V_rot_fitted):.3f}, {np.nanmax(V_rot_fitted):.3f}]")
-    print(f"Fitted Rot Velocity (Minimize) shape: {V_rot_fitted_mini.shape}, range: [{np.nanmin(V_rot_fitted_mini):.3f}, {np.nanmax(V_rot_fitted_mini):.3f}]")
+    print(f"Obs Deprojected Velocity shape: {V_obs_map_deprojected.shape}, range: [{np.nanmin(V_obs_map_deprojected):.3f}, {np.nanmax(V_obs_map_deprojected):.3f}]")
+    print(f"Obs Inverse Variance shape: {ivar_obs_map.shape}, range: [{np.nanmin(ivar_obs_map):.3f}, {np.nanmax(ivar_obs_map):.3f}]")
+    print(f"Fitted Rot Velocity (Minimize) shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):.3f}, {np.nanmax(V_rot_fit):.3f}]")
 
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Fitted", r_rot2_map=r_rot_fitted, v_rot2_map=V_rot_fitted, title2="Rot Fitted")
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deprojected", r_rot2_map=r_rot_fitted_mini, v_rot2_map=V_rot_fitted_mini, title2="Rot Fitted Minimize")
-    plot_util.plot_rv_curve(r_rot_fitted, V_rot_fitted, title="Rot Fitted", r_rot2_map=r_rot_fitted_mini, v_rot2_map=V_rot_fitted_mini, title2="Rot Minimize Fitted")
+    plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Raw", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit", )
+    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit", residuals=residuals)
     return
 
 

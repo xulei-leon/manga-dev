@@ -43,13 +43,9 @@ def main():
 
     radius_fit = vel_rot.get_radius_fit(count=1000)
 
-    r_gas_obs_map, V_obs_gas_deprojected = vel_rot.get_vel_obs_deprojected()
-    r_gas_rot_fitted, V_gas_rot_fitted = vel_rot.fit_rot_vel_minimize(r_gas_obs_map, V_obs_gas_deprojected, radius_fit=radius_fit)
+    r_obs_map, V_obs_map, ivar_map = vel_rot.get_vel_obs()
+    r_obs_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, radius_fit=radius_fit)
 
-    r_obs_map = r_gas_obs_map
-    V_obs_map = V_obs_gas_deprojected
-    r_obs_fitted = r_gas_rot_fitted
-    V_obs_fitted = V_gas_rot_fitted
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
@@ -84,10 +80,10 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # plot RC curves
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Raw",
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Deproject",
                             r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fit")
 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Raw",
+    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Deproject",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
     plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Observed Fit",

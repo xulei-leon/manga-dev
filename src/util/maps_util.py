@@ -119,29 +119,21 @@ class MapsUtil:
 
         return ra_map, dec_map
 
-    def _get_unique_bins(self, layer_index: int) -> np.ndarray:
-        """
-        Internal helper function to get unique bins and their indices from BINID data.
-        """
-        bin_id_map = self.hdu['BINID'].data[layer_index]
-        flat = bin_id_map.ravel()
+    # BINID
+    # C2	Stellar continua	str	Data in channel 2
+    def get_stellar_binid(self) -> tuple[np.ndarray]:
+        bin_id_data = self.hdu['BINID'].data
+        binid_map = bin_id_data[1, ...]
+        return binid_map
 
-        # Exclude invalid bins (-1)
-        valid_mask = flat >= 0
-        flat_valid = flat[valid_mask]
+    # BINID
+    # C4	Em. line models	str	Data in channel 4
+    def get_emli_binid(self) -> tuple[np.ndarray]:
+        bin_id_data = self.hdu['BINID'].data
+        binid_map = bin_id_data[3, ...]
+        binid_map = np.where(binid_map >= 0, binid_map, np.nan)
+        return binid_map
 
-        _, uindx_valid = np.unique(flat_valid, return_index=True)
-        # Map back to the original array indices
-        uindx = np.nonzero(valid_mask)[0][uindx_valid]
-
-        return uindx
-
-
-    def get_stellar_uindx(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_unique_bins(1)
-
-    def get_emli_uindx(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._get_unique_bins(3)
 
     # EMLINE_GSIGMA
     # EMLINE_INSTSIGMA

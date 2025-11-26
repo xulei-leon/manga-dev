@@ -41,9 +41,8 @@ def main():
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
-    radius_fit = vel_rot.get_radius_fit(count=1000)
-
     r_obs_map, V_obs_map, ivar_map = vel_rot.get_vel_obs()
+    radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
     r_obs_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, radius_fit=radius_fit)
 
 

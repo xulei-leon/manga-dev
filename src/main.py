@@ -41,9 +41,10 @@ def main():
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
-    r_obs_map, V_obs_map, ivar_map = vel_rot.get_vel_obs()
-    radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
-    r_obs_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, radius_fit=radius_fit)
+    r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
+    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
+    radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
+    r_obs_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
 
 
     print("#######################################################")
@@ -65,7 +66,7 @@ def main():
     print("#######################################################")
     print("# Results")
     print("#######################################################")
-    print(f"V_obs_map shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):,.1f}, {np.nanmax(V_obs_map):,.1f}] km/s")
+    print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):,.1f}, {np.nanmax(V_obs_fitted):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
@@ -79,10 +80,10 @@ def main():
     plot_util.plot_galaxy_image(PLATE_IFU)
 
     # plot RC curves
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Deproject",
+    plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
                             r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fit")
 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_map, v_rot_map=V_obs_map, title="Observed Deproject",
+    plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
     plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Observed Fit",

@@ -204,7 +204,7 @@ class VelRot:
     # Fitting methods
     ################################################################################
     def _calc_loss(self, vel, vel_fit, ivar):
-        residuals = vel - vel_fit
+        residuals = np.abs(vel) - np.abs(vel_fit)
         loss = np.sum(ivar * (residuals ** 2))
         return loss
 
@@ -217,52 +217,55 @@ class VelRot:
         return chi_sq_v
    
     #  used the minimize method for fitting
-    def _fit_vel_rot_tan(self, radius_map: np.ndarray, vel_disp_map: np.ndarray, ivar_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
-        valid_mask = np.isfinite(vel_disp_map) & np.isfinite(radius_map) & np.isfinite(ivar_map) & (radius_map > 0.01)
+    def _fit_vel_rot_tan(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & np.isfinite(ivar_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
-        vel_valid = vel_disp_map[valid_mask]
-        vel_valid = np.abs(vel_valid)
+        vel_obs_valid = vel_obs_map[valid_mask]
+        vel_obs_valid = np.abs(vel_obs_valid)
         ivar_map_valid = ivar_map[valid_mask]
+        phi_map_valid = phi_map[valid_mask]
 
         # ivar: Inverse Variance
         # ivar = 1 / sigma^2
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
         def _loss_function(params):
-            Vc, Rt, Sout = params
-            vel_model = self._vel_rot_tan_sout_profile(radius_valid, Vc, Rt, Sout)
-            loss = self._calc_loss(vel_valid, vel_model, ivar_map_valid)
+            Vc, Rt, Sout, inc = params
+            vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc, Rt, Sout)
+            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid)
+            loss = self._calc_loss(vel_obs_valid, vel_obs_model, ivar_map_valid)
             return loss
 
         r_max = np.nanmax(radius_valid)
-        Vc_0 = np.nanmax(vel_valid)
+        Vc_0 = np.nanmax(vel_obs_valid)
         
         # Initial guesses for Vc, Rt, Sout
-        initial_guess = [Vc_0, r_max*0.3, 0.0]
-        bounds = [(20, 500.0), (r_max*0.01, r_max*1.0), (-50.0, 50.0)]
+        initial_guess = [Vc_0, r_max*0.3, 0.0, np.radians(45.0)]
+        bounds = [(20, 500.0), (r_max*0.01, r_max*1.0), (-50.0, 50.0), (np.radians(10.0), np.radians(80.0))]
         result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
-        Vc_fit, Rt_fit, Sout_fit = result.x
+        Vc_fit, Rt_fit, Sout_fit, inc_fit = result.x
 
         # Reduced chi-squared
         vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc_fit, Rt_fit, Sout_fit)
-        loss_model = self._calc_loss(vel_valid, vel_rot_model, ivar_map_valid)
-        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_rot_model, ivar_map_valid, num_params=3)
+        vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_fit, phi_map_valid)
+        chi_sq_v = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=4)
 
         # Covariance Matrix
         hess_inv = result.hess_inv.todense()
         param_errors = np.sqrt(np.diag(hess_inv))
         # Standard Errors of the Parameters
-        Vc_err, Rt_err, Sout_err = param_errors
+        Vc_err, Rt_err, Sout_err, inc_err = param_errors
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
         Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
         Sout_err_pct = (Sout_err / Sout_fit) * 100 if Sout_fit != 0 else np.nan
+        inc_err_pct = (inc_err / inc_fit) * 100 if inc_fit != 0 else np.nan
 
         print(f"\n------------ Fitted Total Rotational Velocity (tan) ------------")
         print(f" IFU        : {self.PLATE_IFU}")
         print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
         print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
         print(f" Fit  s_out : {Sout_fit:.3f} km/s, ± {Sout_err:.3f} km/s", f"({Sout_err_pct:.2f} %)")
+        print(f" Fit  inc   : {np.degrees(inc_fit):.3f} deg, ± {np.degrees(inc_err):.3f} deg", f"({inc_err_pct:.2f} %)")
         print(f" chi_sq_v   : {chi_sq_v:.3f}")
-        print(f" chi_sq     : {loss_model:.3f}")
         print("------------------------------------------------------------------------------\n")
 
         if radius_fit is None:
@@ -272,55 +275,59 @@ class VelRot:
         return radius_fit, vel_rot_fitted
     
 
-    def _fit_vel_rot_arctan(self, radius_map: np.ndarray, vel_disp_map: np.ndarray, ivar_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
-        valid_mask = np.isfinite(vel_disp_map) & np.isfinite(radius_map) & (radius_map > 0.01)
+    def _fit_vel_rot_arctan(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
-        vel_valid = vel_disp_map[valid_mask]
+        vel_valid = vel_obs_map[valid_mask]
         vel_valid = np.abs(vel_valid)
         ivar_map_valid = ivar_map[valid_mask]
+        phi_map_valid = phi_map[valid_mask]
 
         # ivar: Inverse Variance
         # ivar = 1 / sigma^2
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
         def _loss_function(params):
-            V0, Vc, Rt = params
-            vel_model = self._vel_rot_arctan_profile(radius_valid, V0, Vc, Rt)
-            loss = self._calc_loss(vel_valid, vel_model, ivar_map_valid)
+            V0, Vc, Rt, inc = params
+            vel_rot_model = self._vel_rot_arctan_profile(radius_valid, V0, Vc, Rt)
+            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid)
+            loss = self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid)
             return loss
 
         r_max = np.nanmax(radius_valid)
         Vc_0 = np.nanmax(vel_valid)
         
         # Initial guesses for V0, Vc, Rt
-        initial_guess = [0.0, Vc_0, r_max*0.3]
+        initial_guess = [0.0, Vc_0, r_max*0.3, np.radians(45.0)]
         bounds = [
                     (0.0, 50.0), 
                     (20.0, 500.0), 
-                    (r_max*0.01, r_max*1.0)
+                    (r_max*0.01, r_max*1.0),
+                    (np.radians(10.0), np.radians(80.0))
                 ]
 
         result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
-        V0_fit, Vc_fit, Rt_fit = result.x
+        V0_fit, Vc_fit, Rt_fit, inc_fit = result.x
          # Reduced chi-squared
         vel_rot_model = self._vel_rot_arctan_profile(radius_valid, V0_fit, Vc_fit, Rt_fit)
-        loss_model = self._calc_loss(vel_valid, vel_rot_model, ivar_map_valid)
-        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_rot_model, ivar_map_valid, num_params=4)
+        vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_fit, phi_map_valid)
+        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=4)
         # Covariance Matrix
         hess_inv = result.hess_inv.todense()
         param_errors = np.sqrt(np.diag(hess_inv))
         # Standard Errors of the Parameters
-        V0_err, Vc_err, Rt_err = param_errors
+        V0_err, Vc_err, Rt_err, inc_err = param_errors
         V0_err_pct = (V0_err / V0_fit) * 100 if V0_fit != 0 else np.nan
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
         Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
+        inc_err_pct = (inc_err / inc_fit) * 100 if inc_fit != 0 else np.nan
 
         print(f"\n------------ Fitted Total Rotational Velocity (arctan) ------------")
         print(f" IFU        : {self.PLATE_IFU}")
         print(f" Fit  V0    : {V0_fit:.3f} km/s, ± {V0_err:.3f} km/s", f"({V0_err_pct:.2f} %)")
         print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
         print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
+        print(f" Fit  inc   : {np.degrees(inc_fit):.3f} deg, ± {np.degrees(inc_err):.3f} deg", f"({inc_err_pct:.2f} %)")
         print(f" chi_sq_v   : {chi_sq_v:.3f}")
-        print(f" chi_sq     : {loss_model:.3f}")
         print("------------------------------------------------------------------------------\n")
 
         if radius_fit is None:
@@ -330,56 +337,59 @@ class VelRot:
         return radius_fit, vel_rot_fitted
     
 
-    def _fit_vel_rot_polyex(self, radius_map: np.ndarray, vel_disp_map: np.ndarray, ivar_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
-        valid_mask = np.isfinite(vel_disp_map) & np.isfinite(radius_map) & (radius_map > 0.01)
+    def _fit_vel_rot_polyex(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
-        vel_valid = vel_disp_map[valid_mask]
+        vel_valid = vel_obs_map[valid_mask]
         vel_valid = np.abs(vel_valid)
         ivar_map_valid = ivar_map[valid_mask]
+        phi_map_valid = phi_map[valid_mask]
 
         # ivar: Inverse Variance
         # ivar = 1 / sigma^2
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
         def _loss_function(params):
-            V0, Rt, alpha = params
-            vel_model = self._vel_rot_polyex_profile(radius_valid, V0, Rt, alpha)
-            loss = self._calc_loss(vel_valid, vel_model, ivar_map_valid)
+            V0, Rt, alpha, inc = params
+            vel_rot_model = self._vel_rot_polyex_profile(radius_valid, V0, Rt, alpha)
+            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid)
+            loss = self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid)
             return loss
 
         r_max = np.nanmax(radius_valid)
         V0_0 = np.nanmax(vel_valid)
         
         # Initial guesses for V0, Rt, alpha
-        initial_guess = [V0_0, r_max*0.3, 0.0]
+        initial_guess = [V0_0, r_max*0.3, 0.0, np.radians(45.0)]
         bounds = [
                     (0.0, 500.0), 
                     (r_max*0.01, r_max*1.0), 
-                    (-1.0, 1.0)
+                    (-1.0, 1.0),
+                    (np.radians(10.0), np.radians(80.0))
                 ]
 
         result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
-        V0_fit, Rpe_fit, alpha_fit = result.x
+        V0_fit, Rpe_fit, alpha_fit, inc_fit = result.x
         # Reduced chi-squared
         vel_rot_model = self._vel_rot_polyex_profile(radius_valid, V0_fit, Rpe_fit, alpha_fit)
-        loss_model = self._calc_loss(vel_valid, vel_rot_model, ivar_map_valid)
-        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_rot_model, ivar_map_valid, num_params=3)
+        vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_fit, phi_map_valid)
+        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=4)
         # Covariance Matrix
         hess_inv = result.hess_inv.todense()
         param_errors = np.sqrt(np.diag(hess_inv))
         # Standard Errors of the Parameters
-        V0_err, Rpe_err, alpha_err = param_errors
+        V0_err, Rpe_err, alpha_err, inc_err = param_errors
         V0_err_pct = (V0_err / V0_fit) * 100 if V0_fit != 0 else np.nan
         Rpe_err_pct = (Rpe_err / Rpe_fit) * 100 if Rpe_fit != 0 else np.nan
         alpha_err_pct = (alpha_err / alpha_fit) * 100 if alpha_fit != 0 else np.nan
-
+        inc_err_pct = (inc_err / inc_fit) * 100 if inc_fit != 0 else np.nan
 
         print(f"\n------------ Fitted Total Rotational Velocity (polyex) ------------")
         print(f" IFU        : {self.PLATE_IFU}")
         print(f" Fit  V0    : {V0_fit:.3f} km/s ± {V0_err:.3f} km/s ({V0_err_pct:.2f}%)")
         print(f" Fit  Rt   : {Rpe_fit:.3f} kpc/h ± {Rpe_err:.3f} kpc/h ({Rpe_err_pct:.2f}%)")
         print(f" Fit  alpha : {alpha_fit:.3f} ± {alpha_err:.3f} ({alpha_err_pct:.2f}%)")
+        print(f" Fit  inc   : {np.degrees(inc_fit):.3f} deg ± {np.degrees(inc_err):.3f} deg ({inc_err_pct:.2f}%)")
         print(f" chi_sq_v   : {chi_sq_v:.3f}")
-        print(f" chi_sq     : {loss_model:.3f}")
         print("------------------------------------------------------------------------------\n")
  
         if radius_fit is None:
@@ -411,18 +421,20 @@ class VelRot:
         radius_fit = np.linspace(0.0, radius_max, num=count)
         return radius_fit
 
-    def get_vel_obs_raw(self):
-        r_map, vel_obs_map, ivar_map, _ = self._get_vel_obs_raw(type='gas')
-        return r_map, vel_obs_map, ivar_map
-
+    # observed velocity
     def get_vel_obs(self):
+        r_map, vel_obs_map, ivar_map, phi_map = self._get_vel_obs_raw(type='gas')
+        return r_map, vel_obs_map, ivar_map, phi_map
+
+    # disprojected velocity
+    def get_vel_obs_disp(self):
         r_map, v_obs_map, ivar_map, phi_map = self._get_vel_obs_raw(type='gas')
         inc_rad = self.get_inc_rad()
         v_rot_map = self._vel_rot_disproject_profile(v_obs_map, inc_rad, phi_map)
         return r_map, v_rot_map, ivar_map
 
-    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_arctan(radius_map, vel_obs_map, ivar_map, radius_fit=radius_fit)
+    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
+        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_arctan(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
         return radius_fitted, vel_rot_fitted
 
 
@@ -431,7 +443,7 @@ class VelRot:
 # main function for test
 ######################################################
 def main():
-    PLATE_IFU = "10218-6102"
+    PLATE_IFU = "8723-12703"
 
     root_dir = Path(__file__).resolve().parent.parent
     fits_util = FitsUtil(root_dir / "data")
@@ -450,27 +462,27 @@ def main():
 
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
-    r_obs_map, V_obs_map, ivar_obs_map = vel_rot.get_vel_obs_raw()
+    r_obs_map, V_obs_map, ivar_obs_map, phi_map = vel_rot.get_vel_obs()
     r_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
-    r_obs_map, V_obs_map_deprojected, ivar_obs_map = vel_rot.get_vel_obs()
-    r_rot_fit, V_rot_fit = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map_deprojected, ivar_obs_map, radius_fit=r_fit)
-    r_rot_fit2, V_rot_fit2 = vel_rot._fit_vel_rot_arctan(r_obs_map, V_obs_map_deprojected, ivar_obs_map, radius_fit=r_fit)
-    r_rot_fit3, V_rot_fit3 = vel_rot._fit_vel_rot_polyex(r_obs_map, V_obs_map_deprojected, ivar_obs_map, radius_fit=r_fit)
+    r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp()
+    r_rot_fit, V_rot_fit = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    r_rot_fit2, V_rot_fit2 = vel_rot._fit_vel_rot_arctan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    r_rot_fit3, V_rot_fit3 = vel_rot._fit_vel_rot_polyex(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
 
     print("#######################################################")
     print("# calculate results")
     print("#######################################################")
     print(f"Obs Radius shape: {r_obs_map.shape}, range: [{np.nanmin(r_obs_map):.3f}, {np.nanmax(r_obs_map):.3f}] kpc/h")
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
-    print(f"Obs Deprojected Velocity shape: {V_obs_map_deprojected.shape}, range: [{np.nanmin(V_obs_map_deprojected):.3f}, {np.nanmax(V_obs_map_deprojected):.3f}]")
+    print(f"Obs Deprojected Velocity shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):.3f}, {np.nanmax(V_disp_map):.3f}]")
     print(f"Obs Inverse Variance shape: {ivar_obs_map.shape}, range: [{np.nanmin(ivar_obs_map):.3f}, {np.nanmax(ivar_obs_map):.3f}]")
     print(f"Fitted Rot Velocity (Minimize) shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):.3f}, {np.nanmax(V_rot_fit):.3f}]")
 
     # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Raw", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit")
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit tan")
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deproject", r_rot2_map=r_rot_fit2, v_rot2_map=V_rot_fit2, title2="Obs Fit arctan")
-    plot_util.plot_rv_curve(r_obs_map, V_obs_map_deprojected, title="Obs Deproject", r_rot2_map=r_rot_fit3, v_rot2_map=V_rot_fit3, title2="Obs Fit polyex")
+    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit tan")
+    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit2, v_rot2_map=V_rot_fit2, title2="Obs Fit arctan")
+    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit3, v_rot2_map=V_rot_fit3, title2="Obs Fit polyex")
     return
 
 

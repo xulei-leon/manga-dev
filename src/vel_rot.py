@@ -557,6 +557,7 @@ class VelRot:
             radius_fit = radius_map
 
         vel_rot_fitted = self._vel_rot_arctan_profile(radius_fit, 0, Vc_fit, Rt_fit)
+
         return radius_fit, vel_rot_fitted
 
     ################################################################################
@@ -588,7 +589,7 @@ class VelRot:
         return r_map, v_rot_map, ivar_map
 
     def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_arctan_minimize(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_arctan_curve(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
         return radius_fitted, vel_rot_fitted
 
 

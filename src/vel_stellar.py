@@ -106,10 +106,14 @@ class Stellar:
     def _vel_sq_disk_freeman(self, r: np.ndarray, M_d: float, Rd: float) -> np.ndarray:
         r = np.where(r == 0, 1e-6, r)  # avoid division by zero
         y = r / (2.0 * Rd)
-        I_0 = special.i0(y)
-        I_1 = special.i1(y)
-        K_0 = special.k0(y)
-        K_1 = special.k1(y)
+        # Use exponentially scaled Bessel functions to avoid overflow/underflow
+        # i0e(x) = exp(-|x|) * I0(x)
+        # k0e(x) = exp(x) * K0(x)
+        # The product I0(x)*K0(x) becomes i0e(x)*k0e(x) because exp(-x)*exp(x) = 1
+        I_0 = special.i0e(y)
+        I_1 = special.i1e(y)
+        K_0 = special.k0e(y)
+        K_1 = special.k1e(y)
         v_sq = (2.0 * G * M_d / Rd) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
         return v_sq
     

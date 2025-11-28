@@ -201,7 +201,7 @@ class VelRot:
     
 
     ################################################################################
-    # Fitting methods
+    # Error functions
     ################################################################################
     def _calc_loss(self, vel, vel_fit, ivar):
         # sigma = np.sqrt(1.0 / ivar)
@@ -217,7 +217,21 @@ class VelRot:
         dof = max(N - k, 1)
         chi_sq_v = chi_sq / dof
         return chi_sq_v
-   
+
+    def _calc_R_sq_adj(self, vel_valid, ivar_map_valid, result, vel_obs_model):
+        ss_res = np.nansum(((vel_valid - vel_obs_model) ** 2) * ivar_map_valid)
+        vel_mean = np.nansum(vel_valid * ivar_map_valid) / np.nansum(ivar_map_valid)
+        ss_tot = np.nansum(((vel_valid - vel_mean) ** 2) * ivar_map_valid)
+        r_squared = 1 - (ss_res / ss_tot)
+        n = np.sum(np.isfinite(vel_valid))
+        k = len(result.x)
+        r_squared_adj = 1 - (1 - r_squared) * (n - 1) / (n - k - 1)
+        return r_squared_adj
+
+
+    ################################################################################
+    # Fitting methods
+    ################################################################################
     #  used the minimize method for fitting
     def _fit_vel_rot_tan(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & np.isfinite(ivar_map) & (radius_map > 0.01)
@@ -269,9 +283,8 @@ class VelRot:
         C = result.hess_inv.todense()
 
         # Correlation Matrix
-        correlation_matrix = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
-
-
+        CORR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
+    
         # Standard Errors of the Parameters
         param_errors = F_factor * np.sqrt(np.diag(C))
         Vc_norm_err, Rt_norm_err, Sout_norm_err = param_errors
@@ -291,8 +304,7 @@ class VelRot:
         print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
         print(f" Fit  s_out : {Sout_fit:.3f} km/s, ± {Sout_err:.3f} km/s", f"({Sout_err_pct:.2f} %)")
         print(f" Reduced Chi-Squared    : {chi_sq_v:.3f}")
-        print(f"Correlation Matrix      :")
-        print(correlation_matrix)
+        print(f" Correlation Matrix     : \n{CORR_MATRIX}")
         print("------------------------------------------------------------------------------\n")
 
         if radius_fit is None:
@@ -312,7 +324,9 @@ class VelRot:
 
         inc_act = self.get_inc_rad()
 
+        ######################################
         # normal all fit parameters
+        ######################################
         param_ranges = {
             'Vc': (20.0, 500.0),  # km/s
             'Rt': (np.nanmax(radius_valid)*0.01, np.nanmax(radius_valid)*1.0),  # kpc/h
@@ -324,10 +338,13 @@ class VelRot:
             Rt = Rt_n * (param_ranges['Rt'][1] - param_ranges['Rt'][0]) + param_ranges['Rt'][0]
             return [Vc, Rt]
 
-
+        ######################################
+        # Loss function
+        ######################################
         # ivar: Inverse Variance
         # ivar = 1 / sigma^2
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
+        ######################################
         def _loss_function(params):
             Vc, Rt = _denormal_params(params)
             vel_rot_model = self._vel_rot_arctan_profile(radius_valid, 0.0, Vc, Rt)
@@ -335,6 +352,10 @@ class VelRot:
             loss = self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid)
             return loss
 
+
+        ######################################
+        # Fitting process
+        ######################################
         # Initial guesses for V0, Vc, Rt, inc
         # Using normalized parameters for better convergence
         initial_guess = [0.5, 0.3]
@@ -346,22 +367,30 @@ class VelRot:
         ######################################
         # Error estimation
         ######################################
-
         # Reduced Chi-Squared
         vel_rot_model = self._vel_rot_arctan_profile(radius_valid, 0, Vc_fit, Rt_fit)
         vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
-        chi_sq_v = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=len(result.x))
-        F_factor = np.sqrt(chi_sq_v)
+        CHI_SQ_V = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=len(result.x))
+        F_factor = np.sqrt(CHI_SQ_V)
 
-        # RMSE
-        rmse = np.sqrt(self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid) / np.sum(np.isfinite(vel_valid)))
-        # MAE
-        mae = np.sum(np.abs(vel_valid - vel_obs_model)) / np.sum(np.isfinite(vel_valid))
+        # Adjusted Coefficient of Determination (R²)
+        R_SQ_ADJ = self._calc_R_sq_adj(vel_valid, ivar_map_valid, result, vel_obs_model)
+
+        # RMSE: Root Mean Square Error
+        RMSE = np.sqrt(self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid) / np.sum(np.isfinite(vel_valid)))
+        # MAE: Mean Absolute Error
+        MAE = np.sum(np.abs(vel_valid - vel_obs_model)) / np.sum(np.isfinite(vel_valid))
+        mask_pos = (vel_valid > 1.0)
+        # MAPE: Mean Absolute Percentage Error
+        MAPE = np.sum(np.abs((vel_valid[mask_pos] - vel_obs_model[mask_pos]) / vel_valid[mask_pos])) / np.sum(mask_pos) * 100.0
+        # SMAPE: Symmetric Mean Absolute Percentage Error
+        SMAPE = (100.0 / np.sum(np.isfinite(vel_valid))) * np.sum(2.0 * np.abs(vel_valid - vel_obs_model) / (np.abs(vel_valid) + np.abs(vel_obs_model)))
+
 
         # Covariance Matrix
         C = result.hess_inv.todense()
         # Correlation Matrix
-        correlation_matrix = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
+        CORR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
 
         # Standard Errors of the Parameters
         param_errors = F_factor * np.sqrt(np.diag(C))
@@ -378,13 +407,17 @@ class VelRot:
         print(f" IFU        : {self.PLATE_IFU}")
         print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
         print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
-        print(f" Reduced Chi-Squared    : {chi_sq_v:.3f}")
-        print(f" RMSE                   : {rmse:.3f} km/s")
-        print(f" MAE                    : {mae:.3f} km/s")
-        # print(f"Correlation Matrix      :")
-        # print(correlation_matrix)
+        print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
+        print(f" Adjusted R²            : {R_SQ_ADJ:.4f}")
+        print(f" RMSE                   : {RMSE:.3f} km/s")
+        print(f" MAE, MAPE              : {MAE:.3f} km/s, {MAPE:.2f} %")
+        print(f" SMAPE                  : {SMAPE:.2f} %")
+        print(f" Correlation Matrix     : \n{CORR_MATRIX}")
         print("------------------------------------------------------------------------------\n")
 
+        ######################################
+        # Return fitted velocity profile
+        ######################################
         if radius_fit is None:
             radius_fit = radius_map
 
@@ -466,7 +499,7 @@ def test_process(PLATE_IFU: str):
 
     # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Raw", r_rot2_map=r_rot_fit_arctan, v_rot2_map=V_rot_fit_arctan, title2="Obs Fit arctan")
     # plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit tan")
-    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit_arctan, v_rot2_map=V_rot_fit_arctan, title2="Obs Fit arctan")
+    # plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit_arctan, v_rot2_map=V_rot_fit_arctan, title2="Obs Fit arctan")
     # plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit3, v_rot2_map=V_rot_fit3, title2="Obs Fit polyex")
     return
 

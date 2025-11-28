@@ -203,10 +203,10 @@ class VelRot:
     ################################################################################
     # Error functions
     ################################################################################
-    def _calc_loss(self, vel, vel_fit, ivar):
+    def _calc_loss(self, y_obs: np.ndarray, y_model: np.ndarray, ivar: np.ndarray) -> float:
         # sigma = np.sqrt(1.0 / ivar)
         sigma = np.sqrt(1.0 / ivar + (VEL_FLOOR_ERROR)**2)  # adding floor error
-        residuals = np.abs(vel) - np.abs(vel_fit)
+        residuals = np.abs(y_obs) - np.abs(y_model)
         loss = np.sum(residuals**2 / sigma**2)
         return loss
 
@@ -242,11 +242,12 @@ class VelRot:
         phi_map_valid = phi_map[valid_mask]
 
         inc_act = self.get_inc_rad()
+        y_data = vel_obs_valid
 
         ######################################
         # normal all fit parameters
         ######################################
-        param_ranges = {
+        params_range = {
             'Vc': (20.0, 500.0),  # km/s
             'Rt': (np.nanmax(radius_valid)*0.1, np.nanmax(radius_valid)*1.0),  # kpc/h
             'Sout': (-50.0, 50.0)  # km/s
@@ -254,9 +255,9 @@ class VelRot:
 
         def _denormal_params(params_n):
             Vc_n, Rt_n, Sout_n = params_n
-            Vc = Vc_n * (param_ranges['Vc'][1] - param_ranges['Vc'][0]) + param_ranges['Vc'][0]
-            Rt = Rt_n * (param_ranges['Rt'][1] - param_ranges['Rt'][0]) + param_ranges['Rt'][0]
-            Sout = Sout_n * (param_ranges['Sout'][1] - param_ranges['Sout'][0]) + param_ranges['Sout'][0]
+            Vc = Vc_n * (params_range['Vc'][1] - params_range['Vc'][0]) + params_range['Vc'][0]
+            Rt = Rt_n * (params_range['Rt'][1] - params_range['Rt'][0]) + params_range['Rt'][0]
+            Sout = Sout_n * (params_range['Sout'][1] - params_range['Sout'][0]) + params_range['Sout'][0]
             return [Vc, Rt, Sout]
 
         ######################################
@@ -267,11 +268,11 @@ class VelRot:
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
         ######################################
         def _loss_function(params):
-            Vc, Rt, Sout = _denormal_params(params)
-            vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc, Rt, Sout)
-            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
-            loss = self._calc_loss(vel_obs_valid, vel_obs_model, ivar_map_valid)
-            return loss
+            _Vc, _Rt, _Sout = _denormal_params(params)
+            _vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, _Vc, _Rt, _Sout)
+            _y_model = self._vel_obs_project_profile(_vel_rot_model, inc_act, phi_map_valid)
+            _loss = self._calc_loss(y_data, _y_model, ivar_map_valid)
+            return _loss
 
         ######################################
         # Fitting process
@@ -286,7 +287,6 @@ class VelRot:
         ######################################
         # Error estimation
         ######################################
- 
         # Reduced Chi-Squared
         vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc_fit, Rt_fit, Sout_fit)
         vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
@@ -310,15 +310,15 @@ class VelRot:
         # Covariance Matrix
         C = result.hess_inv.todense()
         # Correlation Matrix
-        CORR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
+        COR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
     
         # Standard Errors of the Parameters
-        param_errors = F_factor * np.sqrt(np.diag(C))
+        param_errors = np.sqrt(np.diag(C)) * F_factor  # scaled by F_factor
         Vc_norm_err, Rt_norm_err, Sout_norm_err = param_errors
         Vc_err, Rt_err, Sout_err = (
-            Vc_norm_err * (param_ranges['Vc'][1] - param_ranges['Vc'][0]),
-            Rt_norm_err * (param_ranges['Rt'][1] - param_ranges['Rt'][0]),
-            Sout_norm_err * (param_ranges['Sout'][1] - param_ranges['Sout'][0]),
+            Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
+            Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
+            Sout_norm_err * (params_range['Sout'][1] - params_range['Sout'][0]),
         )
 
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
@@ -337,7 +337,7 @@ class VelRot:
         print(f" MAE                    : {MAE:.3f} km/s")
         print(f" MAPE                   : {MAPE:.3f} %")
         print(f" SMAPE                  : {SMAPE:.3f} %")
-        print(f" Correlation Matrix     : \n{CORR_MATRIX}")
+        print(f" Correlation Matrix     : \n{COR_MATRIX}")
         print("-------------------------------------------------------------------\n")
 
         ######################################
@@ -363,15 +363,15 @@ class VelRot:
         ######################################
         # normal all fit parameters
         ######################################
-        param_ranges = {
+        params_range = {
             'Vc': (20.0, 500.0),  # km/s
             'Rt': (np.nanmax(radius_valid)*0.01, np.nanmax(radius_valid)*1.0),  # kpc/h
         }
 
-        def _denormal_params(params_n):
+        def _denormalize_params(params_n):
             Vc_n, Rt_n = params_n
-            Vc = Vc_n * (param_ranges['Vc'][1] - param_ranges['Vc'][0]) + param_ranges['Vc'][0]
-            Rt = Rt_n * (param_ranges['Rt'][1] - param_ranges['Rt'][0]) + param_ranges['Rt'][0]
+            Vc = Vc_n * (params_range['Vc'][1] - params_range['Vc'][0]) + params_range['Vc'][0]
+            Rt = Rt_n * (params_range['Rt'][1] - params_range['Rt'][0]) + params_range['Rt'][0]
             return [Vc, Rt]
 
         ######################################
@@ -382,7 +382,7 @@ class VelRot:
         # Loss = sum((vel_obs - vel_model)^2 / sigma^2)
         ######################################
         def _loss_function(params):
-            Vc, Rt = _denormal_params(params)
+            Vc, Rt = _denormalize_params(params)
             vel_rot_model = self._vel_rot_arctan_profile(radius_valid, 0.0, Vc, Rt)
             vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
             loss = self._calc_loss(vel_valid, vel_obs_model, ivar_map_valid)
@@ -398,7 +398,7 @@ class VelRot:
         bounds = [(0.0, 1.0), (0.0, 1.0)]  # normalized bounds
 
         result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
-        Vc_fit, Rt_fit = _denormal_params(result.x)
+        Vc_fit, Rt_fit = _denormalize_params(result.x)
 
         ######################################
         # Error estimation
@@ -426,14 +426,14 @@ class VelRot:
         # Covariance Matrix
         C = result.hess_inv.todense()
         # Correlation Matrix
-        CORR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
+        COR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
 
         # Standard Errors of the Parameters
         param_errors = F_factor * np.sqrt(np.diag(C))
         Vc_norm_err, Rt_norm_err = param_errors
         Vc_err, Rt_err = (
-            Vc_norm_err * (param_ranges['Vc'][1] - param_ranges['Vc'][0]),
-            Rt_norm_err * (param_ranges['Rt'][1] - param_ranges['Rt'][0]),
+            Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
+            Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
         )
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
         Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
@@ -450,7 +450,7 @@ class VelRot:
         print(f" MAE                    : {MAE:.3f} km/s")
         print(f" MAPE                   : {MAPE:.3f} %")
         print(f" SMAPE                  : {SMAPE:.2f} %")
-        print(f" Correlation Matrix     : \n{CORR_MATRIX}")
+        print(f" Correlation Matrix     : \n{COR_MATRIX}")
         print("--------------------------------------------------------------------\n")
 
         ######################################

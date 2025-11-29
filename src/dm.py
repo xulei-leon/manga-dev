@@ -2,7 +2,7 @@ from pathlib import Path
 
 from re import M, S
 import numpy as np
-from scipy.optimize import curve_fit, minimize
+from scipy.optimize import curve_fit, minimize, basinhopping
 from astropy import constants as const
 from astropy import units as u
 
@@ -19,15 +19,6 @@ class DmNfw:
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
-
-
-    ########################################################################################
-    # Use the following equation to fit DM profile:
-    # ignoring gas contribution for simplification
-    ########################################################################################
-    # V_obs^2  =  V_star^2 + V_dm^2 - V_drift^2
-    ########################################################################################
-        
 
     ########################################################################################
     # NFW Dark Matter Halo Profile:
@@ -85,7 +76,7 @@ class DmNfw:
         r200_Mpc = V200 / (10 * Hz)  # in Mpc
         r200_kpc = r200_Mpc * 1e3  # convert to kpc
         return r200_kpc # in kpc
-    
+
     # x = r / r200
     def _calc_x_from_r200(self, radius_kpc: np.ndarray, r200_kpc: float) -> np.ndarray:
         return radius_kpc / r200_kpc
@@ -95,13 +86,14 @@ class DmNfw:
     def _calc_c_from_M200(self, M200: float, h: float) -> float:
         M_pivot = 2e12 / h
         return 5.74 * (M200 / M_pivot)**(-0.097)
-    
+
+    # formula: V200^3 = 10 * G * H(z) * M200
     def _calc_V200_from_M200(self, M200: float, z: float) -> float:
         Hz = self._calc_Hz_kpc(z)  # in km/s/Mpc
         G = const.G.to('Mpc km^2 / s^2 Msun').value  # Mpc km^2 / s^2 / Msun
         V200 = (10 * G * Hz * M200)**(1/3)  # in km/s
         return V200
-    
+
     def _calc_M200_from_V200(self, V200: float, z: float) -> float:
         Hz = self._calc_Hz_kpc(z)  # in km/s/Mpc
         G = const.G.to('Mpc km^2 / s^2 Msun').value  # Mpc km^2 / s^2 / Msun
@@ -113,7 +105,8 @@ class DmNfw:
     ################################################################################
 
     #
-    # Drift Correction: V_drift^2 = 2 * sigma_0^2 * (R / R_d)
+    # Drift Correction
+    # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
     #
     def _vel_drift_sq_profile(self, radius: np.ndarray, sigma_0:float, Re: float):
         Rd = Re / 1.678
@@ -132,7 +125,7 @@ class DmNfw:
         V_dm_sq = (V200**2 / x) * (num / den)
         return V_dm_sq
 
- 
+    # formula: Vdm ^ 2 = ((10 * G * H(z) * M200) ^2 / x) * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
     def _vel_dm_sq_profile_M200(self, radius_kpc, M200, c, z):
         V200 = self._calc_V200_from_M200(M200, z)
         r200 = self._calc_r200_from_V200(V200, z)
@@ -150,6 +143,20 @@ class DmNfw:
         return V_dm_sq
 
 
+
+
+    ########################################################################################
+    # Use the following equation to fit DM profile:
+    # ignoring gas contribution for simplification
+    ########################################################################################
+    # V_obs^2  =  V_star^2 + V_dm^2 - V_drift^2
+    #
+    # Vdm ^ 2 = ((10 * G * H(z) * M200) ^2 / x) * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
+    # V_star^2 = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+    # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
+    ########################################################################################
+
+
     # V_rot^2 = V_star^2 + V_dm^2 - V_drift^2
     def _vel_rot_sq_fit_model(self, radius: np.ndarray, M200: float, z: float, M_star: float, Re:float, sigma_0:float, f_bulge:float, a:float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_M200(radius, M200, c=None, z=z)
@@ -157,7 +164,7 @@ class DmNfw:
         v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
         v_rot_sq = v_dm_sq + v_star_sq  - v_drift_sq
         return v_rot_sq
-        
+
 
     ################################################################################
     # Error functions
@@ -185,7 +192,7 @@ class DmNfw:
     ################################################################################
 
     def _dm_nfw_fit_minimize(self, radius: np.ndarray, vel_obs: np.ndarray):
-        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) & 
+        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) &
                     (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
         vel_obs_valid = vel_obs[valid_mask]
@@ -214,7 +221,7 @@ class DmNfw:
             _f_bulge = f_bulge_n * (params_range['f_bulge'][1] - params_range['f_bulge'][0]) + params_range['f_bulge'][0]
             _a = a_n * (params_range['a'][1] - params_range['a'][0]) + params_range['a'][0]
             return _M200, _Re, _sigma_0, _f_bulge, _a
-            
+
         ######################################
         # Loss function
         ######################################
@@ -229,7 +236,7 @@ class DmNfw:
         ######################################
         initial_guess = [0.2, 0.1, 0.1, 0.5, 0.5]  # normalized initial guess
         bounds = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # normalized bounds
- 
+
         result = minimize(_loss_function, initial_guess, bounds=bounds, method='L-BFGS-B')
         M200_fit, Re_fit, sigma_0_fit, f_bulge_fit, a_fit = _denormalize_params(result.x)
         V200_fit = self._calc_V200_from_M200(M200_fit, z)
@@ -328,20 +335,177 @@ class DmNfw:
         # calculate error estimate
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 
+
+    def _fit_dm_nfw_basinhopping(self, radius: np.ndarray, vel_obs: np.ndarray):
+        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) &
+                    (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
+        radius_valid = radius[valid_mask]
+        vel_obs_valid = vel_obs[valid_mask]
+
+        radius_max = np.nanmax(radius_valid)
+        M_star = self.stellar_util.get_stellar_total_mass(radius_max)
+        z = self._get_z()
+        y_data = vel_obs_valid**2
+
+        ######################################
+        # normal all fit parameters
+        ######################################
+        params_range = {
+            'M200': (1e1*M_star, 1e4*M_star),
+            'Re': (1.0, 20.0),
+            'sigma_0': (5.0, 100.0),
+            'f_bulge': (1e-3, 1.0),
+            'a': (0.01, 10.0),
+        }
+
+        def _denormalize_params(params_n):
+            _M200_n, _Re_n, _sigma_0_n, f_bulge_n, a_n = params_n
+            _M200 = _M200_n * (params_range['M200'][1] - params_range['M200'][0]) + params_range['M200'][0]
+            _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
+            _sigma_0 = _sigma_0_n * (params_range['sigma_0'][1] - params_range['sigma_0'][0]) + params_range['sigma_0'][0]
+            _f_bulge = f_bulge_n * (params_range['f_bulge'][1] - params_range['f_bulge'][0]) + params_range['f_bulge'][0]
+            _a = a_n * (params_range['a'][1] - params_range['a'][0]) + params_range['a'][0]
+            return _M200, _Re, _sigma_0, _f_bulge, _a
+
+        ######################################
+        # Loss function
+        ######################################
+        def _loss_function(params):
+            # Check bounds manually for basinhopping since it doesn't strictly enforce them during steps
+            if np.any(params < 0.0) or np.any(params > 1.0):
+                return np.inf
+
+            _M200, _Re, _sigma_0, f_bulge, a = _denormalize_params(params)
+            _y_model = self._vel_rot_sq_fit_model(radius_valid, _M200, z, M_star, _Re, _sigma_0, f_bulge, a)
+            _loss = self._calc_loss(y_data, _y_model)
+            return _loss
+
+        ######################################
+        # Fitting process
+        ######################################
+        initial_guess = [0.2, 0.1, 0.1, 0.5, 0.5]  # normalized initial guess
+        bounds = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # normalized bounds
+
+        # Minimizer kwargs for the local minimization step
+        minimizer_kwargs = {"method": "L-BFGS-B", "bounds": bounds}
+
+        result = basinhopping(_loss_function, initial_guess, minimizer_kwargs=minimizer_kwargs, niter=100, seed=42)
+
+        M200_fit, Re_fit, sigma_0_fit, f_bulge_fit, a_fit = _denormalize_params(result.x)
+        V200_fit = self._calc_V200_from_M200(M200_fit, z)
+        r200_fit = self._calc_r200_from_V200(V200_fit, z)
+
+        ######################################
+        # Error estimation
+        ######################################
+        # Reduced Chi-Squared
+        dof = len(y_data) - len(result.x)
+        y_model = self._vel_rot_sq_fit_model(radius_valid, M200_fit, z, M_star, Re_fit, sigma_0_fit, f_bulge_fit, a_fit)
+        CHI_SQ_V = self._calc_chi_sq_v(y_data, y_model, dof)
+        F_factor = np.sqrt(CHI_SQ_V)
+
+        # Adjusted Coefficient of Determination (R²)
+        R_SQ_ADJ = self._calc_R_sq_adj(y_data, y_model, dof)
+
+        # RMSE: Root Mean Square Error
+        RMSE = np.sqrt(self._calc_loss(y_data, y_model) / len(y_data))
+        # MAE: Mean Absolute Error
+        MAE = np.nanmean(np.abs(y_data - y_model))
+        mask_pos = (y_data > 1.0)
+        # MAPE: Mean Absolute Percentage Error
+        MAPE = np.nanmean(np.abs((y_data[mask_pos] - y_model[mask_pos]) / y_data[mask_pos])) * 100.0
+        # SMAPE: Symmetric Mean Absolute Percentage Error
+        SMAPE = np.nanmean(2.0 * np.abs(y_data[mask_pos] - y_model[mask_pos]) / (np.abs(y_data[mask_pos]) + np.abs(y_model[mask_pos]))) * 100.0
+
+        # Covariance Matrix
+        # basinhopping result object is slightly different, usually the lowest minimum found is in result.lowest_optimization_result
+        # However, result.x contains the best parameters.
+        # To get hessian, we might need to re-run minimize at the best spot or check if lowest_optimization_result has it.
+
+        lowest_res = result.lowest_optimization_result
+        if hasattr(lowest_res, "hess_inv"):
+            C = lowest_res.hess_inv.todense()
+        elif hasattr(lowest_res, "hess"):
+            C = np.linalg.inv(lowest_res.hess)
+        else:
+            # Try to estimate Hessian at the minimum if not provided
+            # This is a fallback and might be computationally expensive or require numdifftools
+            print("Warning: Hessian information not available from basinhopping result; cannot compute covariance matrix.")
+            C = None
+
+        if C is not None:
+            # Correlation Matrix
+            COR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
+
+            # Standard Errors of the Parameters
+            param_errors = np.sqrt(np.diag(C)) * F_factor  # scaled by F_factor
+            M200_norm_err, Re_norm_err, sigma_0_norm_err, f_bulge_norm_err, a_norm_err = param_errors
+            M200_err, Re_err, sigma_0_err, f_bulge_err, a_err = (
+                M200_norm_err * (params_range['M200'][1] - params_range['M200'][0]),
+                Re_norm_err * (params_range['Re'][1] - params_range['Re'][0]),
+                sigma_0_norm_err * (params_range['sigma_0'][1] - params_range['sigma_0'][0]),
+                f_bulge_norm_err * (params_range['f_bulge'][1] - params_range['f_bulge'][0]),
+                a_norm_err * (params_range['a'][1] - params_range['a'][0]),
+            )
+
+            M200_err_pct = (M200_err / M200_fit) * 100.0 if M200_fit != 0 else np.nan
+            Re_err_pct = (Re_err / Re_fit) * 100.0 if Re_fit != 0 else np.nan
+            sigma_0_err_pct = (sigma_0_err / sigma_0_fit) * 100.0 if sigma_0_fit != 0 else np.nan
+            f_bulge_err_pct = (f_bulge_err / f_bulge_fit) * 100.0 if f_bulge_fit != 0 else np.nan
+            a_err_pct = (a_err / a_fit) * 100.0 if a_fit != 0 else np.nan
+        else:
+            M200_err = Re_err = sigma_0_err = f_bulge_err = a_err = np.nan
+            M200_err_pct = Re_err_pct = sigma_0_err_pct = f_bulge_err_pct = a_err_pct = np.nan
+            COR_MATRIX = None
+
+
+        print(f"\n------------ Fitted Dark Matter NFW (basinhopping) ------------")
+        print(f" IFU                : {self.PLATE_IFU}")
+        print(f" Fitted: M200       : {M200_fit:.3e} Msun, ± {M200_err:.3e} Msun ({M200_err_pct:.2f} %)")
+        print(f" Fitted: Re         : {Re_fit:.3f} kpc, ± {Re_err:.3f} kpc ({Re_err_pct:.2f} %)")
+        print(f" Fitted: sigma_0    : {sigma_0_fit:.3f} km/s, ± {sigma_0_err:.3f} km/s ({sigma_0_err_pct:.2f} %)")
+        print(f" Fitted: f_bulge    : {f_bulge_fit:.3f}, ± {f_bulge_err:.3f} ({f_bulge_err_pct:.2f} %)") if f_bulge_fit is not None else None
+        print(f" Fitted: a          : {a_fit:.3f} kpc, ± {a_err:.3f} kpc ({a_err_pct:.2f} %)") if a_fit is not None else None
+        print(f" Calculated: V200   : {V200_fit:.3f} km/s")
+        print(f" Calculated: r200   : {r200_fit:.3f} kpc")
+        print("--- Error --------------------------------")
+        print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
+        print(f" Adjusted R²            : {R_SQ_ADJ:.3f}")
+        print(f" RMSE                   : {RMSE:.3f} (km/s)^2")
+        print(f" MAE                    : {MAE:.3f} (km/s)^2")
+        print(f" MAPE                   : {MAPE:.3f} %")
+        print(f" SMAPE                  : {SMAPE:.3f} %")
+        print(f" Correlation Matrix     : \n{COR_MATRIX}")
+        print("------------------------------------------------------------\n")
+
+        ######################################
+        # Return fitted velocity profile
+        ######################################
+        vel_rot_sq_fit = self._vel_rot_sq_fit_model(radius, M200_fit, z, M_star, Re_fit, sigma_0_fit, f_bulge_fit, a_fit)
+        vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_fit, c=None, z=z)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re_fit, f_bulge_fit, a_fit)
+
+        vel_total_fit = np.sqrt(vel_rot_sq_fit)
+        vel_dm_fit = np.sqrt(vel_dm_sq_fit)
+        vel_star_fit = np.sqrt(vel_star_sq_fit)
+
+        # calculate error estimate
+        return radius, vel_total_fit, vel_dm_fit, vel_star_fit
+
     ################################################################################
     # public methods
     ################################################################################
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
         return
-    
+
     def set_stellar_util(self, stellar_util: Stellar) -> None:
         self.stellar_util = stellar_util
         return
-        
+
     def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._dm_nfw_fit_minimize(radius, vel_obs)
+        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw_basinhopping(radius, vel_obs)
         return radius_fit, vel_total, vel_dm_fit, vel_star_fit
 
 
@@ -371,7 +535,7 @@ def main():
     _, radius_h_kpc_map, _ = maps_util.get_radius_map()
     radius_max = np.nanmax(radius_h_kpc_map)
     radius_fit = np.linspace(0.0, radius_max, num=1000)
-    
+
     print("### Test: DM based on M200")
     z = dm_nfw._get_z()
     M200 = 3*10**12 # example halo mass in Msun
@@ -398,7 +562,7 @@ def main():
     print(f"Calculated x  shape: {x.shape}, range: {np.nanmin(x):.5f} - {np.nanmax(x):.5f}")
     c = dm_nfw._calc_c_from_M200(M200, h=0.7)
     print(f"Calculated c from M200: {c:.2f}")
-    
+
     vel_dm_sq = dm_nfw._vel_dm_sq_profile_V200(radius_fit, V200, c, z)
     vel_dm = np.sqrt(vel_dm_sq)
     print(f"Calculated V_DM  shape: {vel_dm.shape}, range: {np.nanmin(vel_dm):.2f} - {np.nanmax(vel_dm):.2f} km/s")

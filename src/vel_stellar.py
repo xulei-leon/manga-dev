@@ -83,7 +83,7 @@ class Stellar:
         else:
             print("  WARNING: Calculated radius does not match MAPS radius within 1%")
         return radius_h_kpc_map
-    
+
 
     ################################################################################
     # profile
@@ -101,7 +101,7 @@ class Stellar:
         r = np.where(r == 0, 1e-6, r)  # avoid division by zero
         v_sq = G * MB * r / (r + a)**2
         return v_sq
-    
+
     # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
     def _vel_sq_disk_freeman(self, r: np.ndarray, M_d: float, Rd: float) -> np.ndarray:
         r = np.where(r == 0, 1e-6, r)  # avoid division by zero
@@ -116,11 +116,12 @@ class Stellar:
         K_1 = special.k1e(y)
         v_sq = (2.0 * G * M_d / Rd) * (np.square(y)) * (I_0 * K_0 - I_1 * K_1)
         return v_sq
-    
+
     # M_star: total mass of star
     # Re: Half-mass radius
     # f_bulge: bulge mass fraction
     # a: Hernquist scale radius
+    # V_star^2 = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
     def _stellar_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float, a: float) -> np.ndarray:
         Rd = Re / 1.678
         MB = f_bulge * M_star
@@ -130,13 +131,13 @@ class Stellar:
         v_disk_sq = self._vel_sq_disk_freeman(r, MD, Rd)
         v_baryon_sq = v_bulge_sq + v_disk_sq
         return v_baryon_sq
-    
+
     # M_star: total mass of star
     # Re: Half-mass radius
     def _stellar_vel_sq_disk_profile(self, r: np.ndarray, M_star: float, Re: float):
         Rd = Re / 1.678
         return self._vel_sq_disk_freeman(r, M_star, Rd)
-    
+
 
     # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
     def _stellar_mass_model(self, r: np.ndarray, MB: float, a: float, MD: float, rd: float) -> np.ndarray:
@@ -211,19 +212,19 @@ class Stellar:
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
         return
-    
+
     # get mass within radius r
     def get_stellar_total_mass(self, r: float) -> float:
         radius, mass = self._get_stellar_mass(self.PLATE_IFU)
         mass_interp = np.interp(r, radius, mass, left=0.0, right=np.nanmax(mass))
         return mass_interp
-    
+
     def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
         if (f_bulge is not None) and (a is not None):
             return self._stellar_vel_sq_mass_profile(r, M_star, Re, f_bulge, a)
         else:
             return self._stellar_vel_sq_disk_profile(r, M_star, Re)
-    
+
 
 ######################################################
 # main function for test
@@ -259,7 +260,7 @@ def main() -> None:
     V_star_sq = stellar.stellar_vel_sq_profile(radius_h_kpc_map, total_mass, 5.0, 0.2, 1.0)
     V_star = np.sqrt(V_star_sq)
     print(f"Stellar Velocity shape: {V_star.shape}, Unit: km/s, range: [{np.nanmin(V_star[V_star>=0]):.1f}, {np.nanmax(V_star):.1f}] km/s")
-   
+
     return
 if __name__ == "__main__":
     main()

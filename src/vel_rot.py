@@ -29,7 +29,7 @@ from util.plot_util import PlotUtil
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-VEL_FLOOR_ERROR = 20.0  # km/s, floor error added in quadrature to velocity error
+VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 ######################################################################
@@ -41,7 +41,7 @@ class VelRot:
     firefly_util = None
     maps_util = None
     plot_util = None
-    
+
     def __init__(self, drpall_util: DrpallUtil, firefly_util: FireflyUtil, maps_util: MapsUtil, plot_util: PlotUtil=None) -> None:
         self.drpall_util = drpall_util
         self.firefly_util = firefly_util
@@ -80,7 +80,7 @@ class VelRot:
         vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
         vel_map_filtered[valid_mask] = vel_map[valid_mask]
         return vel_map_filtered
-    
+
     # PA: The position angle of the major axis of the galaxy, measured from north to east.
     # b/a: The axis ratio (b/a) of the galaxy
     def _calc_pa_inc(self) -> float:
@@ -116,7 +116,7 @@ class VelRot:
         # print(f"Gas velocity map shape: {v_obs_gas_map.shape}, Unit: {_gv_unit}, Velocity range: [{np.nanmin(v_obs_gas_map):.3f}, {np.nanmax(v_obs_gas_map):.3f}] {_gv_unit}, size: {np.sum(np.isfinite(v_obs_gas_map))}")
         eml_binid = self.maps_util.get_emli_binid()
         # print(f"Gas Unique indices shape: {eml_binid.shape}, range: [{np.nanmin(eml_binid):.0f}, {np.nanmax(eml_binid):.0f}], size: {len(np.unique(eml_binid))}")
-  
+
 
         ## Get the stellar velocity map
         v_obs_stellar_map, _sv_unit, _sv_ivar = self.maps_util.get_stellar_vel_map()
@@ -131,7 +131,7 @@ class VelRot:
             v_obs_map = v_obs_stellar_map
             v_unit = _sv_unit
             v_ivar = _sv_ivar
-        
+
         azimuth_rad_map = np.radians(azimuth_map)
 
         filtered_vel_map = self._vel_map_filter(v_obs_map, snr_map, azimuth_rad_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
@@ -144,7 +144,7 @@ class VelRot:
         phi_obs_map = azimuth_rad_map
 
         return r_obs_map, v_obs_map, ivar_obs_map, phi_obs_map
-    
+
     def _get_radius(self) -> np.ndarray:
         _, radius_h_kpc_map, _ = self.maps_util.get_radius_map()
         return radius_h_kpc_map
@@ -155,14 +155,14 @@ class VelRot:
 
     # Formula: V_obs = V_rot * (sin(i) * cos(phi - phi_0))
     def _vel_obs_project_profile(self, vel_rot: np.ndarray, inc: float, phi_delta: np.ndarray) -> np.ndarray:
-        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly 
+        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly
         correction = np.sin(inc) * np.cos(phi_delta)
         vel_obs = vel_rot * correction
         return vel_obs
-    
+
     # formula: V_rot = V_obs / (sin(i) * cos(phi - phi_0))
     def _vel_rot_disproject_profile(self, vel_obs: np.ndarray, inc: float, phi_delta: np.ndarray) -> np.ndarray:
-        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly 
+        phi_delta = (phi_delta + np.pi) % (2 * np.pi) # WHY?? rotate pi to make sure cos() works correctly
         correction = np.sin(inc) * np.cos(phi_delta)
         mask = np.abs(correction) > 1e-3  # avoid division by zero
         vel_rot = np.where(mask, vel_obs / correction, np.nan)
@@ -182,7 +182,7 @@ class VelRot:
     # Negativity: The s_out parameter may have bad standard errors.
     def _vel_rot_tan_sout_profile(self, r: np.ndarray, Vc: float, Rt: float, s_out: float) -> np.ndarray:
         return Vc * np.tanh(r / Rt) + s_out * r
-    
+
     # Formula: V(r) = Vc * tanh(r / Rt) * (1 + beta * r / Rmax)
     # def _vel_rot_tan_beta_profile(self, r: np.ndarray, Vc: float, Rt: float, beta: float, Rmax: float) -> np.ndarray:
     #     return Vc * np.tanh(r / Rt) * (1 + beta * r / Rmax)
@@ -193,19 +193,19 @@ class VelRot:
     # Formula: V(r) = V0 + (2/pi) * Vc * arctan(r / Rt)
     def _vel_rot_arctan_profile(self, r: np.ndarray, V0: float, Vc: float, Rt: float) -> np.ndarray:
         return V0 + (2 / np.pi) * Vc * np.arctan(r / Rt)
-    
+
     # Formula: V(r) = V0 * (1 - e^(-r / Rt)) (1 + alpha * r / Rt)
     # Negativity: The alpha parameter parameter may have bad standard errors.
     def _vel_rot_polyex_profile(self, r: np.ndarray, V0: float, Rt: float, alpha: float) -> np.ndarray:
         return V0 * (1 - np.exp(-r / Rt)) * (1 + alpha * r / Rt)
-    
+
 
     ################################################################################
     # Error functions
     ################################################################################
     def _calc_loss(self, y_obs: np.ndarray, y_model: np.ndarray, ivar: np.ndarray) -> float:
         # sigma = np.sqrt(1.0 / ivar)
-        sigma = np.sqrt(1.0 / ivar + (VEL_FLOOR_ERROR)**2)  # adding floor error
+        sigma = np.sqrt(1.0 / ivar + (VEL_SYSTEM_ERROR)**2)  # adding floor error
         residuals = np.abs(y_obs) - np.abs(y_model)
         loss = np.sum(residuals**2 / sigma**2)
         return loss
@@ -309,7 +309,7 @@ class VelRot:
         C = result.hess_inv.todense()
         # Correlation Matrix
         COR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
-    
+
         # Standard Errors of the Parameters
         param_errors = np.sqrt(np.diag(C)) * F_factor  # scaled by F_factor
         Vc_norm_err, Rt_norm_err, Sout_norm_err = param_errors
@@ -346,7 +346,7 @@ class VelRot:
 
         vel_rot_fitted = self._vel_rot_tan_sout_profile(radius_fit, Vc_fit, Rt_fit, Sout_fit)
         return radius_fit, vel_rot_fitted
-    
+
 
     def _fit_vel_rot_arctan_minimize(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[np.ndarray, np.ndarray]:
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
@@ -492,7 +492,8 @@ class VelRot:
             vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
             return vel_obs_model
 
-        sigma = np.sqrt(1.0 / ivar_map_valid + (VEL_FLOOR_ERROR)**2)  # adding floor error
+        # sigma: Standard Deviation of the Errors
+        sigma = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)  # adding floor error
 
         initial_guess = [0.5, 0.3] # normalized initial guesses
         bounds = ([0.0, 0.0], [1.0, 1.0])  # normalized bounds
@@ -536,6 +537,7 @@ class VelRot:
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
         Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
 
+
         print(f"\n------------ Fitted Total Rotational Velocity (arctan curve-fit) ------------")
         print(f" IFU        : {self.PLATE_IFU}")
         print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
@@ -558,7 +560,35 @@ class VelRot:
 
         vel_rot_fitted = self._vel_rot_arctan_profile(radius_fit, 0, Vc_fit, Rt_fit)
 
-        return radius_fit, vel_rot_fitted
+        ######################################
+        # Standard Errors of the output fitted velocity
+        ######################################
+        # Using propagation of uncertainty
+        #  V(r) = V0 + (2/pi) * Vc * arctan(r / Rt)
+        # Partial derivatives
+        dV_dVc = (2 / np.pi) * np.arctan(radius_fit / Rt_fit)
+        dV_dRt = (-2 / np.pi) * Vc_fit * (radius_fit / (Rt_fit**2 + radius_fit**2))
+
+        # Error propagation including covariance
+        # sigma_f^2 = (df/dp1)^2 * sigma_p1^2 + (df/dp2)^2 * sigma_p2^2 + 2 * (df/dp1)*(df/dp2) * cov(p1, p2)
+        # Note: pcov is normalized, need to scale it back to physical units
+
+        # Scale covariance matrix to physical units
+        scale_matrix = np.array([
+            params_range['Vc'][1] - params_range['Vc'][0],
+            params_range['Rt'][1] - params_range['Rt'][0]
+        ])
+        pcov_physical = pcov * np.outer(scale_matrix, scale_matrix)
+
+        var_Vc = pcov_physical[0, 0]
+        var_Rt = pcov_physical[1, 1]
+        cov_Vc_Rt = pcov_physical[0, 1]
+
+        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) + (VEL_SYSTEM_ERROR)**2  # adding floor error
+        vel_fit_err = np.sqrt(vel_fit_var)
+
+
+        return radius_fit, vel_rot_fitted, vel_fit_err
 
     ################################################################################
     # public methods
@@ -589,8 +619,8 @@ class VelRot:
         return r_map, v_rot_map, ivar_map
 
     def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
-        radius_fitted, vel_rot_fitted =  self._fit_vel_rot_arctan_curve(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
-        return radius_fitted, vel_rot_fitted
+        radius_fitted, vel_rot_fitted, vel_rot_fitted_err =  self._fit_vel_rot_arctan_curve(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+        return radius_fitted, vel_rot_fitted, vel_rot_fitted_err
 
 
 
@@ -621,8 +651,8 @@ def test_process(PLATE_IFU: str):
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp()
     # r_rot_fit_tan, V_rot_fit_tan = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
-    r_rot_fit_arctan, V_rot_fit_arctan = vel_rot._fit_vel_rot_arctan_minimize(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
-    r_rot_fit_arctan_curve, V_rot_fit_arctan_curve = vel_rot._fit_vel_rot_arctan_curve(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    # r_rot_fit_arctan, V_rot_fit_arctan = vel_rot._fit_vel_rot_arctan_minimize(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    r_rot_fit_arctan_curve, V_rot_fit_arctan_curve , V_rot_fit_arctan_err = vel_rot._fit_vel_rot_arctan_curve(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
     # r_rot_fit3, V_rot_fit3 = vel_rot._fit_vel_rot_polyex(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
 
     print("#######################################################")
@@ -632,8 +662,9 @@ def test_process(PLATE_IFU: str):
     print(f"Obs Velocity shape: {V_obs_map.shape}, range: [{np.nanmin(V_obs_map):.3f}, {np.nanmax(V_obs_map):.3f}]")
     print(f"Obs Deprojected Velocity shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):.3f}, {np.nanmax(V_disp_map):.3f}]")
     # print(f"Fitted Rot Velocity (tan) shape: {V_rot_fit_tan.shape}, range: [{np.nanmin(V_rot_fit_tan):.3f}, {np.nanmax(V_rot_fit_tan):.3f}]")
-    print(f"Fitted Rot Velocity (arctan) shape: {V_rot_fit_arctan.shape}, range: [{np.nanmin(V_rot_fit_arctan):.3f}, {np.nanmax(V_rot_fit_arctan):.3f}]")
+    # print(f"Fitted Rot Velocity (arctan) shape: {V_rot_fit_arctan.shape}, range: [{np.nanmin(V_rot_fit_arctan):.3f}, {np.nanmax(V_rot_fit_arctan):.3f}]")
     print(f"Fitted Rot Velocity (arctan curve-fit) shape: {V_rot_fit_arctan_curve.shape}, range: [{np.nanmin(V_rot_fit_arctan_curve):.3f}, {np.nanmax(V_rot_fit_arctan_curve):.3f}]")
+    print(f"Fitted Rot Velocity Error (arctan curve-fit) shape: {V_rot_fit_arctan_err.shape}, range: [{np.nanmin(V_rot_fit_arctan_err):.3f}, {np.nanmax(V_rot_fit_arctan_err):.3f}]")
 
     # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title="Obs Raw", r_rot2_map=r_rot_fit_arctan, v_rot2_map=V_rot_fit_arctan, title2="Obs Fit arctan")
     # plot_util.plot_rv_curve(r_disp_map, V_disp_map, title="Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Obs Fit tan")

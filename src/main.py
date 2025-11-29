@@ -44,7 +44,7 @@ def main():
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
-    r_obs_fitted, V_obs_fitted = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    r_rot_fit, V_rot_fit, V_rot_err = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
 
 
     print("#######################################################")
@@ -60,14 +60,14 @@ def main():
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
 
-    r_dm_fit,  V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_obs_fitted, V_obs_fitted)
+    r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
 
 
     print("#######################################################")
     print("# Results")
     print("#######################################################")
     print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
-    print(f"V_obs_fitted shape: {V_obs_fitted.shape}, range: [{np.nanmin(V_obs_fitted):,.1f}, {np.nanmax(V_obs_fitted):,.1f}] km/s")
+    print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
     print(f"V_stellar_fit shape: {V_stellar_fit.shape}, range: [{np.nanmin(V_stellar_fit):,.1f}, {np.nanmax(V_stellar_fit):,.1f}] km/s")
@@ -81,18 +81,18 @@ def main():
 
     # plot RC curves
     plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
-                            r_rot2_map=r_obs_fitted, v_rot2_map=V_obs_fitted, title2="Observed Fit")
+                            r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Observed Fit")
 
     plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-    plot_util.plot_rv_curve(r_rot_map=r_obs_fitted, v_rot_map=V_obs_fitted, title="Observed Fit",
+    plot_util.plot_rv_curve(r_rot_map=r_rot_fit, v_rot_map=V_rot_fit, title="Observed Fit",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
+    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
                         r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
 
-    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total", 
+    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
     return

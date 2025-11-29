@@ -169,19 +169,20 @@ class DmNfw:
     ################################################################################
     # Error functions
     ################################################################################
-    def _calc_loss(self, y_data: np.ndarray, y_model: np.ndarray) -> float:
-        residuals = y_data - y_model
+    # sigma: Standard Deviation of the Errors
+    def _calc_loss(self, y_data: np.ndarray, y_model: np.ndarray, sigma: np.ndarray) -> float:
+        residuals = (y_data - y_model) / sigma
         loss = np.nansum(residuals**2)
         return loss
 
-    def _calc_chi_sq_v(self, y_data: np.ndarray, y_model: np.ndarray, dof: int) -> float:
-        chi_sq = self._calc_loss(y_data, y_model)
+    def _calc_chi_sq_v(self, y_data: np.ndarray, y_model: np.ndarray, sigma: np.ndarray, dof: int) -> float:
+        chi_sq = self._calc_loss(y_data, y_model, sigma)
         chi_sq_v = chi_sq / dof
         return chi_sq_v
 
-    def _calc_R_sq_adj(self, y_data: np.ndarray, y_model: np.ndarray, dof: int) -> float:
+    def _calc_R_sq_adj(self, y_data: np.ndarray, y_model: np.ndarray, sigma: np.ndarray, dof: int) -> float:
         ss_total = np.nansum((y_data - np.nanmean(y_data))**2)
-        ss_residual = self._calc_loss(y_data, y_model)
+        ss_residual = self._calc_loss(y_data, y_model, sigma)
         r_sq = 1 - (ss_residual / ss_total)
         n = len(y_data)
         r_sq_adj = 1 - (1 - r_sq) * (n - 1) / dof
@@ -191,25 +192,26 @@ class DmNfw:
     # Fitting methods
     ################################################################################
 
-    def _dm_nfw_fit_minimize(self, radius: np.ndarray, vel_obs: np.ndarray):
-        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) &
+    def _dm_nfw_fit_minimize(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
                     (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
-        vel_obs_valid = vel_obs[valid_mask]
+        vel_rot_valid = vel_rot[valid_mask]
+        vel_rot_err_valid = vel_rot_err[valid_mask]
 
         radius_max = np.nanmax(radius_valid)
         M_star = self.stellar_util.get_stellar_total_mass(radius_max)
         z = self._get_z()
-        y_data = vel_obs_valid**2
+        y_data = vel_rot_valid**2
 
         ######################################
         # normal all fit parameters
         ######################################
         params_range = {
-            'M200': (1e1*M_star, 1e4*M_star),
+            'M200': (5*1e1*M_star, 5*1e3*M_star),
             'Re': (1.0, 20.0),
             'sigma_0': (5.0, 100.0),
-            'f_bulge': (1e-3, 1.0),
+            'f_bulge': (1e-3, 0.5),
             'a': (0.01, 10.0),
         }
 
@@ -228,7 +230,7 @@ class DmNfw:
         def _loss_function(params):
             _M200, _Re, _sigma_0, f_bulge, a = _denormalize_params(params)
             _y_model = self._vel_rot_sq_fit_model(radius_valid, _M200, z, M_star, _Re, _sigma_0, f_bulge, a)
-            _loss = self._calc_loss(y_data, _y_model)
+            _loss = self._calc_loss(y_data, _y_model, vel_rot_err_valid)
             return _loss
 
         ######################################
@@ -255,7 +257,7 @@ class DmNfw:
         R_SQ_ADJ = self._calc_R_sq_adj(y_data, y_model, dof)
 
        # RMSE: Root Mean Square Error
-        RMSE = np.sqrt(self._calc_loss(y_data, y_model) / len(y_data))
+        RMSE = np.sqrt(self._calc_loss(y_data, y_model, vel_rot_err_valid) / len(y_data))
         # MAE: Mean Absolute Error
         MAE = np.nanmean(np.abs(y_data - y_model))
         mask_pos = (y_data > 1.0)
@@ -336,16 +338,17 @@ class DmNfw:
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 
 
-    def _fit_dm_nfw_basinhopping(self, radius: np.ndarray, vel_obs: np.ndarray):
-        valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius) &
+    def _fit_dm_nfw_basinhopping(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
                     (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
-        vel_obs_valid = vel_obs[valid_mask]
+        vel_rot_valid = vel_rot[valid_mask]
+        vel_rot_err_valid = vel_rot_err[valid_mask]
 
         radius_max = np.nanmax(radius_valid)
         M_star = self.stellar_util.get_stellar_total_mass(radius_max)
         z = self._get_z()
-        y_data = vel_obs_valid**2
+        y_data = vel_rot_valid**2
 
         ######################################
         # normal all fit parameters
@@ -377,7 +380,7 @@ class DmNfw:
 
             _M200, _Re, _sigma_0, f_bulge, a = _denormalize_params(params)
             _y_model = self._vel_rot_sq_fit_model(radius_valid, _M200, z, M_star, _Re, _sigma_0, f_bulge, a)
-            _loss = self._calc_loss(y_data, _y_model)
+            _loss = self._calc_loss(y_data, _y_model, vel_rot_err_valid)
             return _loss
 
         ######################################
@@ -401,14 +404,13 @@ class DmNfw:
         # Reduced Chi-Squared
         dof = len(y_data) - len(result.x)
         y_model = self._vel_rot_sq_fit_model(radius_valid, M200_fit, z, M_star, Re_fit, sigma_0_fit, f_bulge_fit, a_fit)
-        CHI_SQ_V = self._calc_chi_sq_v(y_data, y_model, dof)
+        CHI_SQ_V = self._calc_chi_sq_v(y_data, y_model, vel_rot_err_valid, dof)
         F_factor = np.sqrt(CHI_SQ_V)
 
         # Adjusted Coefficient of Determination (R²)
-        R_SQ_ADJ = self._calc_R_sq_adj(y_data, y_model, dof)
-
+        R_SQ_ADJ = self._calc_R_sq_adj(y_data, y_model, vel_rot_err_valid, dof)
         # RMSE: Root Mean Square Error
-        RMSE = np.sqrt(self._calc_loss(y_data, y_model) / len(y_data))
+        RMSE = np.sqrt(self._calc_loss(y_data, y_model, vel_rot_err_valid) / len(y_data))
         # MAE: Mean Absolute Error
         MAE = np.nanmean(np.abs(y_data - y_model))
         mask_pos = (y_data > 1.0)
@@ -489,7 +491,6 @@ class DmNfw:
         vel_dm_fit = np.sqrt(vel_dm_sq_fit)
         vel_star_fit = np.sqrt(vel_star_sq_fit)
 
-        # calculate error estimate
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 
     ################################################################################
@@ -503,9 +504,9 @@ class DmNfw:
         self.stellar_util = stellar_util
         return
 
-    def fit_dm_nfw(self, radius: np.ndarray, vel_obs: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def fit_dm_nfw(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw_basinhopping(radius, vel_obs)
+        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw_basinhopping(radius, vel_rot, vel_rot_err)
         return radius_fit, vel_total, vel_dm_fit, vel_star_fit
 
 

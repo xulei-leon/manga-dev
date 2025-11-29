@@ -29,7 +29,7 @@ from util.plot_util import PlotUtil
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
+VEL_SYSTEM_ERROR = 10.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 ######################################################################
@@ -289,7 +289,7 @@ class VelRot:
         vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc_fit, Rt_fit, Sout_fit)
         vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
         CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(result.x))
-        F_factor = np.sqrt(CHI_SQ_V)
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
 
         # Adjusted Coefficient of Determination (R²)
         R_SQ_ADJ = self._calc_R_sq_adj(vel_obs_valid, vel_obs_model, ivar_map_valid, k=len(result.x))
@@ -405,7 +405,7 @@ class VelRot:
         vel_rot_model = self._vel_rot_arctan_profile(radius_valid, 0, Vc_fit, Rt_fit)
         vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
         CHI_SQ_V = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=len(result.x))
-        F_factor = np.sqrt(CHI_SQ_V)
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
 
         # Adjusted Coefficient of Determination (R²)
         R_SQ_ADJ = self._calc_R_sq_adj(vel_valid, vel_obs_model, ivar_map_valid, k=len(result.x))
@@ -510,7 +510,7 @@ class VelRot:
         vel_rot_model = self._vel_rot_arctan_profile(radius_valid, 0.0, Vc_fit, Rt_fit)
         vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
         CHI_SQ_V = self._calc_chi_sq_v(vel_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
-        F_factor = np.sqrt(CHI_SQ_V)
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
 
         # Adjusted Coefficient of Determination (R²)
         R_SQ_ADJ = self._calc_R_sq_adj(vel_valid, vel_obs_model, ivar_map_valid, k=len(popt))
@@ -586,6 +586,7 @@ class VelRot:
 
         vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) + (VEL_SYSTEM_ERROR)**2  # adding floor error
         vel_fit_err = np.sqrt(vel_fit_var)
+        print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
 
 
         return radius_fit, vel_rot_fitted, vel_fit_err

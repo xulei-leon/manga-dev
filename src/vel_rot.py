@@ -29,7 +29,7 @@ from util.plot_util import PlotUtil
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-VEL_SYSTEM_ERROR = 10.0  # km/s, floor error as systematic uncertainty in velocity measurements
+VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 ######################################################################
@@ -584,7 +584,7 @@ class VelRot:
         var_Rt = pcov_physical[1, 1]
         cov_Vc_Rt = pcov_physical[0, 1]
 
-        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) + (VEL_SYSTEM_ERROR)**2  # adding floor error
+        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) #+ (VEL_SYSTEM_ERROR)**2  # adding floor error
         vel_fit_err = np.sqrt(vel_fit_var)
         print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
 

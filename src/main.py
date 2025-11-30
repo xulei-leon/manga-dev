@@ -75,7 +75,7 @@ def main():
     ########################################################
     ## plot velocity map
     ########################################################
-
+    '''
     # plot galaxy image
     plot_util.plot_galaxy_image(PLATE_IFU)
 
@@ -95,6 +95,7 @@ def main():
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
+    '''
     return
 
 if __name__ == "__main__":

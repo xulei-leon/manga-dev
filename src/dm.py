@@ -165,6 +165,7 @@ class DmNfw:
 
     def _vel_rot_fit_model(self, radius: np.ndarray, M200: float, c, z: float, M_star: float, Re:float, sigma_0:float) -> np.ndarray:
         v_rot_sq = self._vel_rot_sq_profile(radius, M200, c, z, M_star, Re, sigma_0)
+        v_rot_sq[v_rot_sq < 0] = 0.0
         v_rot = np.sqrt(v_rot_sq)
         return v_rot
 
@@ -350,10 +351,14 @@ class DmNfw:
     # Differential Evolution Fitting
     def _fit_dm_nfw_de(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
         valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
-                    (radius > 0.1) & (radius < 0.9 * np.nanmax(radius)))
+                    (radius > 0.1) & (radius < 1.0 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
         vel_rot_valid = vel_rot[valid_mask]
         vel_rot_err_valid = vel_rot_err[valid_mask]
+
+        if len(radius_valid) < 10:
+            print("Not enough valid data points for fitting.")
+            return None
 
         radius_max = np.nanmax(radius_valid)
         M_star = self.stellar_util.get_stellar_total_mass(radius_max)
@@ -364,10 +369,10 @@ class DmNfw:
         # normal all fit parameters
         ######################################
         params_range = {
-            'M200': (1e10, 1e14),
-            'Re': (1.0, 20.0),
-            'sigma_0': (0.1, 10.0),
-            'c': (1.0, 20.0),
+            'M200': (5e10, 1e14),
+            'Re': (0.3, 10.0),
+            'sigma_0': (3.0, 80.0),
+            'c': (3.0, 25.0),
         }
 
         def _denormalize_params(params_n):
@@ -378,52 +383,152 @@ class DmNfw:
             c = c_n * (params_range['c'][1] - params_range['c'][0]) + params_range['c'][0]
             return _M200, _Re, _sigma_0, c
 
-        ######################################
-        # Loss function
-        ######################################
-        def _loss_function(params):
-            # differential_evolution respects bounds, so explicit check might be redundant but safe
-            if np.any(params < 0.0) or np.any(params > 1.0):
-                return np.inf
-
+        #######################################################
+        # First stage: Global optimize - Differential Evolution
+        #######################################################
+        # Loss function: Penalize unphysical parameters
+        def _global_loss_function(params):
             _M200, _Re, _sigma_0, c = _denormalize_params(params)
-            _vel_rot_sq = self._vel_rot_sq_profile(radius_valid, _M200, c, z, M_star, _Re, _sigma_0)
-            if np.any(_vel_rot_sq < 0):
-                # Penalize unphysical negative velocities
-                _loss = 1e6 * np.sum((_vel_rot_sq[_vel_rot_sq < 0])**2)
-            else:
-                _y_model = np.sqrt(_vel_rot_sq)
-                _loss = self._calc_loss(y_data, _y_model, vel_rot_err_valid)
 
-            # Penalize deviation from expected concentration-mass relation
-            c_expected = 10 * ( _M200 / 1e12 )**(-0.1)
-            _loss += 1e2 * (np.log(c) - np.log(c_expected))**2
+            _y_model = self._vel_rot_fit_model(radius_valid, _M200, c, z, M_star, _Re, _sigma_0)
 
-            # Penalize unphysical drift correction
+            # Check for NaNs in model
+            if not np.all(np.isfinite(_y_model)):
+                return 1e15
+
+            loss = self._calc_loss(y_data, _y_model, vel_rot_err_valid)
+
+            # ---------- penalties (scalar) - balanced and soft ----------
+            # 1) negative V^2 penalty (linear penalty on negative part)
+            Vtot_sq = self._vel_rot_sq_profile(radius_valid, _M200, c, z, M_star, _Re, _sigma_0)
+
+            if not np.all(np.isfinite(Vtot_sq)):
+                return 1e15
+
+            neg = -np.minimum(Vtot_sq, 0.0)  # positive for negative parts, zero otherwise
+            if np.any(neg > 0):
+                return 1e6 + np.sum(neg) * 1e4  # large penalty to avoid unphysical
+
+            # 2) cosmological c-M soft prior: use expected scatter ~0.2 dex
+            c_expected = 10.0 * (_M200 / 1e12) ** (-0.1)
+            sigma_logc = 0.2  # dex typical scatter
+            logc_dev = (np.log(c) - np.log(c_expected)) / sigma_logc
+            loss += 1e2 * np.sum(logc_dev ** 2)  # χ²-like prior
+
+            # 3) V_drift vs V_rot: allow up to frac_drift (0.4), penalize linear excess
             V_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, _Re)
-            if np.any(V_drift_sq > (_y_model**2)*0.5):
-                _loss += 1E6 * np.sum((V_drift_sq[V_drift_sq > (_y_model**2)*0.5] - _y_model[V_drift_sq > (_y_model**2)*0.5]**2)**2)
+            if not np.all(np.isfinite(V_drift_sq)):
+                return 1e15
 
-            # Penalize unphysical V_star
-            v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, _Re)
-            if np.any(v_star_sq > (_y_model**2)*2.0):
-                _loss += 1E6 * np.sum((v_star_sq[v_star_sq > (_y_model**2)*2.0] - _y_model[v_star_sq > (_y_model**2)*2.0]**2)**2)
+            # excess = np.maximum(0.0, V_drift_sq - (0.4 * _y_model ** 2))
+            # if np.any(excess > 0):
+            #     loss += 1e3 * np.sum(excess)  # soft linear penalty
 
-            # prevent sigma_0 from going to extreme values
-            # pysically, sigma_0 should be within reasonable range:10-60 km/s
-            if _sigma_0 < 5 or _sigma_0 > 80:
-                _loss += 1e4 * (min(abs(_sigma_0 - 5), abs(_sigma_0 - 80)))**2
+            # 4) V_star shouldn't hugely exceed observed: allow factor 2, penalize linear excess
+            vstar_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, _Re)
+            if not np.all(np.isfinite(vstar_sq)):
+                return 1e15
+            excess_star = np.maximum(0.0, vstar_sq - 2.0 * _y_model ** 2)
+            if np.any(excess_star > 0):
+                loss += 1e2 * np.sum(excess_star)
 
-            return _loss
+            # 5) small penalty to discourage extremes of sigma_0 near bounds (but not force)
+            if (_sigma_0 <= params_range['sigma_0'][0]) or (_sigma_0 >= params_range['sigma_0'][1]):
+                loss += 1e3
 
-        ######################################
+
+            fb = M_star / (_M200 + M_star)
+            loss += 30 * (np.log(fb) - np.log(0.05))**2  # target baryon fraction ~0.15
+
+            V200_fit = self._calc_V200_from_M200(_M200, z)
+            if V200_fit > 500.0:
+                loss += 1e4
+
+            if not np.isfinite(loss):
+                return 1e15
+
+            return float(loss)
+
         # Fitting process
-        ######################################
-        bounds = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # normalized bounds
+        global_bounds = [(0.0, 1.0)] * 4 # normalized bounds
 
         # differential_evolution does not take an initial guess in the same way, it explores the bounds
-        result = differential_evolution(_loss_function, bounds, strategy='best1bin', maxiter=100, popsize=15, tol=0.01, mutation=(0.5, 1), recombination=0.7, seed=42)
-        M200_fit, Re_fit, sigma_0_fit, c_fit = _denormalize_params(result.x)
+        global_result = differential_evolution(
+            _global_loss_function,
+            global_bounds,
+            strategy='best1bin',
+            maxiter=150,
+            popsize=20,
+            tol=0.1e-3,
+            mutation=(0.5, 1.0),
+            recombination=0.7,
+            seed=42,
+            polish=False
+        )
+
+        global_M200, global_Re, global_sigma_0, global_c = _denormalize_params(global_result.x)
+
+        #######################################################
+        # Second stage: Local refine - least_squares
+        #######################################################
+        def _residual_function(params_norm):
+            _M200, _Re, _sigma_0, c = _denormalize_params(params_norm)
+
+            # model prediction
+            y_model = self._vel_rot_fit_model(radius_valid, _M200, c, z, M_star, _Re, _sigma_0)
+
+            # data residuals (weighted)
+            data_resid = (y_data - y_model) / vel_rot_err_valid  # shape (N,)
+
+            penalty_list = []
+
+            # (a) negative V^2 penalty -> scaled to typical measurement uncertainty
+            Vtot_sq = self._vel_rot_sq_profile(radius_valid, _M200, c, z, M_star, _Re, _sigma_0)
+            neg = -np.minimum(Vtot_sq, 0.0)
+            # compress into single scalar (mean normalized by a velocity scale)
+            if np.any(neg > 0):
+                penalty_list.append( (np.mean(neg) / (np.mean(y_data**2) + 1e-8)) * 50.0 )
+
+            # (b) c-M soft prior (1 residual, normalized by scatter ~0.2 dex)
+            c_expected = 10.0 * (_M200 / 1e12) ** (-0.1)
+            logc_dev = (np.log(c) - np.log(c_expected)) / 0.2
+            penalty_list.append(logc_dev)  # this will be treated like a residual ~ N(0,1)
+
+            # (c) V_drift excess (mean fractional excess)
+            V_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, _Re)
+            # excess = np.maximum(0.0, V_drift_sq - 0.4 * y_model ** 2)
+            # penalty_list.append( np.mean(excess) / (np.mean(y_data**2) + 1e-8) * 10.0 )
+
+            # (d) sigma_0 soft-range: if outside preferred range, add penalty residual
+            # sigma_low, sigma_high = 8.0, 70.0
+            # if _sigma_0 < sigma_low:
+            #     penalty_list.append( (sigma_low - _sigma_0) / (sigma_low + 1e-8) * 5.0 )
+            # elif _sigma_0 > sigma_high:
+            #     penalty_list.append( (_sigma_0 - sigma_high) / (sigma_high + 1e-8) * 5.0 )
+            # else:
+            #     penalty_list.append(0.0)
+
+            # combine: data_resid (N) + penalty_list (M small)
+            if len(penalty_list) > 0:
+                return np.concatenate([data_resid, np.array(penalty_list, dtype=float)])
+            else:
+                return data_resid
+
+        local_initial_guess = global_result.x.copy()
+        local_bounds = (np.zeros(4), np.ones(4))
+        local_result = least_squares(
+            _residual_function,
+            local_initial_guess,
+            bounds=local_bounds,
+            method='trf',
+            loss='huber', # robust to outliers
+            f_scale=1.5,
+            xtol=1e-8,
+            ftol=1e-8,
+            gtol=1e-8,
+            max_nfev=2000
+        )
+        M200_fit, Re_fit, sigma_0_fit, c_fit = _denormalize_params(local_result.x)
         V200_fit = self._calc_V200_from_M200(M200_fit, z)
         r200_fit = self._calc_r200_from_V200(V200_fit, z)
 
@@ -431,64 +536,44 @@ class DmNfw:
         # Error estimation
         ######################################
         # Reduced Chi-Squared
-        dof = len(y_data) - len(result.x)
-        y_model = self._vel_rot_fit_model(radius_valid, M200_fit, c_fit, z, M_star, Re_fit, sigma_0_fit)
-        CHI_SQ_V = self._calc_chi_sq_v(y_data, y_model, vel_rot_err_valid, dof)
-        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
+        y_model_final = self._vel_rot_fit_model(radius_valid, M200_fit, c_fit, z, M_star, Re_fit, sigma_0_fit)
+        data_resid_final = (y_data - y_model_final) / vel_rot_err_valid
+        chi2 = np.sum(data_resid_final**2)
+        dof = max(1, len(y_data) - 4)
+        redchi2 = chi2 / dof
 
+        # attempt covariance estimation from jacobian
+        cov = None
+        try:
+            J = local_result.jac  # shape (N+M, 4)
+            # use only the data rows (first len(y_data)) to estimate J_data
+            J_data = J[:len(y_data), :]
+            JTJ = J_data.T.dot(J_data)
+            cov = np.linalg.inv(JTJ) * (chi2 / dof)
+            perr_norm = np.sqrt(np.diag(cov))  # in normalized parameter units
+            # convert normalized errors to physical units
+            M200_err = perr_norm[0] * (params_range['M200'][1] - params_range['M200'][0])
+            Re_err = perr_norm[1] * (params_range['Re'][1] - params_range['Re'][0])
+            sigma_0_err = perr_norm[2] * (params_range['sigma_0'][1] - params_range['sigma_0'][0])
+            c_err = perr_norm[3] * (params_range['c'][1] - params_range['c'][0])
 
-        # Adjusted Coefficient of Determination (R²)
-        R_SQ_ADJ = self._calc_R_sq_adj(y_data, y_model, vel_rot_err_valid, dof)
-        # RMSE: Root Mean Square Error
-        RMSE = np.sqrt(self._calc_loss(y_data, y_model, vel_rot_err_valid) / len(y_data))
-        # MAE: Mean Absolute Error
-        MAE = np.nanmean(np.abs(y_data - y_model))
-        mask_pos = (y_data > 1.0)
-        # MAPE: Mean Absolute Percentage Error
-        MAPE = np.nanmean(np.abs((y_data[mask_pos] - y_model[mask_pos]) / y_data[mask_pos])) * 100.0
-        # SMAPE: Symmetric Mean Absolute Percentage Error
-        SMAPE = np.nanmean(2.0 * np.abs(y_data[mask_pos] - y_model[mask_pos]) / (np.abs(y_data[mask_pos]) + np.abs(y_model[mask_pos]))) * 100.0
-
-        # Covariance Matrix
-        # differential_evolution does not provide Hessian directly.
-        # We can try to estimate it by running a local minimization starting from the DE result.
-
-        # Refine with local minimization to get Hessian
-        local_res = minimize(_loss_function, result.x, bounds=bounds, method='L-BFGS-B')
-
-        if hasattr(local_res, "hess_inv"):
-            C = local_res.hess_inv.todense()
-        elif hasattr(local_res, "hess"):
-            C = np.linalg.inv(local_res.hess)
-        else:
-            print("Warning: Hessian information not available after refinement; cannot compute covariance matrix.")
-            C = None
-
-        if C is not None:
-            # Correlation Matrix
-            COR_MATRIX = C / np.outer(np.sqrt(np.diag(C)), np.sqrt(np.diag(C)))
-
-            # Standard Errors of the Parameters
-            param_errors = np.sqrt(np.diag(C)) * F_factor  # scaled by F_factor
-            M200_norm_err, Re_norm_err, sigma_0_norm_err, c_norm_err = param_errors
-            M200_err, Re_err, sigma_0_err, c_err = (
-                M200_norm_err * (params_range['M200'][1] - params_range['M200'][0]),
-                Re_norm_err * (params_range['Re'][1] - params_range['Re'][0]),
-                sigma_0_norm_err * (params_range['sigma_0'][1] - params_range['sigma_0'][0]),
-                c_norm_err * (params_range['c'][1] - params_range['c'][0]),
-            )
-
-            M200_err_pct = (M200_err / M200_fit) * 100.0 if M200_fit != 0 else np.nanc_err
+            M200_err_pct = (M200_err / M200_fit) * 100.0 if M200_fit != 0 else np.nan
             Re_err_pct = (Re_err / Re_fit) * 100.0 if Re_fit != 0 else np.nan
             sigma_0_err_pct = (sigma_0_err / sigma_0_fit) * 100.0 if sigma_0_fit != 0 else np.nan
             c_err_pct = (c_err / c_fit) * 100.0 if c_fit != 0 else np.nan
-        else:
+
+        except Exception:
             M200_err = Re_err = sigma_0_err = c_err = np.nan
-            M200_err_pct = Re_err_pct = sigma_0_err_pct = c_err_pct = np.nan
-            COR_MATRIX = None
+            cov = None
 
 
-        print(f"\n------------ Fitted Dark Matter NFW (differential_evolution) ------------")
+        print(f"\n------------ Fitted Dark Matter NFW (least_squares) ------------")
+        print(f"--- Global optimize (differential_evolution) ---")
+        print(f" Global Fit: M200    : {global_M200:.3e} Msun")
+        print(f" Global Fit: Re      : {global_Re:.3f} kpc")
+        print(f" Global Fit: sigma_0 : {global_sigma_0:.3f} km/s")
+        print(f" Global Fit: c       : {global_c:.3f}")
+        print(f"--- Local optimize (least_squares) ---")
         print(f" IFU                : {self.PLATE_IFU}")
         print(f" Fitted: M200       : {M200_fit:.3e} Msun, ± {M200_err:.3e} Msun ({M200_err_pct:.2f} %)")
         print(f" Fitted: Re         : {Re_fit:.3f} kpc, ± {Re_err:.3f} kpc ({Re_err_pct:.2f} %)")
@@ -496,14 +581,8 @@ class DmNfw:
         print(f" Fitted: c          : {c_fit:.3f}, ± {c_err:.3f} ({c_err_pct:.2f} %)")
         print(f" Calculated: V200   : {V200_fit:.3f} km/s")
         print(f" Calculated: r200   : {r200_fit:.3f} kpc")
-        print("--- Error --------------------------------")
-        print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
-        print(f" Adjusted R²            : {R_SQ_ADJ:.3f}")
-        print(f" RMSE                   : {RMSE:.3f} (km/s)^2")
-        print(f" MAE                    : {MAE:.3f} (km/s)^2")
-        print(f" MAPE                   : {MAPE:.3f} %")
-        print(f" SMAPE                  : {SMAPE:.3f} %")
-        print(f" Correlation Matrix     : \n{COR_MATRIX}")
+        print("--- Error ---")
+        print(f" Reduced Chi-Squared    : {redchi2:.3f}")
         print("------------------------------------------------------------\n")
 
         ######################################
@@ -513,9 +592,9 @@ class DmNfw:
         vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_fit, c=c_fit, z=z)
         vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re_fit)
 
-        vel_total_fit = np.sqrt(vel_rot_sq_fit)
-        vel_dm_fit = np.sqrt(vel_dm_sq_fit)
-        vel_star_fit = np.sqrt(vel_star_sq_fit)
+        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0, a_max=None))
+        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0, a_max=None))
+        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0, a_max=None))
 
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 

@@ -213,11 +213,49 @@ class Stellar:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    # get mass within radius r
-    def get_stellar_total_mass(self, r: float) -> float:
+    # merged: get mass within radius r and half-mass radius Re
+    def get_stellar_mass(self, r: float) -> tuple[float, float]:
+        """
+        Return (mass_within_r, Re).
+        - mass_within_r: cumulative stellar mass within radius r (same units as _get_stellar_mass, M_solar)
+        - Re: half-mass radius (same units as radius), or np.nan if cannot be determined
+        """
         radius, mass = self._get_stellar_mass(self.PLATE_IFU)
-        mass_interp = np.interp(r, radius, mass, left=0.0, right=np.nanmax(mass))
-        return mass_interp
+
+        # handle empty/invalid profiles
+        if radius.size == 0 or mass.size == 0:
+            return 0.0, np.nan
+
+        # filter finite values and sort by radius
+        finite_mask = np.isfinite(radius) & np.isfinite(mass) & (radius >= 0) & (mass >= 0)
+        if not np.any(finite_mask):
+            return 0.0, np.nan
+
+        r_f = radius[finite_mask]
+        m_f = mass[finite_mask]
+        sort_idx = np.argsort(r_f)
+        r_f = r_f[sort_idx]
+        m_f = m_f[sort_idx]
+
+        # ensure cumulative mass is non-decreasing
+        m_f = np.maximum.accumulate(m_f)
+
+        # total (maximum) cumulative mass
+        total_mass = float(np.nanmax(m_f))
+        if not np.isfinite(total_mass) or total_mass <= 0:
+            return 0.0, np.nan
+
+        # mass within requested radius r (interpolated on the cumulative profile)
+        if r > np.nanmax(r_f):
+            mass_within_r = total_mass
+        else:
+            mass_within_r = float(np.interp(r, r_f, m_f, left=0.0, right=total_mass))
+
+        # half-mass radius
+        half_mass = total_mass / 2.0
+        Re = float(np.interp(half_mass, m_f, r_f, left=np.nan, right=np.nan))
+
+        return mass_within_r, Re
 
     def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
         if (f_bulge is not None) and (a is not None):
@@ -253,11 +291,11 @@ def main() -> None:
     print(f"Mass shape: {mass_map.shape}, range: [{np.nanmin(mass_map):.1f}, {np.nanmax(mass_map):,.1f}] M solar")
     print("")
 
-    total_mass = stellar.get_stellar_total_mass(radius_max)
-    print(f"Total Stellar Mass within {radius_max:.3f} kpc/h: {total_mass:,.1f} M solar")
+    total_mass, Re = stellar.get_stellar_mass(radius_max)
+    print(f"Total Stellar Mass within {radius_max:.3f} kpc/h: {total_mass:,.1f} M solar, Re: {Re:.3f} kpc/h")
     print("")
 
-    V_star_sq = stellar.stellar_vel_sq_profile(radius_h_kpc_map, total_mass, 5.0, 0.2, 1.0)
+    V_star_sq = stellar.stellar_vel_sq_profile(radius_h_kpc_map, total_mass, Re, 0.2, 1.0)
     V_star = np.sqrt(V_star_sq)
     print(f"Stellar Velocity shape: {V_star.shape}, Unit: km/s, range: [{np.nanmin(V_star[V_star>=0]):.1f}, {np.nanmax(V_star):.1f}] km/s")
 

@@ -207,62 +207,139 @@ class Stellar:
 
 
     ################################################################################
+    # Mass Density Method
+    ################################################################################
+
+    # Exponential Disk Model fitting function
+    # according to Freeman (1970)
+    # Sigma(R) = Sigma_0 * exp(-R / Rd)
+    def _stellar_density_profile_bulge(self, R: np.ndarray, Sigma_0: float, a: float) -> np.ndarray:
+        return (Sigma_0 * a**4) / (R + a)**3
+
+    def _stellar_density_profile_disk(self, R: np.ndarray, Sigma_0: float, Re: float) -> np.ndarray:
+        Rd = Re / 1.678
+        return Sigma_0 * np.exp(-R / Rd)
+
+
+    def _stellar_density_profile(self, R: np.ndarray, Sigma_0: float, Re: float) -> np.ndarray:
+        sigma_disk = self._stellar_density_profile_disk(R, Sigma_0, Re)
+        return sigma_disk
+
+
+    # Central Surface Mass Density Fitting
+    def _fit_stellar_central_density(self, radius: np.ndarray, density: np.ndarray, std_err: np.ndarray) -> tuple[float, float]:
+        # Filter valid data
+        valid_mask = (np.isfinite(radius)) & (radius >= RADIUS_MIN_KPC) & (radius < 0.99*np.nanmax(radius))
+        valid_mask &= (np.isfinite(density)) & (density >= 0)
+        valid_mask &= (np.isfinite(std_err)) & (std_err > 0)
+
+        radius_valid = radius[valid_mask]
+        density_valid = density[valid_mask]
+        std_err_valid = std_err[valid_mask]
+
+        if radius_valid.size < 2:
+            print("Not enough valid data points for fitting stellar central density.")
+            return np.nan, np.nan
+
+        ######################################
+        # normal all fit parameters
+        ######################################
+        params_range = {
+            'Sigma_0': (1e6, 1e11),  # M solar / kpc^2
+            'Re': (0.1, np.nanmax(radius_valid))  # kpc
+        }
+
+        def _denormalize_params(params_norm):
+            _Sigma_0_n, _Re_n = params_norm
+            _Sigma_0 = _Sigma_0_n * (params_range['Sigma_0'][1] - params_range['Sigma_0'][0]) + params_range['Sigma_0'][0]
+            _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
+            return _Sigma_0, _Re
+
+        ######################################
+        # Fitting process using curve_fit
+        ######################################
+        def model_func(R, Sigma_0_n, Re_n):
+            Sigma_0, Re = _denormalize_params([Sigma_0_n, Re_n])
+            return self._stellar_density_profile(R, Sigma_0, Re)
+
+        initial_guess = [0.5, 0.2]  # normalized initial guess
+        bounds = ([0.0, 0.0], [1.0, 1.0])  # normalized bounds
+
+        # Perform curve fitting
+        popt, pcov = curve_fit(
+            model_func,
+            radius_valid,
+            density_valid,
+            p0=initial_guess,
+            sigma=std_err_valid, #Standard Deviation of the Errors
+            absolute_sigma=True,
+            bounds=bounds,
+            maxfev=10000
+        )
+
+        Sigma_0_fit, Re_fit = _denormalize_params(popt)
+
+        ######################################
+        # Error estimation
+        ######################################
+
+        # Reduced Chi-Squared
+        residuals = density_valid - model_func(radius_valid, *popt)
+        dof = len(density_valid) - len(popt)  # degrees of freedom
+        chi_sq = np.sum(np.square(residuals / std_err_valid))
+        CHI_SQ_V = chi_sq / dof
+        F_factor = np.sqrt(CHI_SQ_V) if CHI_SQ_V > 1 else 1.0
+
+        # Correlation Matrix
+        COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
+
+        # Standard Errors of the Parameters
+        perr = np.sqrt(np.diag(pcov)) * F_factor
+        Sigma_0_err_n, Re_err_n = perr
+        Sigma_0_err = Sigma_0_err_n * (params_range['Sigma_0'][1] - params_range['Sigma_0'][0])
+        Re_err = Re_err_n * (params_range['Re'][1] - params_range['Re'][0])
+        Sigma_0_err_pct = (Sigma_0_err / Sigma_0_fit) * 100.0 if Sigma_0_fit != 0 else np.nan
+        Re_err_pct = (Re_err / Re_fit) * 100.0 if Re_fit != 0 else np.nan
+
+
+        print(f"\n------------ Fitted Stellar Central Density Parameters ------------")
+        print(f" Fit Sigma_0            : {Sigma_0_fit:.3e} ± {Sigma_0_err:.3e} M solar / kpc^2 ({Sigma_0_err_pct:.2f} %)")
+        print(f" Fit Re                 : {Re_fit:.3f} ± {Re_err:.3f} kpc ({Re_err_pct:.2f} %)")
+        print("--------------------------")
+        print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
+        print(f" Correlation Matrix     : \n{COR_MATRIX}")
+        print("--------------------------------------------------------------------\n")
+
+        return Sigma_0_fit, Re_fit
+
+
+    ################################################################################
     # public methods
     ################################################################################
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    # merged: get mass within radius r and half-mass radius Re
-    def get_stellar_mass(self, r: float) -> tuple[float, float]:
-        """
-        Return (mass_within_r, Re).
-        - mass_within_r: cumulative stellar mass within radius r (same units as _get_stellar_mass, M_solar)
-        - Re: half-mass radius (same units as radius), or np.nan if cannot be determined
-        """
-        radius, mass = self._get_stellar_mass(self.PLATE_IFU)
+    # merged: get mass within radius r
+    def get_stellar_mass(self) -> float:
+        _, mass = self._get_stellar_mass(self.PLATE_IFU)
 
-        # handle empty/invalid profiles
-        if radius.size == 0 or mass.size == 0:
-            return 0.0, np.nan
+        total_mass = np.nanmax(mass)
+        return total_mass
 
-        # filter finite values and sort by radius
-        finite_mask = np.isfinite(radius) & np.isfinite(mass) & (radius >= 0) & (mass >= 0)
-        if not np.any(finite_mask):
-            return 0.0, np.nan
+    def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float) -> np.ndarray:
+        return self._stellar_vel_sq_disk_profile(r, M_star, Re)
 
-        r_f = radius[finite_mask]
-        m_f = mass[finite_mask]
-        sort_idx = np.argsort(r_f)
-        r_f = r_f[sort_idx]
-        m_f = m_f[sort_idx]
 
-        # ensure cumulative mass is non-decreasing
-        m_f = np.maximum.accumulate(m_f)
+    def fit_stellar_sigma0(self, PLATE_IFU: str, radius_fitted: np.ndarray) -> tuple[float, float]:
+        _radius_eff, _ = self.firefly_util.get_radius_eff(PLATE_IFU)
+        _radius_h_kpc = self._calc_radius_to_h_kpc(PLATE_IFU, _radius_eff)
 
-        # total (maximum) cumulative mass
-        total_mass = float(np.nanmax(m_f))
-        if not np.isfinite(total_mass) or total_mass <= 0:
-            return 0.0, np.nan
+        _density, _std_err = self.firefly_util.get_stellar_density_cell(PLATE_IFU)
+        print(f"Stellar Mass Density shape: {_density.shape}, Unit: M solar / kpc^2, range [{np.nanmin(_density[_density>=0]):.3f}, {np.nanmax(_density):,.1f}] M solar / kpc^2")
 
-        # mass within requested radius r (interpolated on the cumulative profile)
-        if r > np.nanmax(r_f):
-            mass_within_r = total_mass
-        else:
-            mass_within_r = float(np.interp(r, r_f, m_f, left=0.0, right=total_mass))
-
-        # half-mass radius
-        half_mass = total_mass / 2.0
-        Re = float(np.interp(half_mass, m_f, r_f, left=np.nan, right=np.nan))
-
-        return mass_within_r, Re
-
-    def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
-        if (f_bulge is not None) and (a is not None):
-            return self._stellar_vel_sq_mass_profile(r, M_star, Re, f_bulge, a)
-        else:
-            return self._stellar_vel_sq_disk_profile(r, M_star, Re)
-
+        sigma0_fit, Re_fit = self._fit_stellar_central_density(_radius_h_kpc, _density, _std_err)
+        return sigma0_fit, Re_fit
 
 ######################################################
 # main function for test
@@ -287,15 +364,15 @@ def main() -> None:
     radius_max = np.nanmax(radius_h_kpc_map)
 
     stellar.set_PLATE_IFU(PLATE_IFU)
-    _, mass_map = stellar._get_stellar_mass(PLATE_IFU)
-    print(f"Mass shape: {mass_map.shape}, range: [{np.nanmin(mass_map):.1f}, {np.nanmax(mass_map):,.1f}] M solar")
+    total_mass = stellar.get_stellar_mass()
+    print(f"Total Stellar Mass within {radius_max:.3f} kpc/h: {total_mass:,.1f} M solar")
     print("")
 
-    total_mass, Re = stellar.get_stellar_mass(radius_max)
-    print(f"Total Stellar Mass within {radius_max:.3f} kpc/h: {total_mass:,.1f} M solar, Re: {Re:.3f} kpc/h")
+    stellar_sigma0, stellar_Re = stellar.fit_stellar_sigma0(PLATE_IFU, radius_fitted=np.linspace(RADIUS_MIN_KPC, radius_max, 100))
+    print(f"Stellar Central Density sigma_0: {stellar_sigma0:.3e} M solar / kpc^2, Re: {stellar_Re:.3f} kpc/h")
     print("")
 
-    V_star_sq = stellar.stellar_vel_sq_profile(radius_h_kpc_map, total_mass, Re, 0.2, 1.0)
+    V_star_sq = stellar.stellar_vel_sq_profile(radius_h_kpc_map, total_mass, stellar_Re)
     V_star = np.sqrt(V_star_sq)
     print(f"Stellar Velocity shape: {V_star.shape}, Unit: km/s, range: [{np.nanmin(V_star[V_star>=0]):.1f}, {np.nanmax(V_star):.1f}] km/s")
 

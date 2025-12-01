@@ -474,7 +474,7 @@ class VelRot:
         ######################################
         params_range = {
             'Vc': (20.0, 500.0),  # km/s
-            'Rt': (np.nanmax(radius_valid)*0.01, np.nanmax(radius_valid)*1.0),  # kpc/h
+            'Rt': (np.nanmax(radius_valid)*0.01, np.nanmax(radius_valid)*1.0),  # kpc
         }
 
         def _denormalize_params(params_n):
@@ -500,8 +500,7 @@ class VelRot:
 
         # Perform curve fitting
         popt, pcov = curve_fit(model_func, radius_valid, vel_valid, p0=initial_guess, sigma=sigma, absolute_sigma=True, bounds=bounds, maxfev=10000)
-        Vc_fit_n, Rt_fit_n = popt
-        Vc_fit, Rt_fit = _denormalize_params([Vc_fit_n, Rt_fit_n])
+        Vc_fit, Rt_fit = _denormalize_params(popt)
 
         ######################################
         # Error estimation

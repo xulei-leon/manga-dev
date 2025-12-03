@@ -235,6 +235,7 @@ class Stellar:
         radius_valid = radius[valid_mask]
         mass_valid = mass_map[valid_mask]
         std_err_valid = std_err[valid_mask]
+        mass_star_total = np.nanmax(mass_valid)
 
         if radius_valid.size < 4:
             print("Not enough valid data points for fitting stellar mass profile.")
@@ -244,26 +245,23 @@ class Stellar:
         # normal all fit parameters
         ######################################
         params_range = {
-            'M_star': (1.0 * np.nanmax(mass_valid), 1.2 * np.nanmax(mass_valid)),  # M solar
             'Re': (0.1, np.nanmax(radius_valid)),  # kpc
         }
 
         def _denormalize_params(params_norm):
-            _M_star_n, _Re_n = params_norm
-            _M_star = _M_star_n * (params_range['M_star'][1] - params_range['M_star'][0]) + params_range['M_star'][0]
+            _Re_n = params_norm
             _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
-            return _M_star, _Re
+            return _Re
 
         ######################################
         # Fitting process using curve_fit
         ######################################
-        def model_func(r, M_star_n, Re_n):
-            M_star, Re = _denormalize_params([M_star_n, Re_n])
-            return self._stellar_mass_profile(r, M_star, Re)
+        def model_func(r, Re_n):
+            Re = _denormalize_params(Re_n)
+            return self._stellar_mass_profile(r, mass_star_total, Re)
 
-        initial_guess = [0.5, 0.5]  # normalized initial guess
-        bounds = ([0.0, 0.0], [1.0, 1.0])  # normalized bounds
-
+        initial_guess = [0.5]  # normalized initial guess
+        bounds = ([0.0], [1.0])  # normalized bounds
         try:
             popt, pcov = curve_fit(
                 model_func,
@@ -279,7 +277,7 @@ class Stellar:
             print(f"Fitting failed: {e}")
             return np.nan, np.nan, np.nan, np.nan
 
-        M_star_fit, Re_fit = _denormalize_params(popt)
+        Re_fit = _denormalize_params(popt)[0]
 
         ######################################
         # Error estimation
@@ -293,25 +291,24 @@ class Stellar:
         COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
 
         perr = np.sqrt(np.diag(pcov)) * F_factor
-        M_star_err_n, Re_err_n = perr
-
-        M_star_err = M_star_err_n * (params_range['M_star'][1] - params_range['M_star'][0])
+        Re_err_n = perr
         Re_err = Re_err_n * (params_range['Re'][1] - params_range['Re'][0])
-
-        M_star_err_pct = (M_star_err / M_star_fit) * 100.0 if M_star_fit != 0 else np.nan
+        Re_err = Re_err[0]
         Re_err_pct = (Re_err / Re_fit) * 100.0 if Re_fit != 0 else np.nan
 
+        mass_star_map_fit = self._stellar_mass_profile(radius_valid, mass_star_total, Re_fit)
+        M_star_fit = np.nanmax(mass_star_map_fit)
+
         print(f"\n------------ Fitted Stellar Mass Profile Parameters ------------")
-        print(f" Fit M_star             : {M_star_fit:.3e} ± {M_star_err:.3e} M solar ({M_star_err_pct:.2f} %)")
         print(f" Fit Re                 : {Re_fit:.3f} ± {Re_err:.3f} kpc ({Re_err_pct:.2f} %)")
+        print(f" Fit M_star             : {M_star_fit:.3e} M solar")
+        print(f" Calc M_star            : {mass_star_total:.3e} M solar")
         print("--------------------------")
         print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
         print(f" Correlation Matrix     : \n{COR_MATRIX}")
         print("--------------------------------------------------------------------\n")
 
         return M_star_fit, Re_fit
-
-
 
     ################################################################################
     # Mass Density Method
@@ -435,7 +432,7 @@ class Stellar:
     def stellar_vel_sq_profile(self, r: np.ndarray, M_star: float, Re: float) -> np.ndarray:
         return self._stellar_vel_sq_disk_profile(r, M_star, Re)
 
-    def get_stellar_mass(self):
+    def fit_stellar_mass(self):
         radius_map, mass_map, std_err_map = self._get_stellar_mass(self.PLATE_IFU)
         M_star_fit, Re_fit = self._fit_stellar_mass(radius_map, mass_map, std_err_map)
         return M_star_fit, Re_fit
@@ -476,7 +473,7 @@ def main() -> None:
 
     stellar.set_PLATE_IFU(PLATE_IFU)
 
-    stellar_mass, stellar_Re = stellar.get_stellar_mass()
+    stellar_mass, stellar_Re = stellar.fit_stellar_mass()
     print(f"Stellar fit mass: {stellar_mass:.3e} M solar, Re: {stellar_Re:.2f} kpc/h")
     print("")
 

@@ -205,7 +205,7 @@ class DmNfw:
         vel_rot_err_valid = vel_rot_err[valid_mask]
 
         radius_max = np.nanmax(radius_valid)
-        M_star = self.stellar_util.get_stellar_mass(radius_max)
+        M_star = self.stellar_util.fit_stellar_mass(radius_max)
         z = self._get_z()
         y_data = vel_rot_valid
 
@@ -351,7 +351,7 @@ class DmNfw:
     # Differential Evolution Fitting
     def _fit_dm_nfw_de(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
         valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
-                    (radius > 0.1) & (radius < 1.0 * np.nanmax(radius)))
+                    (radius > 0.01) & (radius < 1.0 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
         vel_rot_valid = vel_rot[valid_mask]
         vel_rot_err_valid = vel_rot_err[valid_mask]
@@ -360,8 +360,7 @@ class DmNfw:
             print("Not enough valid data points for fitting.")
             return None
 
-        radius_max = np.nanmax(radius_valid)
-        M_star, Re = self.stellar_util.get_stellar_mass(radius_max)
+        M_star, Re = self.stellar_util.fit_stellar_mass()
         z = self._get_z()
         y_data = vel_rot_valid
 

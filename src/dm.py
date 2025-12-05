@@ -85,8 +85,9 @@ class DmNfw:
    # c = r200 / rss
    # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
     def _calc_c_from_M200(self, M200: float, h: float) -> float:
-        M_pivot = 2e12 / h
-        return 5.74 * (M200 / M_pivot)**(-0.097)
+        M_pivot_h_inv = 2e12 # in Msun/h
+        mass_ratio = M200 / (M_pivot_h_inv / h)
+        return 5.74 * (mass_ratio)**(-0.097)
 
     # formula: V200^3 = 10 * G * H(z) * M200
     def _calc_V200_from_M200(self, M200: float, z: float) -> float:
@@ -169,15 +170,15 @@ class DmNfw:
         v_rot = np.sqrt(v_rot_sq)
         return v_rot
 
-    def _vel_rot_sq_V200(self, radius: np.ndarray, V200: float, c: float, z: float, M_star: float, Re:float, sigma_0:float) -> np.ndarray:
+    def _vel_rot_sq_V200(self, radius: np.ndarray, V200: float, c: float, z: float, M_star: float, ratio_star: float, Re:float, sigma_0:float) -> np.ndarray:
         v_dm_sq = self._vel_dm_sq_profile_V200(radius, V200, c, z)
         v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
         v_drift_sq = self._vel_drift_sq_profile(radius, sigma_0, Re)
-        v_rot_sq = v_dm_sq + v_star_sq  - v_drift_sq
+        v_rot_sq = v_dm_sq + (ratio_star * v_star_sq)  - v_drift_sq
         return v_rot_sq
 
-    def _vel_rot_fit_model_V200(self, radius: np.ndarray, V200: float, c: float, z: float, M_star: float, Re:float, sigma_0:float) -> np.ndarray:
-        v_rot_sq = self._vel_rot_sq_V200(radius, V200, c, z, M_star, Re, sigma_0)
+    def _vel_rot_fit_model_V200(self, radius: np.ndarray, V200: float, c: float, z: float, M_star: float, ratio_star: float, Re:float, sigma_0:float) -> np.ndarray:
+        v_rot_sq = self._vel_rot_sq_V200(radius, V200, c, z, M_star, ratio_star, Re, sigma_0)
         v_rot_sq[v_rot_sq < 0] = 0.0
         v_rot = np.sqrt(v_rot_sq)
         return v_rot
@@ -228,67 +229,84 @@ class DmNfw:
         # normal all fit parameters
         ######################################
         params_range = {
-            'V200': (0, 2000.0),  # km/s
-            'c': (1.0, 25.0),
-            'sigma_0': (0.0, 80.0),
+            'V200': (10.0, 800.0),  # km/s
+            'ratio_star': (0.2, 1.0),
+            'c': (1.0, 30.0),
+            'sigma_0': (0.0, 300.0),
         }
 
         def _denormalize_params(params_norm):
-            _V200_n, _c_n, _sigma_0_n = params_norm
+            _V200_n, _ratio_star_n, _c_n, _sigma_0_n = params_norm
             _V200 = _V200_n * (params_range['V200'][1] - params_range['V200'][0]) + params_range['V200'][0]
+            _ratio_star = _ratio_star_n * (params_range['ratio_star'][1] - params_range['ratio_star'][0]) + params_range['ratio_star'][0]
             _c = _c_n * (params_range['c'][1] - params_range['c'][0]) + params_range['c'][0]
             _sigma_0 = _sigma_0_n * (params_range['sigma_0'][1] - params_range['sigma_0'][0]) + params_range['sigma_0'][0]
-            return _V200, _sigma_0, _c
+            return _V200, _ratio_star, _c, _sigma_0
 
         #######################################################
         # First stage: Global optimize - Differential Evolution
         #######################################################
         # Loss function: Penalize unphysical parameters
         def _global_loss_function(params_norm):
-            _V200, _c, _sigma_0 = _denormalize_params(params_norm)
-            _y_model = self._vel_rot_fit_model_V200(radius_valid, _V200, _c, z, M_star, Re, _sigma_0)
-            loss = self._calc_loss(y_data, _y_model, vel_rot_err_valid)
+            # unpack normalized params
+            _V200, _ratio_star, _c, _sigma_0 = _denormalize_params(params_norm)
 
-            # ---------- penalties (scalar) - balanced and soft ----------
-            # 1) negative V^2 penalty (linear penalty on negative part)
-            Vtot_sq = self._vel_rot_sq_V200(radius_valid, _V200, _c, z, M_star, Re, _sigma_0)
-            if not np.all(np.isfinite(Vtot_sq)):
-                return 1e15
+            # precompute components
+            v_star_sq_base = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
+            v_star_sq = v_star_sq_base * _ratio_star
+            v_dm_sq = self._vel_dm_sq_profile_V200(radius_valid, _V200, _c, z)
+            v_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, Re)
 
-            # extract magnitudes of negative V^2 values (zero where V^2 is non-negative)
-            negatives = np.where(Vtot_sq < 0.0, -Vtot_sq, 0.0)
-            if np.any(negatives):
-                loss += 1e6 + np.sum(negatives) * 1e4  # large penalty to avoid unphysical
+            # total model velocity^2
+            v_model_sq = v_star_sq + v_dm_sq - v_drift_sq
+            valid_mask = v_model_sq >= 0
+            v_model = np.zeros_like(v_model_sq)
+            v_model[valid_mask] = np.sqrt(v_model_sq[valid_mask])
 
+            chi2 = np.sum(((y_data - v_model) / vel_rot_err_valid) ** 2)
+            loss = chi2
 
-            # 3) V_drift vs V_rot: allow up to frac_drift (0.4), penalize linear excess
-            V_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, Re)
-            if not np.all(np.isfinite(V_drift_sq)):
-                return 1e15
+            P_FACTOR = 1e3
+            P_BASE = 1e5
 
-            # excess = np.maximum(0.0, V_drift_sq - (0.4 * _y_model ** 2))
-            # if np.any(excess > 0):
-            #     loss += 1e3 * np.sum(excess)  # soft linear penalty
+            # penalty A: negative V^2
+            if not np.all(valid_mask):
+                negative_sum = np.sum(-v_model_sq[~valid_mask])
+                loss += P_BASE + negative_sum * P_FACTOR
 
-            # 4) V_star shouldn't hugely exceed observed: allow factor 2, penalize linear excess
-            vstar_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
-            if not np.all(np.isfinite(vstar_sq)):
-                return 1e15
+            # penalty B: V_dm must not be negative
+            if np.any(v_dm_sq < 0):
+                loss += P_BASE + np.sum(-v_dm_sq[v_dm_sq < 0]) * P_FACTOR
 
-            # excess_star = np.maximum(0.0, vstar_sq - 2.0 * _y_model ** 2)
-            # if np.any(excess_star > 0):
-            #     loss += 1e2 * np.sum(excess_star)
-
+            # penalty C: M200 / M_star prior
             _M200 = self._calc_M200_from_V200(_V200, z)
+            m_ratio = _M200 / M_star
+            log_m_ratio = np.log10(m_ratio + 1e-10)
 
+            if log_m_ratio < 1.0:
+                loss += P_BASE + P_FACTOR * (1.0 - log_m_ratio) ** 2 * 10
+            elif log_m_ratio > 3.0:
+                loss += P_BASE + P_FACTOR * (log_m_ratio - 3.0) ** 2
+
+            # penalty D: drift dominance
+            excess_drift = v_drift_sq - (1.5 * v_star_sq)
+            if np.any(excess_drift > 0):
+                loss += P_BASE + np.sum(excess_drift[excess_drift > 0]) * 100
+
+            # penalty E: soft prior on c
+            if _c < 1.0:
+                loss += P_BASE + P_FACTOR * (1.0 - _c) ** 2 * 5000
+            elif _c > 30.0:
+                loss += P_BASE + P_FACTOR * (_c - 30.0) ** 2
 
             if not np.isfinite(loss):
                 return 1e15
 
             return float(loss)
 
+
         # Fitting process
-        global_bounds = [(0.0, 1.0)] * 3 # normalized bounds
+        global_bounds = [(0.0, 1.0)] * 4 # normalized bounds
 
         # differential_evolution does not take an initial guess in the same way, it explores the bounds
         global_result = differential_evolution(
@@ -304,54 +322,116 @@ class DmNfw:
             polish=False
         )
 
-        global_V200, global_c, global_sigma_0 = _denormalize_params(global_result.x)
+        global_V200, global_ratio_star, global_c, global_sigma_0 = _denormalize_params(global_result.x)
 
         #######################################################
         # Second stage: Local refine - least_squares
         #######################################################
         def _residual_function(params_norm):
-            _V200, _c, _sigma_0 = _denormalize_params(params_norm)
+            # 1. 解包参数
+            _V200, _ratio_star, _c, _sigma_0 = _denormalize_params(params_norm)
 
-            # model prediction
-            y_model = self._vel_rot_fit_model_V200(radius_valid, _V200, _c, z, M_star, Re, _sigma_0)
+            # 2. 预计算物理量
+            v_star_sq_base = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
+            v_star_sq = v_star_sq_base * _ratio_star
+            v_dm_sq = self._vel_dm_sq_profile_V200(radius_valid, _V200, _c, z)
+            v_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, Re)
 
-            # data residuals (weighted)
-            data_resid = (y_data - y_model) / vel_rot_err_valid  # shape (N,)
+            # 3. 合成模型
+            v_model_sq = v_star_sq + v_dm_sq - v_drift_sq
 
-            penalty_list = []
+            # 处理负值用于计算数据残差
+            valid_mask_v2 = v_model_sq >= 0.0
+            v_model = np.zeros_like(v_model_sq)
+            v_model[valid_mask_v2] = np.sqrt(v_model_sq[valid_mask_v2])
 
-            # (a) negative V^2 penalty -> scaled to typical measurement uncertainty
-            Vtot_sq = self._vel_rot_sq_V200(radius_valid, _V200, _c, z, M_star, Re, _sigma_0)
-            neg = -np.minimum(Vtot_sq, 0.0)
-            # compress into single scalar (mean normalized by a velocity scale)
-            if np.any(neg > 0):
-                penalty_list.append( (np.mean(neg) / (np.mean(y_data**2) + 1e-8)) * 50.0 )
+            # 4. 数据残差 (Data Residuals)
+            # 这是核心拟合目标，通常量级在 N * 1.0 左右
+            data_resid = (y_data - v_model) / vel_rot_err_valid
 
-            # (b) c-M soft prior (1 residual, normalized by scatter ~0.2 dex)
-            M200 = self._calc_M200_from_V200(_V200, z)
+            # 5. 惩罚项 (Penalties as Pseudo-Residuals)
+            # 关键修改：增加权重，确保越界时的代价远大于数据拟合的收益
+            penalties = []
 
-            # (c) V_drift excess (mean fractional excess)
-            V_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, Re)
-            # excess = np.maximum(0.0, V_drift_sq - 0.4 * y_model ** 2)
-            # penalty_list.append( np.mean(excess) / (np.mean(y_data**2) + 1e-8) * 10.0 )
+            # 权重设置 (Weights) - 这里的数值代表“标准差”的倒数
+            # 例如 WEIGHT=100 意味着偏离 1.0 个单位相当于 100 个 sigma 的偏差
+            W_NEG_V2   = 1000.0  # 绝对不允许物理模型算出虚数速度
+            W_NEG_VDM  = 1000.0  # 暗物质晕不能为负
+            W_MRATIO   = 1000.0   # M200/Mstar 比例约束
+            W_DRIFT    = 1000.0   # Drift 不应主导
+            W_C        = 1000.0   # 浓度参数 c 约束
+            W_SIGMA0   = 1000.0    # Sigma0 软约束
 
-            # (d) sigma_0 soft-range: if outside preferred range, add penalty residual
-            # sigma_low, sigma_high = 8.0, 70.0
-            # if _sigma_0 < sigma_low:
-            #     penalty_list.append( (sigma_low - _sigma_0) / (sigma_low + 1e-8) * 5.0 )
-            # elif _sigma_0 > sigma_high:
-            #     penalty_list.append( (_sigma_0 - sigma_high) / (sigma_high + 1e-8) * 5.0 )
-            # else:
-            #     penalty_list.append(0.0)
-
-            # combine: data_resid (N) + penalty_list (M small)
-            if len(penalty_list) > 0:
-                return np.concatenate([data_resid, np.array(penalty_list, dtype=float)])
+            # (A) Negative Total V^2
+            # 使用 sum 而不是 mean，因为哪怕一个点坏了也是坏了
+            if not np.all(valid_mask_v2):
+                neg_vals = -v_model_sq[~valid_mask_v2]
+                # 对负值开根号作为残差，乘以大权重
+                penalties.append(W_NEG_V2 * np.sqrt(np.sum(neg_vals)))
             else:
-                return data_resid
+                penalties.append(0.0)
+
+            # (B) Negative V_dm
+            if np.any(v_dm_sq < 0.0):
+                neg_vdm = -v_dm_sq[v_dm_sq < 0.0]
+                penalties.append(W_NEG_VDM * np.sqrt(np.sum(neg_vdm)))
+            else:
+                penalties.append(0.0)
+
+            # (C) M200 / M_star Ratio (Soft bounds: 10^1 to 10^3)
+            # 这里的逻辑是：只要在 [1, 3] 范围内，残差为 0。一旦出去，残差线性增加。
+            _M200 = self._calc_M200_from_V200(_V200, z)
+            # 注意：分母应该包含 ratio_star 修正后的实际恒星质量
+            current_m_star = M_star * _ratio_star
+            m_ratio = _M200 / (current_m_star + 1e-5) # 防止除零
+            log_m_ratio = np.log10(m_ratio + 1e-10)
+
+            if log_m_ratio < 1.0:
+                penalties.append(W_MRATIO * (1.0 - log_m_ratio))
+            elif log_m_ratio > 3.5: #稍微放宽一点上限到 10^3.5
+                penalties.append(W_MRATIO * (log_m_ratio - 3.5))
+            else:
+                penalties.append(0.0)
+
+            # (D) Drift Dominance
+            # 限制 V_drift^2 > 1.0 * V_star^2 的部分
+            excess_drift = v_drift_sq - (1.0 * v_star_sq)
+            if np.any(excess_drift > 0.0):
+                # 计算归一化的过量漂移
+                frac_excess = excess_drift[excess_drift > 0.0] / np.maximum(v_star_sq[excess_drift > 0.0], 1e-6)
+                penalties.append(W_DRIFT * np.sum(frac_excess))
+            else:
+                penalties.append(0.0)
+
+            # (E) Concentration c (Soft bounds: 1 to 30)
+            if _c < 1.0:
+                penalties.append(W_C * (1.0 - _c))
+            elif _c > 30.0:
+                penalties.append(W_C * (_c - 30.0))
+            else:
+                penalties.append(0.0)
+
+            # (F) Sigma0 Specific Penalty
+            # 你的局部拟合 sigma0 跑到了 126，这太高了。增加一个超过 100 km/s 就开始罚的项
+            if _sigma_0 > 100.0:
+                penalties.append(W_SIGMA0 * (_sigma_0 - 100.0) / 10.0) # 每超过10km/s增加显著惩罚
+            else:
+                penalties.append(0.0)
+
+            # 6. 合并
+            # 将 list 转为 array
+            penalties = np.array(penalties, dtype=float)
+
+            # 最终的残差向量
+            full_resid = np.concatenate([data_resid, penalties])
+
+            # 安全检查
+            full_resid[~np.isfinite(full_resid)] = 1e5
+
+            return full_resid
 
         local_initial_guess = global_result.x.copy()
-        local_bounds = (np.zeros(3), np.ones(3))
+        local_bounds = (np.zeros(4), np.ones(4))  # normalized bounds
         local_result = least_squares(
             _residual_function,
             local_initial_guess,
@@ -364,15 +444,16 @@ class DmNfw:
             gtol=1e-8,
             max_nfev=2000
         )
-        V200_fit, c_fit, sigma_0_fit = _denormalize_params(local_result.x)
-        M200_fit = self._calc_M200_from_V200(V200_fit, z)
-        r200_fit = self._calc_r200_from_V200(V200_fit, z)
+        V200_fit, ratio_star_fit, c_fit, sigma_0_fit = _denormalize_params(local_result.x)
+        M200_calc = self._calc_M200_from_V200(V200_fit, z)
+        r200_calc = self._calc_r200_from_V200(V200_fit, z)
+        c_calc = self._calc_c_from_M200(M200_calc, h=H)
 
         ######################################
         # Error estimation
         ######################################
         # Reduced Chi-Squared
-        y_model_final = self._vel_rot_fit_model_V200(radius_valid, V200_fit, c_fit, z, M_star, Re, sigma_0_fit)
+        y_model_final = self._vel_rot_fit_model_V200(radius_valid, V200_fit, c_fit, z, M_star, global_ratio_star, Re, sigma_0_fit)
         data_resid_final = (y_data - y_model_final) / vel_rot_err_valid
         chi2 = np.sum(data_resid_final**2)
         dof = max(1, len(y_data) - len(local_result.x))  # number of data points - number of fitted parameters
@@ -389,33 +470,38 @@ class DmNfw:
             perr_norm = np.sqrt(np.diag(cov))  # in normalized parameter units
             # convert normalized errors to physical units
             V200_err = perr_norm[0] * (params_range['V200'][1] - params_range['V200'][0])
-            sigma_0_err = perr_norm[1] * (params_range['sigma_0'][1] - params_range['sigma_0'][0])
-            c_err = perr_norm[2] * (params_range['c'][1] - params_range['c'][0])
+            ratio_star_err = perr_norm[1] * (params_range['ratio_star'][1] - params_range['ratio_star'][0])
+            sigma_0_err = perr_norm[2] * (params_range['sigma_0'][1] - params_range['sigma_0'][0])
+            c_err = perr_norm[3] * (params_range['c'][1] - params_range['c'][0])
 
             V200_err_pct = (V200_err / V200_fit) * 100.0 if V200_fit != 0 else np.nan
+            ratio_star_err_pct = (ratio_star_err / global_ratio_star) * 100.0 if global_ratio_star != 0 else np.nan
             sigma_0_err_pct = (sigma_0_err / sigma_0_fit) * 100.0 if sigma_0_fit != 0 else np.nan
             c_err_pct = (c_err / c_fit) * 100.0 if c_fit != 0 else np.nan
 
         except Exception:
-            M200_err = Re_err = sigma_0_err = c_err = np.nan
+            V200_err = ratio_star_err = sigma_0_err = c_err = np.nan
             cov = None
 
 
         print(f"\n------------ Fitted Dark Matter NFW  ------------")
         print(f"--- Global optimize (differential_evolution) ---")
         print(f" Global Fit: V200    : {global_V200:.3e} km/s")
+        print(f" Global Fit: ratio_star : {global_ratio_star:.3f}")
         print(f" Global Fit: c       : {global_c:.3f}")
         print(f" Global Fit: sigma_0 : {global_sigma_0:.3f} km/s")
         print(f"--- Local optimize (least_squares) ---")
         print(f" IFU                : {self.PLATE_IFU}")
         print(f" Fitted: V200       : {V200_fit:.3e} km/s, ± {V200_err:.3e} km/s ({V200_err_pct:.2f} %)")
+        print(f" Fitted: ratio_star : {ratio_star_fit:.3f}, ± {ratio_star_err:.3f} ({ratio_star_err_pct:.2f} %)")
         print(f" Fitted: c          : {c_fit:.3f}, ± {c_err:.3f} ({c_err_pct:.2f} %)")
         print(f" Fitted: sigma_0    : {sigma_0_fit:.3f} km/s, ± {sigma_0_err:.3f} km/s ({sigma_0_err_pct:.2f} %)")
         print("--- Calculated ---")
         print(f" Stellar Mass       : {M_star:.3e} Msun")
         print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
-        print(f" Calculated: M200   : {M200_fit:.3f} Msun")
-        print(f" Calculated: r200   : {r200_fit:.3f} kpc")
+        print(f" Calculated: M200   : {M200_calc:.3e} Msun")
+        print(f" Calculated: r200   : {r200_calc:.3f} kpc")
+        print(f" Calculated: c      : {c_calc:.3f}")
         print("--- Error ---")
         print(f" Reduced Chi-Squared    : {redchi2:.3f}")
         print("------------------------------------------------------------\n")
@@ -423,15 +509,18 @@ class DmNfw:
         ######################################
         # Return fitted velocity profile
         ######################################
-        vel_rot_sq_fit = self._vel_rot_sq_V200(radius, V200_fit, c_fit, z, M_star, Re, sigma_0_fit)
+        vel_rot_sq_fit = self._vel_rot_sq_V200(radius, V200_fit, ratio_star_fit, c_fit, z, M_star, Re, sigma_0_fit)
         vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_fit, c=c_fit, z=z)
-        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re) * ratio_star_fit
 
         vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0, a_max=None))
         vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0, a_max=None))
         vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0, a_max=None))
 
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
+
+
+    # emcee fitting
 
     ################################################################################
     # public methods

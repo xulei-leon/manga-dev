@@ -44,6 +44,7 @@ def main():
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
+
     r_rot_fit, V_rot_fit, V_rot_err = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
 
 
@@ -60,7 +61,8 @@ def main():
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
 
-    r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
+    # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
+    r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
 
 
     print("#######################################################")

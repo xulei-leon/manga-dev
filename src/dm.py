@@ -4,6 +4,7 @@ from pathlib import Path
 from re import M, S
 import numpy as np
 from scipy.optimize import curve_fit, least_squares, minimize, basinhopping, differential_evolution
+import emcee
 from astropy import constants as const
 from astropy import units as u
 
@@ -20,6 +21,13 @@ class DmNfw:
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
+
+        self.params_range = {
+            'V200': (10.0, 800.0),
+            'ratio_star': (0.2, 1.0),
+            'c': (1.0, 30.0),
+            'sigma_0': (0.0, 300.0),
+        }
 
     ########################################################################################
     # NFW Dark Matter Halo Profile:
@@ -228,12 +236,7 @@ class DmNfw:
         ######################################
         # normal all fit parameters
         ######################################
-        params_range = {
-            'V200': (10.0, 800.0),  # km/s
-            'ratio_star': (0.2, 1.0),
-            'c': (1.0, 30.0),
-            'sigma_0': (0.0, 300.0),
-        }
+        params_range = self.params_range
 
         def _denormalize_params(params_norm):
             _V200_n, _ratio_star_n, _c_n, _sigma_0_n = params_norm
@@ -266,8 +269,8 @@ class DmNfw:
             chi2 = np.sum(((y_data - v_model) / vel_rot_err_valid) ** 2)
             loss = chi2
 
-            P_FACTOR = 1e3
-            P_BASE = 1e5
+            P_FACTOR = 0.0 # 1e3
+            P_BASE = 0.0 # 1e5
 
             # penalty A: negative V^2
             if not np.all(valid_mask):
@@ -322,188 +325,23 @@ class DmNfw:
             polish=False
         )
 
-        global_V200, global_ratio_star, global_c, global_sigma_0 = _denormalize_params(global_result.x)
+        V200_fit, ratio_star_fit, c_fit, sigma_0_fit = _denormalize_params(global_result.x)
 
-        #######################################################
-        # Second stage: Local refine - least_squares
-        #######################################################
-        def _residual_function(params_norm):
-            # 1. 解包参数
-            _V200, _ratio_star, _c, _sigma_0 = _denormalize_params(params_norm)
-
-            # 2. 预计算物理量
-            v_star_sq_base = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
-            v_star_sq = v_star_sq_base * _ratio_star
-            v_dm_sq = self._vel_dm_sq_profile_V200(radius_valid, _V200, _c, z)
-            v_drift_sq = self._vel_drift_sq_profile(radius_valid, _sigma_0, Re)
-
-            # 3. 合成模型
-            v_model_sq = v_star_sq + v_dm_sq - v_drift_sq
-
-            # 处理负值用于计算数据残差
-            valid_mask_v2 = v_model_sq >= 0.0
-            v_model = np.zeros_like(v_model_sq)
-            v_model[valid_mask_v2] = np.sqrt(v_model_sq[valid_mask_v2])
-
-            # 4. 数据残差 (Data Residuals)
-            # 这是核心拟合目标，通常量级在 N * 1.0 左右
-            data_resid = (y_data - v_model) / vel_rot_err_valid
-
-            # 5. 惩罚项 (Penalties as Pseudo-Residuals)
-            # 关键修改：增加权重，确保越界时的代价远大于数据拟合的收益
-            penalties = []
-
-            # 权重设置 (Weights) - 这里的数值代表“标准差”的倒数
-            # 例如 WEIGHT=100 意味着偏离 1.0 个单位相当于 100 个 sigma 的偏差
-            W_NEG_V2   = 1000.0  # 绝对不允许物理模型算出虚数速度
-            W_NEG_VDM  = 1000.0  # 暗物质晕不能为负
-            W_MRATIO   = 1000.0   # M200/Mstar 比例约束
-            W_DRIFT    = 1000.0   # Drift 不应主导
-            W_C        = 1000.0   # 浓度参数 c 约束
-            W_SIGMA0   = 1000.0    # Sigma0 软约束
-
-            # (A) Negative Total V^2
-            # 使用 sum 而不是 mean，因为哪怕一个点坏了也是坏了
-            if not np.all(valid_mask_v2):
-                neg_vals = -v_model_sq[~valid_mask_v2]
-                # 对负值开根号作为残差，乘以大权重
-                penalties.append(W_NEG_V2 * np.sqrt(np.sum(neg_vals)))
-            else:
-                penalties.append(0.0)
-
-            # (B) Negative V_dm
-            if np.any(v_dm_sq < 0.0):
-                neg_vdm = -v_dm_sq[v_dm_sq < 0.0]
-                penalties.append(W_NEG_VDM * np.sqrt(np.sum(neg_vdm)))
-            else:
-                penalties.append(0.0)
-
-            # (C) M200 / M_star Ratio (Soft bounds: 10^1 to 10^3)
-            # 这里的逻辑是：只要在 [1, 3] 范围内，残差为 0。一旦出去，残差线性增加。
-            _M200 = self._calc_M200_from_V200(_V200, z)
-            # 注意：分母应该包含 ratio_star 修正后的实际恒星质量
-            current_m_star = M_star * _ratio_star
-            m_ratio = _M200 / (current_m_star + 1e-5) # 防止除零
-            log_m_ratio = np.log10(m_ratio + 1e-10)
-
-            if log_m_ratio < 1.0:
-                penalties.append(W_MRATIO * (1.0 - log_m_ratio))
-            elif log_m_ratio > 3.5: #稍微放宽一点上限到 10^3.5
-                penalties.append(W_MRATIO * (log_m_ratio - 3.5))
-            else:
-                penalties.append(0.0)
-
-            # (D) Drift Dominance
-            # 限制 V_drift^2 > 1.0 * V_star^2 的部分
-            excess_drift = v_drift_sq - (1.0 * v_star_sq)
-            if np.any(excess_drift > 0.0):
-                # 计算归一化的过量漂移
-                frac_excess = excess_drift[excess_drift > 0.0] / np.maximum(v_star_sq[excess_drift > 0.0], 1e-6)
-                penalties.append(W_DRIFT * np.sum(frac_excess))
-            else:
-                penalties.append(0.0)
-
-            # (E) Concentration c (Soft bounds: 1 to 30)
-            if _c < 1.0:
-                penalties.append(W_C * (1.0 - _c))
-            elif _c > 30.0:
-                penalties.append(W_C * (_c - 30.0))
-            else:
-                penalties.append(0.0)
-
-            # (F) Sigma0 Specific Penalty
-            # 你的局部拟合 sigma0 跑到了 126，这太高了。增加一个超过 100 km/s 就开始罚的项
-            if _sigma_0 > 100.0:
-                penalties.append(W_SIGMA0 * (_sigma_0 - 100.0) / 10.0) # 每超过10km/s增加显著惩罚
-            else:
-                penalties.append(0.0)
-
-            # 6. 合并
-            # 将 list 转为 array
-            penalties = np.array(penalties, dtype=float)
-
-            # 最终的残差向量
-            full_resid = np.concatenate([data_resid, penalties])
-
-            # 安全检查
-            full_resid[~np.isfinite(full_resid)] = 1e5
-
-            return full_resid
-
-        local_initial_guess = global_result.x.copy()
-        local_bounds = (np.zeros(4), np.ones(4))  # normalized bounds
-        local_result = least_squares(
-            _residual_function,
-            local_initial_guess,
-            bounds=local_bounds,
-            method='trf',
-            loss='huber', # robust to outliers
-            f_scale=1.5,
-            xtol=1e-8,
-            ftol=1e-8,
-            gtol=1e-8,
-            max_nfev=2000
-        )
-        V200_fit, ratio_star_fit, c_fit, sigma_0_fit = _denormalize_params(local_result.x)
         M200_calc = self._calc_M200_from_V200(V200_fit, z)
         r200_calc = self._calc_r200_from_V200(V200_fit, z)
         c_calc = self._calc_c_from_M200(M200_calc, h=H)
 
-        ######################################
-        # Error estimation
-        ######################################
-        # Reduced Chi-Squared
-        y_model_final = self._vel_rot_fit_model_V200(radius_valid, V200_fit, c_fit, z, M_star, global_ratio_star, Re, sigma_0_fit)
-        data_resid_final = (y_data - y_model_final) / vel_rot_err_valid
-        chi2 = np.sum(data_resid_final**2)
-        dof = max(1, len(y_data) - len(local_result.x))  # number of data points - number of fitted parameters
-        redchi2 = chi2 / dof
-
-        # attempt covariance estimation from jacobian
-        cov = None
-        try:
-            J = local_result.jac  # shape (N+M, 4)
-            # use only the data rows (first len(y_data)) to estimate J_data
-            J_data = J[:len(y_data), :]
-            JTJ = J_data.T.dot(J_data)
-            cov = np.linalg.inv(JTJ) * (chi2 / dof)
-            perr_norm = np.sqrt(np.diag(cov))  # in normalized parameter units
-            # convert normalized errors to physical units
-            V200_err = perr_norm[0] * (params_range['V200'][1] - params_range['V200'][0])
-            ratio_star_err = perr_norm[1] * (params_range['ratio_star'][1] - params_range['ratio_star'][0])
-            sigma_0_err = perr_norm[2] * (params_range['sigma_0'][1] - params_range['sigma_0'][0])
-            c_err = perr_norm[3] * (params_range['c'][1] - params_range['c'][0])
-
-            V200_err_pct = (V200_err / V200_fit) * 100.0 if V200_fit != 0 else np.nan
-            ratio_star_err_pct = (ratio_star_err / global_ratio_star) * 100.0 if global_ratio_star != 0 else np.nan
-            sigma_0_err_pct = (sigma_0_err / sigma_0_fit) * 100.0 if sigma_0_fit != 0 else np.nan
-            c_err_pct = (c_err / c_fit) * 100.0 if c_fit != 0 else np.nan
-
-        except Exception:
-            V200_err = ratio_star_err = sigma_0_err = c_err = np.nan
-            cov = None
-
-
-        print(f"\n------------ Fitted Dark Matter NFW  ------------")
-        print(f"--- Global optimize (differential_evolution) ---")
-        print(f" Global Fit: V200    : {global_V200:.3e} km/s")
-        print(f" Global Fit: ratio_star : {global_ratio_star:.3f}")
-        print(f" Global Fit: c       : {global_c:.3f}")
-        print(f" Global Fit: sigma_0 : {global_sigma_0:.3f} km/s")
-        print(f"--- Local optimize (least_squares) ---")
-        print(f" IFU                : {self.PLATE_IFU}")
-        print(f" Fitted: V200       : {V200_fit:.3e} km/s, ± {V200_err:.3e} km/s ({V200_err_pct:.2f} %)")
-        print(f" Fitted: ratio_star : {ratio_star_fit:.3f}, ± {ratio_star_err:.3f} ({ratio_star_err_pct:.2f} %)")
-        print(f" Fitted: c          : {c_fit:.3f}, ± {c_err:.3f} ({c_err_pct:.2f} %)")
-        print(f" Fitted: sigma_0    : {sigma_0_fit:.3f} km/s, ± {sigma_0_err:.3f} km/s ({sigma_0_err_pct:.2f} %)")
+        print(f"\n------------ Fitted Dark Matter NFW (differential_evolution) ------------")
+        print(f" Global Fit: V200    : {V200_fit:.3e} km/s")
+        print(f" Global Fit: ratio_star : {ratio_star_fit:.3f}")
+        print(f" Global Fit: c       : {c_fit:.3f}")
+        print(f" Global Fit: sigma_0 : {sigma_0_fit:.3f} km/s")
         print("--- Calculated ---")
         print(f" Stellar Mass       : {M_star:.3e} Msun")
         print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
         print(f" Calculated: M200   : {M200_calc:.3e} Msun")
         print(f" Calculated: r200   : {r200_calc:.3f} kpc")
         print(f" Calculated: c      : {c_calc:.3f}")
-        print("--- Error ---")
-        print(f" Reduced Chi-Squared    : {redchi2:.3f}")
         print("------------------------------------------------------------\n")
 
         ######################################
@@ -520,7 +358,120 @@ class DmNfw:
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 
 
+    ################################################################################
     # emcee fitting
+    # emcee is a bayesian MCMC sampler, which can provide posterior distributions of parameters.
+    ################################################################################
+    def _log_prior(self, params: list[float]) -> float:
+        # define allowed ranges for parameters
+        params_range = self.params_range
+
+        V200, ratio_star, c, sigma_0 = params
+        if (params_range['V200'][0] < V200 < params_range['V200'][1] and
+            params_range['ratio_star'][0] < ratio_star < params_range['ratio_star'][1] and
+            params_range['c'][0] < c < params_range['c'][1] and
+            params_range['sigma_0'][0] < sigma_0 < params_range['sigma_0'][1]):
+            return 0.0
+        return -np.inf
+
+    def _log_likelihood(self, params: list[float], radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray, z: float, M_star: float, Re: float) -> float:
+        V200, ratio_star, c, sigma_0 = params
+        v_model = self._vel_rot_fit_model_V200(radius, V200, c, z, M_star, ratio_star, Re, sigma_0)
+        residuals = (vel_rot - v_model) / vel_rot_err
+        log_likelihood = -0.5 * np.sum(residuals**2)
+        return log_likelihood
+
+    def _log_posterior(self, params: list[float], radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray, z: float, M_star: float, Re: float) -> float:
+        lp = self._log_prior(params)
+        if not np.isfinite(lp):
+            return -np.inf
+        ll = self._log_likelihood(params, radius, vel_rot, vel_rot_err, z, M_star, Re)
+        return lp + ll
+
+    def _initialize_walkers(self, n_walkers: int, initial_guess: list[float], spread: list[float]) -> np.ndarray:
+        initial_pos = []
+        for _ in range(n_walkers):
+            pos = [
+                initial_guess[0] + np.random.uniform(-spread[0], spread[0]),
+                initial_guess[1] + np.random.uniform(-spread[1], spread[1]),
+                initial_guess[2] + np.random.uniform(-spread[2], spread[2]),
+                initial_guess[3] + np.random.uniform(-spread[3], spread[3]),
+            ]
+            initial_pos.append(pos)
+        return np.array(initial_pos)
+
+    def _fit_dm_nfw_emcee(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
+                    (radius > 0.01) & (radius < 1.0 * np.nanmax(radius)))
+        radius_valid = radius[valid_mask]
+        vel_rot_valid = vel_rot[valid_mask]
+        vel_rot_err_valid = vel_rot_err[valid_mask]
+
+        if len(radius_valid) < 10:
+            print("Not enough valid data points for fitting.")
+            return None
+
+        M_star, Re = self.stellar_util.fit_stellar_mass()
+        z = self._get_z()
+
+        # Initial guess from previous DE fit or reasonable defaults
+        initial_guess = [200.0, 1.0, 5.0, 0.0]  # V200, ratio_star, c, sigma_0
+        spread = [20.0, 0.1, 1.0, 10.0]
+
+        n_walkers = 50
+        n_steps = 2000
+        initial_pos = self._initialize_walkers(n_walkers, initial_guess, spread)
+
+        sampler = emcee.EnsembleSampler(
+            n_walkers,
+            4,
+            self._log_posterior,
+            args=(radius_valid, vel_rot_valid, vel_rot_err_valid, z, M_star, Re)
+        )
+
+        print("Running MCMC sampling...")
+        sampler.run_mcmc(initial_pos, n_steps, progress=True)
+
+        samples = sampler.get_chain(discard=500, thin=15, flat=True)
+        V200_mcmc, ratio_star_mcmc, c_mcmc, sigma_0_mcmc = map(
+            lambda v: (np.percentile(v, 16), np.percentile(v, 50), np.percentile(v, 84)),
+            samples.T
+        )
+
+        M200_calc = self._calc_M200_from_V200(V200_mcmc[1], z)
+        r200_calc = self._calc_r200_from_V200(V200_mcmc[1], z)
+        c_calc = self._calc_c_from_M200(M200_calc, h=H)
+
+        print(f"\n------------ Infer Dark Matter NFW (emcee) ------------")
+        print(f" Infer V200         : {V200_mcmc[1]:.3e} (+{V200_mcmc[2]-V200_mcmc[1]:.3e}/-{V200_mcmc[1]-V200_mcmc[0]:.3e}) km/s")
+        print(f" Infer ratio_star   : {ratio_star_mcmc[1]:.3f} (+{ratio_star_mcmc[2]-ratio_star_mcmc[1]:.3f}/-{ratio_star_mcmc[1]-ratio_star_mcmc[0]:.3f})")
+        print(f" Infer c            : {c_mcmc[1]:.3f} (+{c_mcmc[2]-c_mcmc[1]:.3f}/-{c_mcmc[1]-c_mcmc[0]:.3f})")
+        print(f" Infer sigma_0      : {sigma_0_mcmc[1]:.3f} (+{sigma_0_mcmc[2]-sigma_0_mcmc[1]:.3f}/-{sigma_0_mcmc[1]-sigma_0_mcmc[0]:.3f}) km/s")
+        print("---------------------")
+        print(f" Stellar Mass       : {M_star:.3e} Msun")
+        print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
+        print(f" Calculated: M200   : {M200_calc:.3e} Msun")
+        print(f" Calculated: r200   : {r200_calc:.3f} kpc")
+        print(f" Calculated: c      : {c_calc:.3f}")
+        print("------------------------------------------------------------\n")
+        # Return fitted velocity profile using median parameters
+        vel_rot_sq_fit = self._vel_rot_sq_V200(
+            radius,
+            V200_mcmc[1],
+            c_mcmc[1],
+            z,
+            M_star,
+            ratio_star_mcmc[1],
+            Re,
+            sigma_0_mcmc[1]
+        )
+        vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_mcmc[1], c=c_mcmc[1], z=z)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re) * ratio_star_mcmc[1]
+        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0, a_max=None))
+        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0, a_max=None))
+        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0, a_max=None))
+        return radius, vel_total_fit, vel_dm_fit, vel_star_fit
+
 
     ################################################################################
     # public methods
@@ -536,6 +487,11 @@ class DmNfw:
     def fit_dm_nfw(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
         radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw(radius, vel_rot, vel_rot_err)
+        return radius_fit, vel_total, vel_dm_fit, vel_star_fit
+
+    def inf_dm_nfw(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        z = self._get_z()
+        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw_emcee(radius, vel_rot, vel_rot_err)
         return radius_fit, vel_total, vel_dm_fit, vel_star_fit
 
 

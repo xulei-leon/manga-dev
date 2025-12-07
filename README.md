@@ -18,6 +18,7 @@
     conda install -c conda-forge ipython jupyter dask h5py pyarrow beautifulsoup4 html5lib bleach pandas pytz jplephem mpmath asdf-astropy bottleneck fsspec s3fs certifi tqdm
     conda install -c conda-forge pvextractor
     conda install -c conda-forge astroquery reproject
+    conda install -c conda-forge astroquery emcee
     ```
 
     Some packages need used pip to install.

@@ -19,7 +19,9 @@
     conda install -c conda-forge pvextractor
     conda install -c conda-forge astroquery reproject
     conda install -c conda-forge emcee
-    conda install -c conda-forge pymc jax jaxlib arviz
+    conda install -c conda-forge nomkl
+    conda install -c conda-forge seaborn numba xarray-einstats
+    conda install -c conda-forge pymc jax jaxlib arviz pytensor dm-tree
     ```
 
     Some packages need used pip to install.

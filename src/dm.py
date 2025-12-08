@@ -5,6 +5,8 @@ from re import M, S
 import numpy as np
 from scipy.optimize import curve_fit, least_squares, minimize, basinhopping, differential_evolution
 import emcee
+import pymc as pm
+import arviz as az
 from astropy import constants as const
 from astropy import units as u
 
@@ -354,11 +356,11 @@ class DmNfw:
 
 
     ################################################################################
-    # emcee fitting
+    # MCMC emcee inference methods
     # emcee is a bayesian MCMC sampler, which can provide posterior distributions of parameters.
     ################################################################################
 
-    def _fit_dm_nfw_emcee(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+    def _inf_dm_nfw_emcee(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
         valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
                     (radius > 0.01) & (radius < 1.0 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
@@ -491,6 +493,129 @@ class DmNfw:
         vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0, a_max=None))
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 
+    ################################################################################
+    # MCMC PyMC inference methods
+    ################################################################################
+    def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
+                      (radius > 0.01) & (radius < 1.0 * np.nanmax(radius)))
+        radius_valid = radius[valid_mask]
+        vel_rot_valid = vel_rot[valid_mask]
+        vel_rot_err_valid = vel_rot_err[valid_mask]
+
+        if len(radius_valid) < 10:
+            print("Not enough valid data points for fitting.")
+            return None
+
+        M_star, Re = self.stellar_util.fit_stellar_mass()
+        z = self._get_z()
+
+        # Precompute stellar velocity profile (constant during sampling)
+        v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
+
+        # Parameter bounds
+        bounds = {
+            'V200': (10.0, 800.0),
+            'c': (1.0, 30.0),
+            'sigma_0': (0.1, 300.0)
+        }
+
+        with pm.Model():
+            # 1. Sample in normalized log space [0, 1]
+            # This helps MCMC explore orders of magnitude more efficiently
+            V200_norm = pm.Uniform("V200_norm", lower=0.0, upper=1.0)
+            c_norm = pm.Uniform("c_norm", lower=0.0, upper=1.0)
+            sigma_0_norm = pm.Uniform("sigma_0_norm", lower=0.0, upper=1.0)
+
+            # 2. Transform to physical space
+            # P = L * (U/L)^norm
+            # This corresponds to log(P) = log(L) + norm * (log(U) - log(L))
+            def denormalize(norm, lower, upper):
+                return lower * (upper / lower) ** norm
+
+            V200 = pm.Deterministic("V200", denormalize(V200_norm, *bounds['V200']))
+            c = pm.Deterministic("c", denormalize(c_norm, *bounds['c']))
+            sigma_0 = pm.Deterministic("sigma_0", denormalize(sigma_0_norm, *bounds['sigma_0']))
+
+            # 3. Jacobian correction
+            # We want a Uniform prior on P, but we are sampling norm ~ U(0,1).
+            # The transformation is P = f(norm).
+            # The probability density transforms as p(norm) = p(P) * |dP/dnorm|.
+            # Since p(norm) = 1, we have p(P) = 1 / |dP/dnorm|.
+            # To enforce p(P) ~ constant (Uniform Prior on physical parameter), we need to multiply the likelihood by |dP/dnorm|.
+            # In log-space, we add log(|dP/dnorm|).
+            # dP/dnorm = P * ln(U/L).
+            # log(|dP/dnorm|) = log(P) + constant.
+            pm.Potential("jac_V200", pm.math.log(V200))
+            pm.Potential("jac_c", pm.math.log(c))
+            pm.Potential("jac_sigma_0", pm.math.log(sigma_0))
+
+            # Deterministic calculations for the model
+            # 1. Calculate r200
+            r200 = self._calc_r200_from_V200(V200, z)
+
+            # 2. Calculate x
+            x = self._calc_x_from_r200(radius_valid, r200)
+            # Avoid division by zero or negative values in log if any
+            x = pm.math.switch(pm.math.eq(x, 0), 1e-6, x)
+
+            # 3. Calculate NFW profile (V_dm^2)
+            # num = ln(1 + c*x) - (c*x)/(1 + c*x)
+            # den = ln(1 + c) - c/(1 + c)
+            num = pm.math.log(1 + c * x) - (c * x) / (1 + c * x)
+            den = pm.math.log(1 + c) - c / (1 + c)
+            v_dm_sq = (V200**2 / x) * (num / den)
+
+            # 4. Calculate Drift profile (V_drift^2)
+            v_drift_sq = self._vel_drift_sq_profile(radius_valid, sigma_0, Re)
+
+            # 5. Total Velocity Squared
+            v_rot_sq = v_dm_sq + v_star_sq - v_drift_sq
+
+            # Ensure non-negative velocity squared for sqrt
+            v_rot_sq_clipped = pm.math.switch(v_rot_sq < 0, 0, v_rot_sq)
+            v_model = pm.math.sqrt(v_rot_sq_clipped)
+
+            # Likelihood
+            pm.Normal("obs", mu=v_model, sigma=vel_rot_err_valid, observed=vel_rot_valid)
+
+            # Sampling
+            print("Running PyMC sampling...")
+            trace = pm.sample(draws=5000, tune=3000, chains=4, target_accept=0.95, return_inferencedata=True)
+
+        # Summary statistics
+        summary = az.summary(trace, var_names=["V200", "c", "sigma_0"])
+
+        # Extract median values
+        V200_fit = np.median(trace.posterior["V200"])
+        c_fit = np.median(trace.posterior["c"])
+        sigma_0_fit = np.median(trace.posterior["sigma_0"])
+
+        M200_calc = self._calc_M200_from_V200(V200_fit, z)
+        r200_calc = self._calc_r200_from_V200(V200_fit, z)
+        c_calc = self._calc_c_from_M200(M200_calc, h=H)
+
+        print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
+        print(summary)
+        print("--- Calculated ---")
+        print(f" Stellar Mass       : {M_star:.3e} Msun")
+        print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
+        print(f" Calculated: M200   : {M200_calc:.3e} Msun")
+        print(f" Calculated: r200   : {r200_calc:.3f} kpc")
+        print(f" Calculated: c      : {c_calc:.3f}")
+        print("------------------------------------------------------------\n")
+
+        # Return fitted velocity profile using median parameters
+        vel_rot_sq_fit = self._vel_rot_sq_V200(radius, V200_fit, c_fit, z, M_star, Re, sigma_0_fit)
+        vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_fit, c=c_fit, z=z)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
+
+        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0, a_max=None))
+        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0, a_max=None))
+        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0, a_max=None))
+
+        return radius, vel_total_fit, vel_dm_fit, vel_star_fit
+
 
     ################################################################################
     # public methods
@@ -510,7 +635,7 @@ class DmNfw:
 
     def inf_dm_nfw(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._fit_dm_nfw_emcee(radius, vel_rot, vel_rot_err)
+        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._inf_dm_nfw_pymc(radius, vel_rot, vel_rot_err)
         return radius_fit, vel_total, vel_dm_fit, vel_star_fit
 
 

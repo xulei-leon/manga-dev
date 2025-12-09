@@ -22,9 +22,11 @@
     conda install -c conda-forge nomkl
     conda install -c conda-forge seaborn numba xarray-einstats
     conda install -c conda-forge pymc jax jaxlib arviz pytensor dm-tree
+    conda install -c conda-forge blackjax nutpie
     ```
 
     Some packages need used pip to install.
     ```
     pip install ppxf spectral_cube sdss-access
+    pip install arviz_base arviz_stats arviz_plots
     ```

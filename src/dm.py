@@ -499,9 +499,14 @@ class DmNfw:
     ################################################################################
     # MCMC PyMC inference methods
     ################################################################################
-    def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray,
-                        shmr_sigma=0.2, draws=3000, tune=2000, chains=4, target_accept=0.9,
-                        use_jax_backend=False):
+    def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
+        # default settings
+        shmr_sigma=0.2 # SHMR scatter in dex
+        draws=3000
+        tune=2000
+        chains=4
+        target_accept=0.95
+
         # ---------------------
         # 1) data selection / precompute
         # ---------------------
@@ -538,13 +543,6 @@ class DmNfw:
         logc_min, logc_max = np.log10(1.0), np.log10(50.0)
         # sigma0 in linear space (we will put a prior on it)
         sigma0_min, sigma0_max = 0.1, 300.0
-
-        # Optionally switch backend (if user configured JAX)
-        if use_jax_backend:
-            try:
-                pm.set_backend("jax")
-            except Exception:
-                pass  # if fails, just proceed with default
 
         # ---------------------
         # 3) PyMC model
@@ -597,7 +595,11 @@ class DmNfw:
             cx = c * x
             num = pt.log1p(cx) - (cx) / (1.0 + cx)
             den = pt.log1p(c) - c / (1.0 + c)
-            v_dm_sq = (V200 ** 2 / x) * (num / den)
+
+            x_safe = pt.maximum(x, 1e-6)
+            den_safe = pt.maximum(den, 1e-6)
+            v_dm_sq = (V200**2 / x_safe) * (num / den_safe)
+            v_dm_sq = pm.Deterministic("v_dm_sq", v_dm_sq)
 
             # stellar contribution: precomputed numpy array v_star_sq
             v_star_sq_arr = v_star_sq  # numpy array
@@ -608,21 +610,22 @@ class DmNfw:
 
             # total squared velocity
             v_rot_sq = v_dm_sq + v_star_sq_arr - v_drift_sq
-
-            # clip negative values to small positive to avoid NaN in sqrt (use pt.maximum)
-            v_rot_sq_pos = pt.maximum(v_rot_sq, 0.0)
-            v_model = pt.sqrt(v_rot_sq_pos)
+            v_rot_sq = pt.maximum(v_rot_sq, 1e-6)
+            v_model = pt.sqrt(v_rot_sq)
 
             # likelihood: observed velocities (vector)
             obs_sigma = vel_rot_err_valid  # numpy array
             pm.Normal("obs", mu=v_model, sigma=obs_sigma, observed=vel_rot_valid)
 
+            # pm.model_to_graphviz(model)
+
             # ---------------------
             # 4) sampling options & run
             # ---------------------
             print("Starting PyMC sampling (NUTS)... this may take time.")
-            trace = pm.sample(draws=draws, tune=tune, chains=chains, target_accept=target_accept,
-                            cores=min(chains, 4), return_inferencedata=True)
+            trace = pm.sample(init="adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler='nutpie', target_accept=target_accept, cores=min(chains, 4),
+                              progressbar=True,
+                              return_inferencedata=True, compute_convergence_checks=True)
 
         # ---------------------
         # 5) postprocess

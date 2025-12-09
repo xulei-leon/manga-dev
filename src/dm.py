@@ -4,6 +4,7 @@ from pathlib import Path
 from re import M, S
 import numpy as np
 from scipy.optimize import curve_fit, least_squares, minimize, basinhopping, differential_evolution
+from scipy.optimize import brentq
 import emcee
 import pymc as pm
 import arviz as az
@@ -501,7 +502,6 @@ class DmNfw:
     ################################################################################
     def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
         # default settings
-        shmr_sigma=0.2 # SHMR scatter in dex
         draws=3000
         tune=2000
         chains=4
@@ -541,46 +541,58 @@ class DmNfw:
         #    we sample log10(V200) and log10(c) to handle scales nicely
         # ---------------------
         # use range_parameters defined above
-        V200_min, V200_max = range_parameters['V200']
         c_min, c_max = range_parameters['c']
         sigma0_min, sigma0_max = range_parameters['sigma_0']
 
-        logV200_min, logV200_max = np.log10(V200_min), np.log10(V200_max)     # V200 [km/s]
         logc_min, logc_max = np.log10(c_min), np.log10(c_max)                  # c
         # sigma0 in linear space (we will put a prior on it)
         sigma0_min, sigma0_max = sigma0_min, sigma0_max                        # sigma_0 [km/s]
+
+        # Moster-like SHMR
+        def Mstar_from_Mhalo(Mhalo, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+            x = Mhalo / M1
+            f = 2.0 * N / (x**(-beta) + x**(gamma))
+            return f * Mhalo
+
+        # invert (in log10 space)
+        def invert_shmr_get_log10M200(Mstar_obs, Mmin=1e9, Mmax=1e15):
+            def f(logM):
+                M = 10**logM
+                return Mstar_from_Mhalo(M) - Mstar_obs
+            return brentq(f, np.log10(Mmin), np.log10(Mmax))
 
         # ---------------------
         # 3) PyMC model
         # ---------------------
         with pm.Model():
+            # SHMR prior (soft Gaussian on log10 M200). Replace shmr_mu with your preferred mapping if desired.
+            shmr_mu = invert_shmr_get_log10M200(M_star)  # expected log10(M200) from Mstar
+            shmr_sigma=0.2 # SHMR scatter in dex
+
+            log10_M200 = pm.Normal("log10_M200", mu=shmr_mu, sigma=shmr_sigma)  # auxiliary variable for prior
+            M200 = pm.Deterministic("M200", 10 ** log10_M200)
+            G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+            V200_tensor = (10 * G_kpc_kms_Msun * Hz * M200) ** (1.0 / 3.0)
+            V200 = pm.Deterministic("V200", V200_tensor)
+
             # Priors in transformed space
-            log10_V200 = pm.Uniform("log10_V200", lower=logV200_min, upper=logV200_max)
-            log10_c = pm.Uniform("log10_c", lower=logc_min, upper=logc_max)
+            log_c_mu = np.log10(5.0)
+            log_c_sigma = 0.3
+
+            log10_c = pm.TruncatedNormal("log10_c", mu=log_c_mu, sigma=log_c_sigma, lower=logc_min, upper=logc_max)
+            c = pm.Deterministic("c", 10 ** log10_c)
 
             # sigma_0 prior: weakly informative (can be tightened)
             sigma_0 = pm.TruncatedNormal("sigma_0", mu=30.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
-
-            # convert to physical
-            V200 = pm.Deterministic("V200", 10 ** log10_V200)
-            c = pm.Deterministic("c", 10 ** log10_c)
-
-            # Derived M200 from V200: M200 = V200^3 / (10 * G * H(z))
-            # Ensure units consistent: V200 [km/s], G_kpc_kms_Msun, Hz [km/s/kpc]
-            M200 = pm.Deterministic("M200", (V200 ** 3) / (10.0 * G_kpc_kms_Msun * Hz))
-            log10_M200 = pm.Deterministic("log10_M200", pt.log(M200) / pt.log(10.0))
-
-            # SHMR prior (soft Gaussian on log10 M200). Replace shmr_mu with your preferred mapping if desired.
-            # A simple baseline: expected log10(M200) ≈ log10(M_star) + 2.0  (i.e., M200 ~ 100*Mstar)
-            shmr_mu = np.log10(M_star) + 2.0
 
             # Add SHMR as a potential (log-prior)
             pm.Potential("shmr_prior", -0.5 * ((log10_M200 - shmr_mu) / shmr_sigma) ** 2)
 
             # Optionally add a c-M prior (cosmological relation) if desired:
-            # c_expected = 10.0 * (M200 / 1e12)**(-0.1)
-            # sigma_logc = 0.2
-            # pm.Potential("cM_prior", -0.5 * ((pt.log(c) - pt.log(c_expected)) / (sigma_logc * pt.log(10)))**2)
+            # Add c-M prior (cosmological relation) as a potential (log-prior)
+            c_expected = 10.0 * (M200 / 1e12)**(-0.1)
+            sigma_logc = 0.2  # dex
+            pm.Potential("cM_prior", -0.5 * ((pt.log10(c) - pt.log10(c_expected)) / sigma_logc)**2)
 
             # Model: compute v_dm^2, v_drift^2, total v^2 using pm.math
             r = radius_valid  # numpy array; fine to use directly inside model expressions

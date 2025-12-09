@@ -76,12 +76,12 @@ class DmNfw:
     # H(z) = H0 * sqrt( Omega_m*(1 + z)^3 + Omega_Lambda )
     def _calc_Hz_kpc(self, z: float, H0=67.4, Om=0.315, Ol=0.685) -> float:
         Hz = H0 * np.sqrt(Om * (1 + z)**3 + Ol)
-        return Hz # in km/s/Mpc
+        Hz = Hz / 1000
+        return Hz # in km/s/kpc
 
     def _calc_r200_from_V200(self, V200: float, z: float) -> float:
-        Hz = self._calc_Hz_kpc(z)  # in km/s/Mpc
-        r200_Mpc = V200 / (10 * Hz)  # in Mpc
-        r200_kpc = r200_Mpc * 1e3  # convert to kpc
+        Hz = self._calc_Hz_kpc(z)  # in km/s/kpc
+        r200_kpc = V200 / (10 * Hz)  # in kpc
         return r200_kpc # in kpc
 
     # x = r / r200
@@ -97,14 +97,14 @@ class DmNfw:
 
     # formula: V200^3 = 10 * G * H(z) * M200
     def _calc_V200_from_M200(self, M200: float, z: float) -> float:
-        Hz = self._calc_Hz_kpc(z)  # in km/s/Mpc
-        G = const.G.to('Mpc km^2 / s^2 Msun').value  # Mpc km^2 / s^2 / Msun
+        Hz = self._calc_Hz_kpc(z)  # in km/s/kpc
+        G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
         V200 = (10 * G * Hz * M200)**(1/3)  # in km/s
         return V200
 
     def _calc_M200_from_V200(self, V200: float, z: float) -> float:
-        Hz = self._calc_Hz_kpc(z)  # in km/s/Mpc
-        G = const.G.to('Mpc km^2 / s^2 Msun').value  # Mpc km^2 / s^2 / Msun
+        Hz = self._calc_Hz_kpc(z)  # in km/s/kpc
+        G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
         M200 = V200**3 / (10 * G * Hz)  # in Msun
         return M200
 
@@ -507,6 +507,12 @@ class DmNfw:
         chains=4
         target_accept=0.95
 
+        range_parameters = {
+            'V200': (10.0, 2000.0),   # km/s
+            'c': (1.0, 50.0),         # dimensionless
+            'sigma_0': (0.1, 300.0),  # km/s
+        }
+
         # ---------------------
         # 1) data selection / precompute
         # ---------------------
@@ -527,27 +533,27 @@ class DmNfw:
         # precompute stellar contribution v_star^2 (numpy array)
         v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
 
-        # get H(z) in km/s/kpc (user should provide helper; fallback to H0/1e3)
-        try:
-            Hz = float(self._H_of_z_km_s_kpc(z))
-        except Exception:
-            # fallback: assume H0=70 km/s/Mpc -> 0.07 km/s/kpc
-            H0 = getattr(self, "H0", 70.0)
-            Hz = H0 / 1e3
+        # get H(z) in km/s/kpc
+        Hz = self._calc_Hz_kpc(z)
 
         # ---------------------
         # 2) model bounds and parameterization
         #    we sample log10(V200) and log10(c) to handle scales nicely
         # ---------------------
-        logV200_min, logV200_max = np.log10(10.0), np.log10(5000.0)   # V200 [km/s]
-        logc_min, logc_max = np.log10(1.0), np.log10(50.0)
+        # use range_parameters defined above
+        V200_min, V200_max = range_parameters['V200']
+        c_min, c_max = range_parameters['c']
+        sigma0_min, sigma0_max = range_parameters['sigma_0']
+
+        logV200_min, logV200_max = np.log10(V200_min), np.log10(V200_max)     # V200 [km/s]
+        logc_min, logc_max = np.log10(c_min), np.log10(c_max)                  # c
         # sigma0 in linear space (we will put a prior on it)
-        sigma0_min, sigma0_max = 0.1, 300.0
+        sigma0_min, sigma0_max = sigma0_min, sigma0_max                        # sigma_0 [km/s]
 
         # ---------------------
         # 3) PyMC model
         # ---------------------
-        with pm.Model() as model:
+        with pm.Model():
             # Priors in transformed space
             log10_V200 = pm.Uniform("log10_V200", lower=logV200_min, upper=logV200_max)
             log10_c = pm.Uniform("log10_c", lower=logc_min, upper=logc_max)
@@ -567,7 +573,6 @@ class DmNfw:
             # SHMR prior (soft Gaussian on log10 M200). Replace shmr_mu with your preferred mapping if desired.
             # A simple baseline: expected log10(M200) ≈ log10(M_star) + 2.0  (i.e., M200 ~ 100*Mstar)
             shmr_mu = np.log10(M_star) + 2.0
-            shmr_sigma = shmr_sigma  # dex, default 0.2
 
             # Add SHMR as a potential (log-prior)
             pm.Potential("shmr_prior", -0.5 * ((log10_M200 - shmr_mu) / shmr_sigma) ** 2)
@@ -610,6 +615,16 @@ class DmNfw:
 
             # total squared velocity
             v_rot_sq = v_dm_sq + v_star_sq_arr - v_drift_sq
+
+            # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
+            #
+            neg_term = pt.maximum(-v_rot_sq, 0.0)
+            tau_penalty = 1e-4
+            penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
+            pm.Potential("vrot_sq_penalty", pt.sum(penalty_val))
+
+
+            # ensure numerical stability for the sqrt
             v_rot_sq = pt.maximum(v_rot_sq, 1e-6)
             v_model = pt.sqrt(v_rot_sq)
 
@@ -646,7 +661,7 @@ class DmNfw:
         print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
         print(summary)
         print(f"--- median estimates ---")
-        print(f" Infer V200         : {V200_med:.3e} km/s")
+        print(f" Infer V200         : {V200_med:.3f} km/s")
         print(f" Infer c            : {c_med:.3f}")
         print(f" Infer sigma_0      : {sigma0_med:.3f} km/s")
         print(f"--- caculate ---")
@@ -737,7 +752,7 @@ def main():
     c = 10
     print(f"V200: {V200:.2f} km/s, c: {c:.2f}")
     Hz = dm_nfw._calc_Hz_kpc(z)
-    print(f"Hz: {Hz:.2f} km/s/Mpc")
+    print(f"Hz: {Hz:.2f} km/s/kpc")
     r200 = dm_nfw._calc_r200_from_V200(V200, z)
     M200 = dm_nfw._calc_M200_from_V200(V200, z)
     print(f"Calculated r200: {r200:.2f} kpc, M200 from V200: {M200:.3e} Msun")

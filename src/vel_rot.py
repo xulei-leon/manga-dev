@@ -583,7 +583,7 @@ class VelRot:
         var_Rt = pcov_physical[1, 1]
         cov_Vc_Rt = pcov_physical[0, 1]
 
-        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) #+ (VEL_SYSTEM_ERROR)**2  # adding floor error
+        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) + (VEL_SYSTEM_ERROR)**2  # adding floor error
         vel_fit_err = np.sqrt(vel_fit_var)
         print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
 

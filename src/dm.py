@@ -600,7 +600,7 @@ class DmNfw:
         # ---------------------
         # 3) PyMC model
         # ---------------------
-        with pm.Model():
+        with pm.Model() as model:
 
             # ---------------------
             # prior distributions
@@ -614,8 +614,8 @@ class DmNfw:
             log_c_mu = np.log10(5.0)
             c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.3, lower=logc_min, upper=logc_max)
 
-            # sigma_0 prior: truncated normal
-            sigma_0_t = pm.TruncatedNormal("sigma_0", mu=20.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
+            # sigma_0 prior: half normal
+            sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
 
             # ---------------------
             # deterministic relations
@@ -675,6 +675,8 @@ class DmNfw:
                               progressbar=True,
                               return_inferencedata=True, compute_convergence_checks=True)
 
+            ppc = pm.sample_posterior_predictive(trace, var_names=["v_rot_obs"], random_seed=42, extend_inferencedata=True)
+
         # ---------------------
         # 5) postprocess
         # ---------------------
@@ -684,9 +686,15 @@ class DmNfw:
         # ---------------------
         # plot
         # ---------------------
-        # az.plot_trace(trace, var_names=["M200", "c", "sigma_0"])
-        # az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
-        # plt.show()
+        plot_mcmc = True
+        if plot_mcmc:
+            az.plot_trace(trace, var_names=["M200", "c", "sigma_0"])
+            az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
+
+            idata = pm.to_inference_data(trace, posterior_predictive=ppc)
+            az.plot_pair(idata, var_names=["M200", "c", "sigma_0"], kind='kde', marginals=True)
+            az.plot_ppc(idata, data_pairs={"v_rot_obs": "v_rot_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
+            plt.show()
 
         # median estimates
         M200_mean = float(trace.posterior["M200"].mean().values)

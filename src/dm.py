@@ -653,7 +653,7 @@ class DmNfw:
             # Add c-M prior (cosmological relation) as a potential (log-prior)
             c_expected = 10.0 * (M200_t / 1e12)**(-0.1)
             sigma_logc = 0.2  # dex
-            pm.Potential("c_M200_penalty", -0.5 * ((pt.log10(c_t) - pt.log10(c_expected)) / sigma_logc)**2)
+            # pm.Potential("c_M200_penalty", -0.5 * ((pt.log10(c_t) - pt.log10(c_expected)) / sigma_logc)**2)
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
             #
@@ -665,10 +665,10 @@ class DmNfw:
             # ---------------------
             # 4) sampling options & run
             # ---------------------
-            draws=3000
-            tune=2000
+            draws=2000
+            tune=1000
             chains=4
-            target_accept=0.95
+            target_accept=0.9
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
             trace = pm.sample(init="adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler='nutpie', target_accept=target_accept, cores=min(chains, 4),

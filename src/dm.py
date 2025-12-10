@@ -505,7 +505,7 @@ class DmNfw:
         range_parameters = {
             'V200': (10.0, 2000.0),   # km/s
             'c': (1.0, 50.0),         # dimensionless
-            'sigma_0': (0.1, 300.0),  # km/s
+            'sigma_0': (0.0, 100.0),  # km/s
         }
 
         # ---------------------
@@ -615,7 +615,7 @@ class DmNfw:
             c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.3, lower=logc_min, upper=logc_max)
 
             # sigma_0 prior: truncated normal
-            sigma_0_t = pm.TruncatedNormal("sigma_0", mu=30.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
+            sigma_0_t = pm.TruncatedNormal("sigma_0", mu=20.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
 
             # ---------------------
             # deterministic relations

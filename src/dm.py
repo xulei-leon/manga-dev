@@ -11,6 +11,7 @@ import arviz as az
 import pytensor.tensor as pt
 from astropy import constants as const
 from astropy import units as u
+import matplotlib.pyplot as plt
 
 from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
@@ -501,12 +502,6 @@ class DmNfw:
     # MCMC PyMC inference methods
     ################################################################################
     def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
-        # default settings
-        draws=3000
-        tune=2000
-        chains=4
-        target_accept=0.95
-
         range_parameters = {
             'V200': (10.0, 2000.0),   # km/s
             'c': (1.0, 50.0),         # dimensionless
@@ -535,6 +530,7 @@ class DmNfw:
 
         # get H(z) in km/s/kpc
         Hz = self._calc_Hz_kpc(z)
+        G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
         # ---------------------
         # 2) model bounds and parameterization
@@ -544,9 +540,13 @@ class DmNfw:
         c_min, c_max = range_parameters['c']
         sigma0_min, sigma0_max = range_parameters['sigma_0']
 
-        logc_min, logc_max = np.log10(c_min), np.log10(c_max)                  # c
+        logc_min, logc_max = np.log10(c_min), np.log10(c_max)
         # sigma0 in linear space (we will put a prior on it)
-        sigma0_min, sigma0_max = sigma0_min, sigma0_max                        # sigma_0 [km/s]
+        sigma0_min, sigma0_max = sigma0_min, sigma0_max
+
+        # ---------------------
+        # helper functions (closures)
+        # ---------------------
 
         # Moster-like SHMR
         def Mstar_from_Mhalo(Mhalo, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
@@ -555,78 +555,105 @@ class DmNfw:
             return f * Mhalo
 
         # invert (in log10 space)
-        def invert_shmr_get_log10M200(Mstar_obs, Mmin=1e9, Mmax=1e15):
+        def M200_log_from_Mstar(Mstar, Mmin=1e9, Mmax=1e15):
             def f(logM):
                 M = 10**logM
-                return Mstar_from_Mhalo(M) - Mstar_obs
-            return brentq(f, np.log10(Mmin), np.log10(Mmax))
+                return Mstar_from_Mhalo(M) - Mstar
+
+            return brentq(f, float(np.log10(Mmin)), float(np.log10(Mmax)))
+
+        # r200 closure (kpc) from M200 and Hz
+        def r200_from_M200(M200):
+            return (G_kpc_kms_Msun * M200 / (100.0 * Hz ** 2)) ** (1.0 / 3.0)
+
+        # normalized radius x = r / r200
+        def x_from_M200(r_arr, M200):
+            return r_arr / r200_from_M200(M200)
+
+        # numerator/denominator for NFW profile
+        def nfw_num_den(x_arr, c):
+            cx = c * x_arr
+            num = pt.log1p(cx) - (cx) / (1.0 + cx)
+            den = pt.log1p(c) - c / (1.0 + c)
+            return num, den
+
+        # V_dm^2 closure (uses V200 deterministic)
+        def v_dm_sq_profile(r_arr, M200, c):
+            x = x_from_M200(r_arr, M200)
+            num, den = nfw_num_den(x, c)
+            x_safe = pt.maximum(x, 1e-6)
+            den_safe = pt.maximum(den, 1e-6)
+            return (V200_t**2 / x_safe) * (num / den_safe)
+
+        # V_drift^2 closure
+        def v_drift_sq_profile(r_arr, sigma_0):
+            return 2.0 * (sigma_0 ** 2) * (r_arr / Re)
+
+        # total v_rot^2 closure
+        def v_rot_sq_profile(r_arr, M200, c, sigma_0, v_star_sq):
+            v_dm = v_dm_sq_profile(r_arr, M200, c)
+            # convert precomputed stellar array to tensor so ops are all in pytensor
+            v_star_tensor = pt.as_tensor_variable(v_star_sq)
+            v_drift = v_drift_sq_profile(r_arr, sigma_0)
+            return v_dm + v_star_tensor - v_drift
 
         # ---------------------
         # 3) PyMC model
         # ---------------------
         with pm.Model():
-            # SHMR prior (soft Gaussian on log10 M200). Replace shmr_mu with your preferred mapping if desired.
-            shmr_mu = invert_shmr_get_log10M200(M_star)  # expected log10(M200) from Mstar
-            shmr_sigma=0.2 # SHMR scatter in dex
 
-            log10_M200 = pm.Normal("log10_M200", mu=shmr_mu, sigma=shmr_sigma)  # auxiliary variable for prior
-            M200 = pm.Deterministic("M200", 10 ** log10_M200)
-            G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
-            V200_tensor = (10 * G_kpc_kms_Msun * Hz * M200) ** (1.0 / 3.0)
-            V200 = pm.Deterministic("V200", V200_tensor)
+            # ---------------------
+            # prior distributions
+            # ---------------------
+            # M200 prior: from SHMR
+            M200_log_mu = M200_log_from_Mstar(M_star)  # expected log10(M200) from Mstar
+            M200_log_sigma = 0.2
+            M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
 
-            # Priors in transformed space
+            # c prior: log-normal prior
             log_c_mu = np.log10(5.0)
-            log_c_sigma = 0.3
+            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.3, lower=logc_min, upper=logc_max)
 
-            log10_c = pm.TruncatedNormal("log10_c", mu=log_c_mu, sigma=log_c_sigma, lower=logc_min, upper=logc_max)
-            c = pm.Deterministic("c", 10 ** log10_c)
+            # sigma_0 prior: truncated normal
+            sigma_0_t = pm.TruncatedNormal("sigma_0", mu=30.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
 
-            # sigma_0 prior: weakly informative (can be tightened)
-            sigma_0 = pm.TruncatedNormal("sigma_0", mu=30.0, sigma=20.0, lower=sigma0_min, upper=sigma0_max)
+            # ---------------------
+            # deterministic relations
+            # ---------------------
+            # V200: derived from M200
+            M200_t = pm.Deterministic("M200", 10 ** M200_log_t)
+            c_t = pm.Deterministic("c", 10 ** c_log_t)
+            V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
+
+            r = radius_valid  # numpy array
+            v_dm_sq = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t))
+            v_drift_sq = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t))
+            v_rot_sq = pm.Deterministic("v_rot_sq", v_rot_sq_profile(r, M200_t, c_t, sigma_0_t, v_star_sq))
+
+            # ---------------------
+            # likelihood
+            # ---------------------
+            # model velocity: ensure non-negative argument to sqrt
+            v_rot_sq_pos = pt.maximum(v_rot_sq, 1e-6)
+            v_model = pt.sqrt(v_rot_sq_pos)
+
+            # likelihood: observed rotation velocities
+            v_rot_obs_sigma = vel_rot_err_valid
+            v_rot_obs = vel_rot_valid
+            pm.Normal("v_rot_obs", mu=v_model, sigma=v_rot_obs_sigma, observed=v_rot_obs)
+
+            # ---------------------
+            # potential
+            # ---------------------
 
             # Add SHMR as a potential (log-prior)
-            pm.Potential("shmr_prior", -0.5 * ((log10_M200 - shmr_mu) / shmr_sigma) ** 2)
+            pm.Potential("shmr_penalty", -0.5 * ((M200_log_t - M200_log_mu) / M200_log_sigma) ** 2)
 
             # Optionally add a c-M prior (cosmological relation) if desired:
             # Add c-M prior (cosmological relation) as a potential (log-prior)
-            c_expected = 10.0 * (M200 / 1e12)**(-0.1)
+            c_expected = 10.0 * (M200_t / 1e12)**(-0.1)
             sigma_logc = 0.2  # dex
-            pm.Potential("cM_prior", -0.5 * ((pt.log10(c) - pt.log10(c_expected)) / sigma_logc)**2)
-
-            # Model: compute v_dm^2, v_drift^2, total v^2 using pm.math
-            r = radius_valid  # numpy array; fine to use directly inside model expressions
-            # compute r200 from M200 (kpc)
-            r200 = (G_kpc_kms_Msun * M200 / (100.0 * Hz ** 2)) ** (1.0 / 3.0)
-
-            # x = r / r200
-            x = r / r200
-            # ensure no zeros
-            # use pt.maximum in vector ops with broadcasting via pt functions (but x currently numpy / pytensor mixed; this works)
-            # Compute NFW profile (safe with vectorization)
-            # num = ln(1 + c*x) - (c*x)/(1 + c*x)
-            # den = ln(1 + c) - c/(1 + c)
-            # v_dm_sq = (V200**2 / x) * (num / den)
-            # use pt functions where necessary
-            # convert c and V200 to pt-compatible via pm.Deterministic; pt will handle broadcasting with numpy r
-            cx = c * x
-            num = pt.log1p(cx) - (cx) / (1.0 + cx)
-            den = pt.log1p(c) - c / (1.0 + c)
-
-            x_safe = pt.maximum(x, 1e-6)
-            den_safe = pt.maximum(den, 1e-6)
-            v_dm_sq = (V200**2 / x_safe) * (num / den_safe)
-            v_dm_sq = pm.Deterministic("v_dm_sq", v_dm_sq)
-
-            # stellar contribution: precomputed numpy array v_star_sq
-            v_star_sq_arr = v_star_sq  # numpy array
-
-            # drift term: use analytic expression; ensure using pt ops with sigma_0 (tensor)
-            # adopt V_drift^2 = 2 * sigma_0^2 * (R / Re) as before
-            v_drift_sq = 2.0 * (sigma_0 ** 2) * (r / Re)
-
-            # total squared velocity
-            v_rot_sq = v_dm_sq + v_star_sq_arr - v_drift_sq
+            pm.Potential("c_M200_penalty", -0.5 * ((pt.log10(c_t) - pt.log10(c_expected)) / sigma_logc)**2)
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
             #
@@ -635,20 +662,14 @@ class DmNfw:
             penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
             pm.Potential("vrot_sq_penalty", pt.sum(penalty_val))
 
-
-            # ensure numerical stability for the sqrt
-            v_rot_sq = pt.maximum(v_rot_sq, 1e-6)
-            v_model = pt.sqrt(v_rot_sq)
-
-            # likelihood: observed velocities (vector)
-            obs_sigma = vel_rot_err_valid  # numpy array
-            pm.Normal("obs", mu=v_model, sigma=obs_sigma, observed=vel_rot_valid)
-
-            # pm.model_to_graphviz(model)
-
             # ---------------------
             # 4) sampling options & run
             # ---------------------
+            draws=3000
+            tune=2000
+            chains=4
+            target_accept=0.95
+
             print("Starting PyMC sampling (NUTS)... this may take time.")
             trace = pm.sample(init="adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler='nutpie', target_accept=target_accept, cores=min(chains, 4),
                               progressbar=True,
@@ -658,35 +679,46 @@ class DmNfw:
         # 5) postprocess
         # ---------------------
         # summary with diagnostics
-        summary = az.summary(trace, var_names=["V200", "c", "sigma_0", "M200", "log10_M200"], round_to=6)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0"], round_to=3)
+
+        # ---------------------
+        # plot
+        # ---------------------
+        # az.plot_trace(trace, var_names=["M200", "c", "sigma_0"])
+        # az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
+        # plt.show()
 
         # median estimates
-        V200_med = float(trace.posterior["V200"].median().values)
-        c_med = float(trace.posterior["c"].median().values)
-        sigma0_med = float(trace.posterior["sigma_0"].median().values)
+        M200_mean = float(trace.posterior["M200"].mean().values)
+        c_mean = float(trace.posterior["c"].mean().values)
+        sigma0_mean = float(trace.posterior["sigma_0"].mean().values)
+
+        M200_sd = float(trace.posterior["M200"].std().values)
+        c_sd = float(trace.posterior["c"].std().values)
+        sigma0_sd = float(trace.posterior["sigma_0"].std().values)
 
         # derived quantities using your helper functions (they expect numeric inputs)
-        M200_calc = self._calc_M200_from_V200(V200_med, z)
-        r200_calc = self._calc_r200_from_V200(V200_med, z)
-        c_calc = self._calc_c_from_M200(M200_calc, h=getattr(self, "H", 0.7))
+        V200_calc = self._calc_V200_from_M200(M200_mean, z)
+        r200_calc = self._calc_r200_from_V200(V200_calc, z)
+        c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
 
         print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
         print(summary)
         print(f"--- median estimates ---")
-        print(f" Infer V200         : {V200_med:.3f} km/s")
-        print(f" Infer c            : {c_med:.3f}")
-        print(f" Infer sigma_0      : {sigma0_med:.3f} km/s")
+        print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+        print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+        print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
         print(f"--- caculate ---")
         print(f" Stellar Mass       : {M_star:.3e} Msun")
         print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
-        print(f" Calculated: M200   : {M200_calc:.3e} Msun")
-        print(f" Calculated: r200   : {r200_calc:.3f} kpc")
-        print(f" Calculated: c      : {c_calc:.3f}")
+        print(f" Calc: V200         : {V200_calc:.3f} km/s")
+        print(f" Calc: r200         : {r200_calc:.3f} kpc")
+        print(f" Calc: c            : {c_calc:.3f}")
         print("------------------------------------------------------------\n")
 
         # compute fitted velocity profiles using median params (use your helpers)
-        vel_rot_sq_fit = self._vel_rot_sq_V200(radius, V200_med, c_med, z, M_star, Re, sigma0_med)
-        vel_dm_sq_fit = self._vel_dm_sq_profile_V200(radius, V200_med, c=c_med, z=z)
+        vel_rot_sq_fit = self._vel_rot_sq_profile(radius, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
+        vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_mean, c=c_mean, z=z)
         vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
 
         vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))

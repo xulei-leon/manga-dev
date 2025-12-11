@@ -60,6 +60,7 @@ def main():
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
+    dm_nfw.set_plot_enable(True)
 
     # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
     r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
@@ -77,7 +78,6 @@ def main():
     ########################################################
     ## plot velocity map
     ########################################################
-    '''
     # plot galaxy image
     plot_util.plot_galaxy_image(PLATE_IFU)
 
@@ -97,7 +97,6 @@ def main():
     plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
-    '''
     return
 
 if __name__ == "__main__":

@@ -25,9 +25,14 @@ H = 0.674  # assuming H0 = 67.4 km/s/Mpc
 G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value
 
 class DmNfw:
+    drpall_util: DrpallUtil
+    PLATE_IFU: str
+    plot_enable: bool
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
+        self.PLATE_IFU = None
+        self.plot_enable = False
 
     ########################################################################################
     # NFW Dark Matter Halo Profile:
@@ -502,12 +507,6 @@ class DmNfw:
     # MCMC PyMC inference methods
     ################################################################################
     def _inf_dm_nfw_pymc(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray):
-        range_parameters = {
-            'V200': (10.0, 2000.0),   # km/s
-            'c': (1.0, 50.0),         # dimensionless
-            'sigma_0': (0.0, 100.0),  # km/s
-        }
-
         # ---------------------
         # 1) data selection / precompute
         # ---------------------
@@ -537,12 +536,8 @@ class DmNfw:
         #    we sample log10(V200) and log10(c) to handle scales nicely
         # ---------------------
         # use range_parameters defined above
-        c_min, c_max = range_parameters['c']
-        sigma0_min, sigma0_max = range_parameters['sigma_0']
-
+        c_min, c_max = (1.0, 50.0)
         logc_min, logc_max = np.log10(c_min), np.log10(c_max)
-        # sigma0 in linear space (we will put a prior on it)
-        sigma0_min, sigma0_max = sigma0_min, sigma0_max
 
         # ---------------------
         # helper functions (closures)
@@ -608,13 +603,16 @@ class DmNfw:
             # M200 prior: from SHMR
             M200_log_mu = M200_log_from_Mstar(M_star)  # expected log10(M200) from Mstar
             M200_log_sigma = 0.2
-            M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
+            # M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
+            # student-t prior for robustness
+            M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
             log_c_mu = np.log10(5.0)
             c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.3, lower=logc_min, upper=logc_max)
 
             # sigma_0 prior: half normal
+            # sigma_0 > 0
             sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
 
             # ---------------------
@@ -651,8 +649,8 @@ class DmNfw:
 
             # Optionally add a c-M prior (cosmological relation) if desired:
             # Add c-M prior (cosmological relation) as a potential (log-prior)
-            c_expected = 10.0 * (M200_t / 1e12)**(-0.1)
-            sigma_logc = 0.2  # dex
+            # c_expected = 10.0 * (M200_t / 1e12)**(-0.1)
+            # sigma_logc = 0.2  # dex
             # pm.Potential("c_M200_penalty", -0.5 * ((pt.log10(c_t) - pt.log10(c_expected)) / sigma_logc)**2)
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
@@ -675,26 +673,14 @@ class DmNfw:
                               progressbar=True,
                               return_inferencedata=True, compute_convergence_checks=True)
 
-            ppc = pm.sample_posterior_predictive(trace, var_names=["v_rot_obs"], random_seed=42, extend_inferencedata=True)
+            if self.plot_enable:
+                ppc = pm.sample_posterior_predictive(trace, var_names=["v_rot_obs"], random_seed=42, extend_inferencedata=True)
 
         # ---------------------
         # 5) postprocess
         # ---------------------
         # summary with diagnostics
         summary = az.summary(trace, var_names=["M200", "c", "sigma_0"], round_to=3)
-
-        # ---------------------
-        # plot
-        # ---------------------
-        plot_mcmc = True
-        if plot_mcmc:
-            az.plot_trace(trace, var_names=["M200", "c", "sigma_0"])
-            az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
-
-            idata = pm.to_inference_data(trace, posterior_predictive=ppc)
-            az.plot_pair(idata, var_names=["M200", "c", "sigma_0"], kind='kde', marginals=True)
-            az.plot_ppc(idata, data_pairs={"v_rot_obs": "v_rot_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
-            plt.show()
 
         # median estimates
         M200_mean = float(trace.posterior["M200"].mean().values)
@@ -724,6 +710,50 @@ class DmNfw:
         print(f" Calc: c            : {c_calc:.3f}")
         print("------------------------------------------------------------\n")
 
+        # ---------------------
+        # plot
+        # ---------------------
+        if self.plot_enable:
+            axes_trace = az.plot_trace(trace, var_names=["M200", "c", "sigma_0"])
+            # set the units and credible interval
+            # axes_trace is usually (n_vars, 2) for trace plots (left: pdf, right: trace)
+            # Accessing rows for variables
+            if axes_trace.shape[0] >= 3:
+                axes_trace[0,0].set_xlabel("Msun")
+                axes_trace[2,0].set_xlabel("km/s")
+            plt.tight_layout()
+
+            # az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
+
+            idata = pm.to_inference_data(trace, posterior_predictive=ppc)
+            az.plot_pair(idata, var_names=["M200", "c", "sigma_0"], kind='kde', marginals=True)
+            az.plot_ppc(idata, data_pairs={"v_rot_obs": "v_rot_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
+
+            plt.tight_layout()
+            plt.show()
+
+
+            # v_rot fit plot
+            plt.figure(figsize=(8,6))
+            plt.errorbar(radius_valid, vel_rot_valid, yerr=vel_rot_err_valid, fmt='o', label='Observed V_rot', alpha=0.5)
+            r_plot = np.linspace(0.0, np.nanmax(radius_valid), num=500)
+
+            # compute posterior predictive mean and credible intervals
+            v_rot_ppc = ppc.posterior_predictive["v_rot_obs"].stack(sample=("chain", "draw")).values
+            v_rot_interp = np.array([np.interp(r_plot, radius_valid, v_rot_ppc[:,i]) for i in range(v_rot_ppc.shape[1])])
+            v_rot_mean = np.mean(v_rot_interp, axis=0)
+            v_rot_hdi = az.hdi(v_rot_interp, hdi_prob=0.94)
+            plt.plot(r_plot, v_rot_mean, color='red', label='Posterior Predictive Mean V_rot')
+            plt.fill_between(r_plot, v_rot_hdi[:,0], v_rot_hdi[:,1], color='red', alpha=0.3, label='94% Credible Interval')
+            plt.xlabel('Radius (kpc)')
+            plt.ylabel('Rotation Velocity V_rot (km/s)')
+            plt.title(f'Fitted Rotation Curve for {self.PLATE_IFU}')
+            plt.legend()
+
+            plt.tight_layout()
+            plt.show()
+
+
         # compute fitted velocity profiles using median params (use your helpers)
         vel_rot_sq_fit = self._vel_rot_sq_profile(radius, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
         vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_mean, c=c_mean, z=z)
@@ -742,6 +772,10 @@ class DmNfw:
     ################################################################################
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
+        return
+
+    def set_plot_enable(self, plot_enable: bool) -> None:
+        self.plot_enable = plot_enable
         return
 
     def set_stellar_util(self, stellar_util: Stellar) -> None:

@@ -54,6 +54,22 @@ class DrpallUtil:
             arr = np.asarray(col)
         return arr.astype(dtype, copy=False)
 
+    def _get_col_as_str(self, table: Table, candidates: Iterable[str], length_fallback: int):
+        """
+        Return a numpy string array for the first matching column name.
+        If no column is found, return an empty string array.
+        """
+        name = self._find_colname(table, candidates)
+        if name is None:
+            return np.array([""] * length_fallback, dtype=str)
+        col = table[name]
+        # Handle masked columns if necessary, though usually strings are just strings
+        try:
+            arr = np.asarray(col.filled(""))
+        except Exception:
+            arr = np.asarray(col)
+        return arr.astype(str)
+
     def select_target_galaxies(self, drpall: Table) -> Table:
         """Select galaxies that are MANGATARG (mngtarg1 or mngtarg3) AND do not have excluded bits."""
         nrows = len(drpall)
@@ -166,3 +182,30 @@ class DrpallUtil:
         """Return effective radius (in arcsec) for plateifu using available columns or None."""
         reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_TH50_R"])
         return reff
+
+
+    def search_galaxy_by_inc(self, inc_min: float, inc_max: float) -> Table:
+        """Search galaxies with inclination between inc_min and inc_max (degrees)."""
+        drpall = self._load_table(self.drpall_file)
+
+        galaxies = self.select_target_galaxies(drpall)
+        highqual = self.select_high_quality(galaxies)
+
+        nrows = len(highqual)
+        ba = self._get_col_as_int(highqual, ['NSA_SERSIC_BA', 'nsa_elpetro_ba'], nrows, dtype=np.float64)
+
+        # Calculate inclination from axis ratio
+        cos_inc = ba
+        cos_inc = np.clip(cos_inc, 0.0, 1.0)  # ensure valid range
+        inc = np.degrees(np.arccos(cos_inc))
+
+        sel = (inc >= inc_min) & (inc <= inc_max)
+        log.info(f"Galaxies found with inclination between {inc_min} and {inc_max} degrees: {np.count_nonzero(sel)}")
+
+        result = highqual[sel]
+        uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
+        log.info("--- Search by inclination completed ---")
+
+        # return plateifu list
+        plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
+        return plateifu_list

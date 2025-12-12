@@ -194,10 +194,22 @@ class DrpallUtil:
         nrows = len(highqual)
         ba = self._get_col_as_int(highqual, ['NSA_SERSIC_BA', 'nsa_elpetro_ba'], nrows, dtype=np.float64)
 
+        def ba_to_inc(ba, ba_0=0.2):
+            ba_sq = ba**2
+            BA_0_sq = ba_0**2
+
+            # Compute the numerator part of cos^2(i)
+            numerator = ba_sq - BA_0_sq
+            denominator = 1.0 - BA_0_sq
+
+            cos_i_sq = numerator / denominator
+            cos_i_sq_clipped = np.clip(cos_i_sq, 0.0, 1.0)
+
+            inc_rad = np.arccos(np.sqrt(cos_i_sq_clipped))
+            return inc_rad
+
         # Calculate inclination from axis ratio
-        cos_inc = ba
-        cos_inc = np.clip(cos_inc, 0.0, 1.0)  # ensure valid range
-        inc = np.degrees(np.arccos(cos_inc))
+        inc = np.degrees(ba_to_inc(ba))
 
         sel = (inc >= inc_min) & (inc <= inc_max)
         log.info(f"Galaxies found with inclination between {inc_min} and {inc_max} degrees: {np.count_nonzero(sel)}")

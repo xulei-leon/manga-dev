@@ -696,20 +696,6 @@ class DmNfw:
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
 
-        print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
-        print(summary)
-        print(f"--- median estimates ---")
-        print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
-        print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-        print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
-        print(f"--- caculate ---")
-        print(f" Stellar Mass       : {M_star:.3e} Msun")
-        print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
-        print(f" Calc: V200         : {V200_calc:.3f} km/s")
-        print(f" Calc: r200         : {r200_calc:.3f} kpc")
-        print(f" Calc: c            : {c_calc:.3f}")
-        print("------------------------------------------------------------\n")
-
         # ---------------------
         # plot
         # ---------------------
@@ -754,7 +740,7 @@ class DmNfw:
             plt.show()
 
 
-        # compute fitted velocity profiles using median params (use your helpers)
+        # compute fitted velocity profiles using mean params (use your helpers)
         vel_rot_sq_fit = self._vel_rot_sq_profile(radius, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
         vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_mean, c=c_mean, z=z)
         vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
@@ -762,6 +748,29 @@ class DmNfw:
         vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
         vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
         vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
+
+
+        # calculate the standard error of fitted rotation velocity with obs rotation velocity
+        vel_total_fit_valid = vel_total_fit[valid_mask]
+        vel_rot_fit_sd = np.nanstd(vel_rot_valid - vel_total_fit_valid)
+        vel_rot_fit_mean = np.nanmean(vel_rot_valid)
+
+        print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
+        print(summary)
+        print(f"--- median estimates ---")
+        print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+        print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+        print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
+        print(f"--- caculate ---")
+        print(f" Stellar Mass       : {M_star:.3e} Msun")
+        print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
+        print(f" Calc: V200         : {V200_calc:.3f} km/s")
+        print(f" Calc: r200         : {r200_calc:.3f} kpc")
+        print(f" Calc: c            : {c_calc:.3f}")
+        print("---------------------")
+        print(f" Vel rot std error  : {vel_rot_fit_sd:.2f} km/s ({vel_rot_fit_sd/vel_rot_fit_mean:.2%})")
+        print("------------------------------------------------------------\n")
+
 
         return radius, vel_total_fit, vel_dm_fit, vel_star_fit
 

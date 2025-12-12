@@ -15,7 +15,7 @@ root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
 
 
-def main():
+def main(plot_enable:bool=False):
     PLATE_IFU = "8723-12703"
 
     print("#######################################################")
@@ -60,7 +60,7 @@ def main():
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
-    dm_nfw.set_plot_enable(True)
+    dm_nfw.set_plot_enable(plot_enable)
 
     # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
     r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
@@ -78,26 +78,27 @@ def main():
     ########################################################
     ## plot velocity map
     ########################################################
-    # plot galaxy image
-    plot_util.plot_galaxy_image(PLATE_IFU)
+    if  plot_enable:
+        # plot galaxy image
+        plot_util.plot_galaxy_image(PLATE_IFU)
 
-    # plot RC curves
-    plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
-                            r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Observed Fit")
+        # plot RC curves
+        plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
+                                r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Observed Fit")
 
-    plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
-                            r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
+        plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
+                                r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-    plot_util.plot_rv_curve(r_rot_map=r_rot_fit, v_rot_map=V_rot_fit, title="Observed Fit",
-                            r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
+        plot_util.plot_rv_curve(r_rot_map=r_rot_fit, v_rot_map=V_rot_fit, title="Observed Fit",
+                                r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
-                        r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
+        plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
+                            r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
 
-    plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
-                            r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
+        plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
+                                r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
     return
 
 if __name__ == "__main__":
-    main()
+    main(plot_enable=False)

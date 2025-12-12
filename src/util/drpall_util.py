@@ -184,7 +184,7 @@ class DrpallUtil:
         return reff
 
 
-    def search_galaxy_by_inc(self, inc_min: float, inc_max: float) -> Table:
+    def search_plateifu_by_inc(self, inc_min: float, inc_max: float) -> Table:
         """Search galaxies with inclination between inc_min and inc_max (degrees)."""
         drpall = self._load_table(self.drpall_file)
 
@@ -209,3 +209,7 @@ class DrpallUtil:
         # return plateifu list
         plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
         return plateifu_list
+
+    def search_plateifu_by_Rmax_Rt_ratio(self, ratio: float) -> Table:
+        pass
+

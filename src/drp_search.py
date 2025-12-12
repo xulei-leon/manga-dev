@@ -22,7 +22,7 @@ def main():
 
     drpall_util = DrpallUtil(drpall_file)
 
-    plateifu_list = drpall_util.search_galaxy_by_inc(INC_MIN, INC_MAX)
+    plateifu_list = drpall_util.search_plateifu_by_inc(INC_MIN, INC_MAX)
     print(f"Galaxies with inclination between {INC_MIN} and {INC_MAX} degrees:")
     print(f"  Total found: {len(plateifu_list)}")
     print("----------------------------------")

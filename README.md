@@ -28,5 +28,4 @@
     Some packages need used pip to install.
     ```
     pip install ppxf spectral_cube sdss-access
-    pip install arviz_base arviz_stats arviz_plots
     ```

@@ -212,11 +212,9 @@ class DrpallUtil:
         inc = np.degrees(ba_to_inc(ba))
 
         sel = (inc >= inc_min) & (inc <= inc_max)
-        log.info(f"Galaxies found with inclination between {inc_min} and {inc_max} degrees: {np.count_nonzero(sel)}")
 
         result = highqual[sel]
         uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
-        log.info("--- Search by inclination completed ---")
 
         # return plateifu list
         plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
@@ -224,4 +222,18 @@ class DrpallUtil:
 
     def search_plateifu_by_Rmax_Rt_ratio(self, ratio: float) -> Table:
         pass
+
+    # NSA_ELPETRO_MASS
+    def search_plateifu_by_stellar_mass(self, mass_min: float, mass_max: float) -> Table:
+        drpall = self._load_table(self.drpall_file)
+        galaxies = self.select_target_galaxies(drpall)
+        highqual = self.select_high_quality(galaxies)
+        nrows = len(highqual)
+        mass = self._get_col_as_int(highqual, ['NSA_ELPETRO_MASS', 'nsa_sersic_mass'], nrows, dtype=np.float64)
+        sel = (mass >= mass_min) & (mass <= mass_max)
+        result = highqual[sel]
+        uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
+        plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
+        return plateifu_list
+
 

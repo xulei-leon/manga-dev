@@ -750,10 +750,11 @@ class DmNfw:
         vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
 
 
-        # calculate the standard error of fitted rotation velocity with obs rotation velocity
+        # RMSE vel_rot
         vel_total_fit_valid = vel_total_fit[valid_mask]
-        vel_rot_fit_sd = np.nanstd(vel_rot_valid - vel_total_fit_valid)
         vel_rot_fit_mean = np.nanmean(vel_rot_valid)
+        rmse_vel_rot = np.sqrt(np.nanmean((vel_rot_valid - vel_total_fit_valid) ** 2))
+
 
         print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
         print(summary)
@@ -768,7 +769,7 @@ class DmNfw:
         print(f" Calc: r200         : {r200_calc:.3f} kpc")
         print(f" Calc: c            : {c_calc:.3f}")
         print("---------------------")
-        print(f" Vel rot std error  : {vel_rot_fit_sd:.2f} km/s ({vel_rot_fit_sd/vel_rot_fit_mean:.2%})")
+        print(f" Vel rot RMSE       : {rmse_vel_rot:.2f} km/s ({rmse_vel_rot/vel_rot_fit_mean:.2%})")
         print("------------------------------------------------------------\n")
 
 

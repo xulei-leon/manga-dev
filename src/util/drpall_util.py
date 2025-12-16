@@ -80,7 +80,7 @@ class DrpallUtil:
         cond_b = (np.bitwise_and(mngtarg3, self.BIT_MASK_3_EXCLUDE) == 0)
 
         sel = cond_a & cond_b
-        log.info(f"Remaining galaxies after target selection: {np.count_nonzero(sel)}")
+        # log.info(f"Remaining galaxies after target selection: {np.count_nonzero(sel)}")
         return drpall[sel]
 
     def select_high_quality(self, galaxies: Table) -> Table:
@@ -88,7 +88,7 @@ class DrpallUtil:
         nrows = len(galaxies)
         drp3qual = self._get_col_as_int(galaxies, ['DRP3QUAL', 'drp3qual', 'DRP_3_QUAL'], nrows)
         sel = (np.bitwise_and(drp3qual, self.BIT_MASK_DRP_FAIL) == 0)
-        log.info(f"Remaining galaxies after high-quality selection: {np.count_nonzero(sel)}")
+        # log.info(f"Remaining galaxies after high-quality selection: {np.count_nonzero(sel)}")
         return galaxies[sel]
 
     def unique_by_id(self, table: Table, id_candidates: Iterable[str]) -> Table:
@@ -105,7 +105,7 @@ class DrpallUtil:
         _, idx = np.unique(ids, return_index=True)
         idx_sorted = np.sort(idx)
         unique_table = table[idx_sorted]
-        log.info(f"Final count of unique high-quality galaxies: {len(unique_table)}")
+        # log.info(f"Final count of unique high-quality galaxies: {len(unique_table)}")
         return unique_table
 
     def get_all_fits(self):
@@ -218,10 +218,8 @@ class DrpallUtil:
 
         # return plateifu list
         plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
-        return plateifu_list
+        return plateifu_list, inc[sel]
 
-    def search_plateifu_by_Rmax_Rt_ratio(self, ratio: float) -> Table:
-        pass
 
     # NSA_ELPETRO_MASS
     def search_plateifu_by_stellar_mass(self, mass_min: float, mass_max: float) -> Table:
@@ -229,11 +227,26 @@ class DrpallUtil:
         galaxies = self.select_target_galaxies(drpall)
         highqual = self.select_high_quality(galaxies)
         nrows = len(highqual)
+
         mass = self._get_col_as_int(highqual, ['NSA_ELPETRO_MASS', 'nsa_sersic_mass'], nrows, dtype=np.float64)
         sel = (mass >= mass_min) & (mass <= mass_max)
         result = highqual[sel]
         uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
         plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
-        return plateifu_list
+        return plateifu_list, mass[sel]
 
+
+    # NSA_ELPETRO_TH50_R
+    def search_plateifu_by_effective_radius(self, r_eff_min: float, r_eff_max: float) -> Table:
+        drall = self._load_table(self.drpall_file)
+        galaxies = self.select_target_galaxies(drall)
+        highqual = self.select_high_quality(galaxies)
+        nrows = len(highqual)
+
+        reff = self._get_col_as_int(highqual, ['NSA_ELPETRO_TH50_R', 'nsa_elpetro_th50_r'], nrows, dtype=np.float64)
+        sel = (reff >= r_eff_min) & (reff <= r_eff_max)
+        result = highqual[sel]
+        uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
+        plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
+        return plateifu_list, reff[sel]
 

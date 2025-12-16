@@ -2,6 +2,7 @@ from argparse import FileType
 from fileinput import filename
 from pathlib import Path
 import requests
+import hashlib
 
 from astropy.io import fits
 from astropy.table import Table
@@ -41,11 +42,32 @@ class FitsUtil:
         filename = f"manga-{plate}-{ifu}-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz"
         ret_path = Path(self.dap_dir / filename)
 
-        if not (ret_path).exists():
-            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
-            dl_success = self.dl_maps(plateifu, filename)
-            if not dl_success:
-                raise FileNotFoundError(f"Unable to obtain MAPS file: {filename}")
+        if (ret_path).exists() and (ret_path.with_suffix('.sha256')).exists():
+            # checksum for file
+            sha256_checksum = self._compute_sha256(ret_path)
+            checksum_file = ret_path.with_suffix('.sha256')
+            with open(checksum_file, 'r') as cf:
+                stored_checksum = cf.readline().split()[0]
+                if sha256_checksum == stored_checksum:
+                    print(f"MAPS file checksum success: {ret_path}")
+                    return ret_path
+                else:
+                    print(f"Checksum mismatch for {ret_path}; re-downloading.")
+        else:
+            print(f"MAPS file or checksum missing: {ret_path}")
+
+
+        print(f"Warning: file {filename} need to be downloaded.")
+        dl_success = self.dl_maps(plateifu, filename)
+        if not dl_success:
+            raise FileNotFoundError(f"Unable to obtain MAPS file: {filename}")
+
+        # Create sha256 checksum for file
+        sha256_checksum = self._compute_sha256(ret_path)
+        checksum_file = ret_path.with_suffix('.sha256')
+        with open(checksum_file, 'w') as cf:
+            cf.write(f"{sha256_checksum} *{filename}\n")
+
         return ret_path
 
     # drpall file is always the same name
@@ -128,7 +150,7 @@ class FitsUtil:
         url = f"{MAPS_BASE_URL}/{plate}/{ifu}/{filename}"
         target_path = self.dap_dir / filename
         return self._download_file(url, target_path, file_type_str="MAPS")
-    
+
     # TODO: only used galaxies with Rmax/Rt ≥ 3
     def find_galaxies(self) -> list[str]:
         """Find galaxies that meet criteria from DRPALL file."""
@@ -178,3 +200,14 @@ class FitsUtil:
 
         print(f"{file_type_str} download complete: {target_path}")
         return True
+
+    def _compute_sha256(self, path: Path) -> str:
+        """Compute SHA256 checksum of a file and return the hex digest."""
+        h = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+        except OSError as exc:
+            raise IOError(f"Unable to read file for sha256 computation: {path}: {exc}") from exc
+        return h.hexdigest()

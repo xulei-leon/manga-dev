@@ -8,10 +8,8 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 
 
-INC_MIN = 25.0  # minimum inclination angle in degrees
-INC_MAX = 65.0  # maximum inclination angle in degrees
-
-IQR_FACTOR = 0.0  # interquartile range factor for stellar mass and effective radius
+INC_MIN = 30.0  # minimum inclination angle in degrees
+INC_MAX = 60.0  # maximum inclination angle in degrees
 
 
 root_dir = Path(__file__).resolve().parent.parent
@@ -31,13 +29,11 @@ def galaxy_filter():
     print()
 
     _, mass_values = drpall_util.search_plateifu_by_stellar_mass(0.0, np.inf)
-    mass_Q2 = np.nanmedian(mass_values)
-    mass_Q1 = np.nanpercentile(mass_values, 25)
-    mass_Q3 = np.nanpercentile(mass_values, 75)
-    mass_median = mass_Q2
-    mass_IQR = mass_Q3 - mass_Q1
-    mass_min= mass_Q1 - IQR_FACTOR * mass_IQR
-    mass_max = mass_Q3 + IQR_FACTOR * mass_IQR
+    mass_mean = np.nanmean(mass_values)
+    mass_std = np.nanstd(mass_values)
+    mass_median = np.nanmedian(mass_values)
+    mass_min = mass_mean - 0.4 * mass_std
+    mass_max = mass_mean + 0.4 * mass_std
 
     mass_list, _ = drpall_util.search_plateifu_by_stellar_mass(mass_min, mass_max)
 
@@ -60,16 +56,14 @@ def galaxy_filter():
 
     _, r_eff_values = drpall_util.search_plateifu_by_effective_radius(0.0, np.inf)
     r_eff_Q2 = np.nanmedian(r_eff_values)
-    r_eff_Q1 = np.nanpercentile(r_eff_values, 25)
-    r_eff_Q3 = np.nanpercentile(r_eff_values, 75)
-    r_eff_median = r_eff_Q2
-    r_eff_IQR = r_eff_Q3 - r_eff_Q1
-    r_eff_min= r_eff_Q1 - IQR_FACTOR * r_eff_IQR
-    r_eff_max = r_eff_Q3 + IQR_FACTOR * r_eff_IQR
+    _, r_eff_values = drpall_util.search_plateifu_by_effective_radius(0.0, np.inf)
+    r_eff_mean = np.nanmean(r_eff_values)
+    r_eff_std = np.nanstd(r_eff_values)
+    r_eff_median = np.nanmedian(r_eff_values)
+    r_eff_min = r_eff_mean - 0.5 * r_eff_std
+    r_eff_max = r_eff_mean + 0.5 * r_eff_std
 
     r_eff_list, _ = drpall_util.search_plateifu_by_effective_radius(r_eff_min, r_eff_max)
-    print(f"-- Galaxies with effective radius between {r_eff_min:.2f} and {r_eff_max:.2f} arcsec:")
-    print(f"  Min effective radius : {r_eff_min:.2f} arcsec")
     print(f"  Max effective radius : {r_eff_max:.2f} arcsec")
     print(f"  Median effective radius: {r_eff_median:.2f} arcsec")
     print(f"  Total found: {len(r_eff_list)}")

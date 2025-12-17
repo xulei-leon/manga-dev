@@ -46,18 +46,37 @@ class FitsUtil:
             # checksum for file
             sha256_checksum = self._compute_sha256(ret_path)
             checksum_file = ret_path.with_suffix('.sha256')
-            with open(checksum_file, 'r') as cf:
-                stored_checksum = cf.readline().split()[0]
-                if sha256_checksum == stored_checksum:
-                    print(f"MAPS file checksum success: {ret_path}")
-                    return ret_path
-                else:
-                    print(f"Checksum mismatch for {ret_path}; re-downloading.")
+            with open(checksum_file, 'r', encoding='utf-8') as cf:
+                line = cf.readline().strip()
+
+            parts = line.split(maxsplit=1)
+            stored_checksum = parts[0] if parts else ""
+            stored_name = ""
+            if len(parts) > 1:
+                # sha256 files often have: "<hash> *<filename>" (binary mode marker '*')
+                stored_name = parts[1].lstrip("*").strip()
+
+            if stored_name and stored_name != filename:
+                print(f"Checksum file name mismatch for {ret_path}: expected {filename}, got {stored_name}; re-downloading.")
+            elif stored_checksum and sha256_checksum == stored_checksum:
+                print(f"MAPS file checksum success: {ret_path}")
+                return ret_path
+            else:
+                print(f"Checksum mismatch for {ret_path}; re-downloading.")
         else:
             print(f"MAPS file or checksum missing: {ret_path}")
 
 
         print(f"Warning: file {filename} need to be downloaded.")
+        # remove existing file if any
+        try:
+            if ret_path.exists():
+                ret_path.unlink()
+            if ret_path.with_suffix('.sha256').exists():
+                ret_path.with_suffix('.sha256').unlink()
+        except Exception:
+            pass
+
         dl_success = self.dl_maps(plateifu, filename)
         if not dl_success:
             raise FileNotFoundError(f"Unable to obtain MAPS file: {filename}")
@@ -65,7 +84,8 @@ class FitsUtil:
         # Create sha256 checksum for file
         sha256_checksum = self._compute_sha256(ret_path)
         checksum_file = ret_path.with_suffix('.sha256')
-        with open(checksum_file, 'w') as cf:
+        # Ensure the checksum file uses Unix newlines (no '\r' at line end on Windows)
+        with open(checksum_file, 'w', encoding='utf-8', newline='\n') as cf:
             cf.write(f"{sha256_checksum} *{filename}\n")
 
         return ret_path

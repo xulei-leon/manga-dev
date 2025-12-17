@@ -15,9 +15,7 @@ root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
 
 
-def main(plot_enable:bool=False):
-    PLATE_IFU = "8723-12703"
-
+def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     print("#######################################################")
     print("# 1. load necessary files")
     print("#######################################################")
@@ -100,5 +98,21 @@ def main(plot_enable:bool=False):
 
     return
 
+def main():
+    TEST_PLATE_IFUS = [
+        # "7957-3701",
+        # "8078-1902",
+        "10218-6102",
+        # "8329-6103",
+        # "8723-12703",
+        # "8723-12705",
+        # "7495-12704",
+        # "10220-12705"
+    ]
+
+    for plate_ifu in TEST_PLATE_IFUS:
+        print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
+        fit_dm_nfw(plate_ifu, plot_enable=True)
+
 if __name__ == "__main__":
-    main(plot_enable=False)
+    main()

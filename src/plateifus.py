@@ -44,16 +44,6 @@ def galaxy_filter():
     print(f"  Total found: {len(mass_list)}")
     print()
 
-
-    # plot histogram of stellar mass
-    # plt.hist(mass_values, bins=100, edgecolor='black')
-    # plt.title("Histogram of Stellar Mass")
-    # plt.xlabel("Stellar Mass (Msun)")
-    # plt.ylabel("Number of Galaxies")
-    # plt.yscale('log')
-    # plt.grid(True)
-    # plt.show()
-
     _, r_eff_values = drpall_util.search_plateifu_by_effective_radius(0.0, np.inf)
     r_eff_Q2 = np.nanmedian(r_eff_values)
     _, r_eff_values = drpall_util.search_plateifu_by_effective_radius(0.0, np.inf)
@@ -68,14 +58,6 @@ def galaxy_filter():
     print(f"  Median effective radius: {r_eff_median:.2f} arcsec")
     print(f"  Total found: {len(r_eff_list)}")
     print()
-
-    # plot histogram of effective radius
-    # plt.hist(r_eff_values, bins=100, edgecolor='black')
-    # plt.title("Histogram of Effective Radius")
-    # plt.xlabel("Effective Radius (arcsec)")
-    # plt.ylabel("Number of Galaxies")
-    # plt.grid(True)
-    # plt.show()
 
     # Final selection: intersection of all three criteria
     final_plateifus = set(inc_list) & set(mass_list) & set(r_eff_list)

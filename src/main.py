@@ -43,8 +43,10 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
 
-    r_rot_fit, V_rot_fit, V_rot_err = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
-
+    success, r_rot_fit, V_rot_fit, V_rot_err = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    if not success:
+        print(f"Fitting rotational velocity failed for {PLATE_IFU}")
+        return
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")
@@ -100,14 +102,14 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
 
 def main():
     TEST_PLATE_IFUS = [
-        # "7957-3701",
-        # "8078-1902",
+        "7957-3701",
+        "8078-1902",
         "10218-6102",
-        # "8329-6103",
-        # "8723-12703",
-        # "8723-12705",
-        # "7495-12704",
-        # "10220-12705"
+        "8329-6103",
+        "8723-12703",
+        "8723-12705",
+        "7495-12704",
+        "10220-12705"
     ]
 
     for plate_ifu in TEST_PLATE_IFUS:

@@ -1,5 +1,6 @@
 from pathlib import Path
 import numpy as np
+import pandas as pd
 
 # my imports
 from util.maps_util import MapsUtil
@@ -12,8 +13,30 @@ from vel_rot import VelRot
 from dm import DmNfw
 
 root_dir = Path(__file__).resolve().parent.parent
-fits_util = FitsUtil(root_dir / "data")
+data_dir = root_dir / "data"
+fits_util = FitsUtil(data_dir)
 
+VEL_FIT_PARAM_FILE = data_dir / "vel_rot_param.csv"
+
+
+# Store vel rot fit parameters as CSV file
+def store_vel_rot_fit_parameters(PLATE_IFU: str, fit_parameters: dict):
+    output_file = VEL_FIT_PARAM_FILE
+
+    if output_file.exists():
+        try:
+            all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+        except pd.errors.EmptyDataError:
+            all_fit_parameters = {}
+    else:
+        all_fit_parameters = {}
+
+    all_fit_parameters[PLATE_IFU] = fit_parameters
+
+    df = pd.DataFrame.from_dict(all_fit_parameters, orient='index')
+    df.rename_axis('PLATE_IFU', inplace=True)
+    df.to_csv(output_file)
+    return
 
 def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     print("#######################################################")
@@ -43,10 +66,16 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
 
-    success, r_rot_fit, V_rot_fit, V_rot_err = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    success, fit_result, fit_parameters = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    store_vel_rot_fit_parameters(PLATE_IFU, fit_parameters)
+
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
+
+    r_rot_fit = fit_result['radius']
+    V_rot_fit = fit_result['vel_rot']
+    V_rot_err = fit_result['vel_err']
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")

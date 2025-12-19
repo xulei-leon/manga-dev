@@ -239,7 +239,7 @@ class VelRot:
     ################################################################################
     # Fitting methods
     ################################################################################
-    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, np.ndarray, np.ndarray, np.ndarray]:
+    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
         vel_obs_valid = vel_obs_map[valid_mask]
@@ -282,13 +282,23 @@ class VelRot:
         # Perform curve fitting
         popt, pcov = curve_fit(model_func, radius_valid, vel_obs_valid, p0=initial_guess, sigma=sigma, absolute_sigma=True, bounds=bounds, maxfev=10000)
         Vc_fit, Rt_fit = _denormalize_params(popt)
+
+
         #--------------------------------------
         # filter Rt
         #--------------------------------------
         if np.nanmax(radius_valid) / Rt_fit < RMAX_RT_RATIO_THRESHOLD:
             print(f"Error: Fitting Rotational Velocity: Rmax / Rt = {np.nanmax(radius_valid) / Rt_fit:.3f} < {RMAX_RT_RATIO_THRESHOLD}")
-            return False, None, None, None
-
+            fit_parameters = {
+                'result': 'error_Rmax_Rt',
+                'IFU': self.PLATE_IFU,
+                'Vc': f"{Vc_fit:.3f}",
+                'Vc_err': 0.0,
+                'Rt': f"{Rt_fit:.3f}",
+                'Rt_err': 0.0,
+                'NRMSE': 0.0,
+            }
+            return False, None, fit_parameters
 
         ######################################
         # Error estimation
@@ -309,46 +319,55 @@ class VelRot:
         #--------------------------------------
         if NRMSE > NRMSE_THRESHOLD:
             print(f"Error: Fitting Rotational Velocity: NRMSE = {NRMSE:.3f} > {NRMSE_THRESHOLD}")
-            return False, None, None, None
+            fit_parameters = {
+                'result': 'error_NRMSE',
+                'IFU': self.PLATE_IFU,
+                'Vc': f"{Vc_fit:.3f}",
+                'Vc_err': 0.0,
+                'Rt': f"{Rt_fit:.3f}",
+                'Rt_err': 0.0,
+                'NRMSE': f"{NRMSE:.3f}",
+            }
+            return False, None, fit_parameters
+
+        CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
+
+        # Adjusted Coefficient of Determination (R²)
+        R_SQ_ADJ = self._calc_R_sq_adj(vel_obs_valid, vel_obs_model, ivar_map_valid, k=len(popt))
+
+        # MAE: Mean Absolute Error
+        MAE = np.sum(np.abs(vel_obs_valid - vel_obs_model)) / np.sum(np.isfinite(vel_obs_valid))
+        mask_pos = (vel_obs_valid > 1.0)
+        # MAPE: Mean Absolute Percentage Error
+        MAPE = np.sum(np.abs((vel_obs_valid[mask_pos] - vel_obs_model[mask_pos]) / vel_obs_valid[mask_pos])) / np.sum(mask_pos) * 100.0
+        # SMAPE: Symmetric Mean Absolute Percentage Error
+        SMAPE = (100.0 / np.sum(np.isfinite(vel_obs_valid))) * np.sum(2.0 * np.abs(vel_obs_valid - vel_obs_model) / (np.abs(vel_obs_valid) + np.abs(vel_obs_model)))
+
+        # Correlation Matrix
+        COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
+
+        # Standard Errors of the Parameters
+        perr = np.sqrt(np.diag(pcov))
+        Vc_norm_err, Rt_norm_err = perr
+        Vc_err, Rt_err = (
+            Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
+            Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
+        )
+        Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
+        Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
 
         if self.fit_debug:
-            CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
-            F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
-
-            # Adjusted Coefficient of Determination (R²)
-            R_SQ_ADJ = self._calc_R_sq_adj(vel_obs_valid, vel_obs_model, ivar_map_valid, k=len(popt))
-
-            # MAE: Mean Absolute Error
-            MAE = np.sum(np.abs(vel_obs_valid - vel_obs_model)) / np.sum(np.isfinite(vel_obs_valid))
-            mask_pos = (vel_obs_valid > 1.0)
-            # MAPE: Mean Absolute Percentage Error
-            MAPE = np.sum(np.abs((vel_obs_valid[mask_pos] - vel_obs_model[mask_pos]) / vel_obs_valid[mask_pos])) / np.sum(mask_pos) * 100.0
-            # SMAPE: Symmetric Mean Absolute Percentage Error
-            SMAPE = (100.0 / np.sum(np.isfinite(vel_obs_valid))) * np.sum(2.0 * np.abs(vel_obs_valid - vel_obs_model) / (np.abs(vel_obs_valid) + np.abs(vel_obs_model)))
-
-            # Correlation Matrix
-            COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
-
-            # Standard Errors of the Parameters
-            perr = np.sqrt(np.diag(pcov))
-            Vc_norm_err, Rt_norm_err = perr
-            Vc_err, Rt_err = (
-                Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
-                Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
-            )
-            Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
-            Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
-
             print(f"\n------------ Fitted Rotational Velocity (arctan curve-fit) ------------")
             print(f" IFU        : {self.PLATE_IFU}")
             print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
             print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
             print("--------------")
-            print(f" Adjusted R²            : {R_SQ_ADJ:.4f}")
             print(f" RMSE                   : {RMSE:.3f} km/s")
             print(f" NRMSE                  : {NRMSE:.3f}")
             print("--------------")
             print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
+            print(f" Adjusted R²            : {R_SQ_ADJ:.4f}")
             print(f" MAE                    : {MAE:.3f} km/s")
             print(f" MAPE                   : {MAPE:.3f} %")
             print(f" SMAPE                  : {SMAPE:.2f} %")
@@ -392,7 +411,24 @@ class VelRot:
         print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
 
 
-        return True, radius_fit, vel_rot_fitted, vel_fit_err
+        fit_result = {
+            'radius': radius_fit,
+            'vel_rot': vel_rot_fitted,
+            'vel_err': vel_fit_err,
+        }
+
+        fit_parameters = {
+            'result': 'success',
+            'IFU': self.PLATE_IFU,
+            'Vc': f"{Vc_fit:.3f}",
+            'Vc_err': f"{Vc_err:.3f}",
+            'Rt': f"{Rt_fit:.3f}",
+            'Rt_err': f"{Rt_err:.3f}",
+            'NRMSE': f"{NRMSE:.3f}",
+        }
+
+        return True, fit_result, fit_parameters
+
 
     ################################################################################
     # public methods
@@ -464,10 +500,14 @@ def test_process(PLATE_IFU: str):
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp()
 
     # Fitting rotational velocity
-    success, r_rot_fit, V_rot_fit , V_rot_fit_err = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    success, fit_result, _ = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
+
+    r_rot_fit = fit_result['radius']
+    V_rot_fit = fit_result['vel_rot']
+    V_rot_fit_err = fit_result['vel_err']
 
     print("#######################################################")
     print(f"# {PLATE_IFU} calculate results")

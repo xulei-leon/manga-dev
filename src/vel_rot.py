@@ -31,7 +31,7 @@ PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
 NRMSE_THRESHOLD = 0.20  # threshold for normalized root mean square error to filter weak fitting
-
+RMAX_RT_RATIO_THRESHOLD = 3.0  # threshold for Rmax / Rt to filter bad Rt fitting
 
 ######################################################################
 # class
@@ -282,6 +282,13 @@ class VelRot:
         # Perform curve fitting
         popt, pcov = curve_fit(model_func, radius_valid, vel_obs_valid, p0=initial_guess, sigma=sigma, absolute_sigma=True, bounds=bounds, maxfev=10000)
         Vc_fit, Rt_fit = _denormalize_params(popt)
+        #--------------------------------------
+        # filter Rt
+        #--------------------------------------
+        if np.nanmax(radius_valid) / Rt_fit < RMAX_RT_RATIO_THRESHOLD:
+            print(f"Error: Fitting Rotational Velocity: Rmax / Rt = {np.nanmax(radius_valid) / Rt_fit:.3f} < {RMAX_RT_RATIO_THRESHOLD}")
+            return False, None, None, None
+
 
         ######################################
         # Error estimation
@@ -296,8 +303,12 @@ class VelRot:
         RMSE = np.sqrt(np.nansum((vel_obs_valid - vel_obs_model)**2) / np.sum(np.isfinite(vel_obs_valid)))
         # NRMSE: Normalized Root Mean Square Error
         NRMSE = RMSE / np.mean(np.abs(vel_obs_valid))
+
+        #--------------------------------------
         # filter weak fitting
+        #--------------------------------------
         if NRMSE > NRMSE_THRESHOLD:
+            print(f"Error: Fitting Rotational Velocity: NRMSE = {NRMSE:.3f} > {NRMSE_THRESHOLD}")
             return False, None, None, None
 
         if self.fit_debug:
@@ -328,7 +339,7 @@ class VelRot:
             Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
             Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
 
-            print(f"\n------------ Fitted Total Rotational Velocity (arctan curve-fit) ------------")
+            print(f"\n------------ Fitted Rotational Velocity (arctan curve-fit) ------------")
             print(f" IFU        : {self.PLATE_IFU}")
             print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
             print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")

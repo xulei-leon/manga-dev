@@ -83,6 +83,16 @@ def maps_download(fits_util: FitsUtil, plateifu_list: list[str]):
             print(f"Error processing {plateifu}: {e}")
 
 
+        try:
+            image_file = fits_util.get_image_file(plateifu)
+            if image_file:
+                tqdm.write(f"Saved: {image_file}")
+        except Exception as e:
+            tqdm.write(f"Error processing {plateifu} image: {e}")
+            print(f"Error processing {plateifu} image: {e}")
+
+
+
 
 def main():
     root_dir = Path(__file__).resolve().parent.parent

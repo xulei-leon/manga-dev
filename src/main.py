@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 # my imports
 from util.maps_util import MapsUtil
@@ -141,21 +142,40 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
 
     return
 
-def main():
-    TEST_PLATE_IFUS = [
-        "7957-3701",
-        "8078-1902",
-        "10218-6102",
-        "8329-6103",
-        "8723-12703",
-        "8723-12705",
-        "7495-12704",
-        "10220-12705"
-    ]
+TEST_PLATE_IFUS = [
+    "7957-3701",
+    "8078-1902",
+    "10218-6102",
+    "8329-6103",
+    "8723-12703",
+    "8723-12705",
+    "7495-12704",
+    "10220-12705"
+]
 
-    for plate_ifu in TEST_PLATE_IFUS:
+PLATES_FILENAME = "plateifus.txt"
+def get_plate_ifu_list():
+    plate_ifu_file = data_dir / PLATES_FILENAME
+
+    with open(plate_ifu_file, 'r') as f:
+        plate_ifu_list = [line.strip() for line in f if line.strip()]
+    return plate_ifu_list
+
+
+def main():
+    plate_ifu_list = get_plate_ifu_list()
+    if not plate_ifu_list:
+        plate_ifu_list = TEST_PLATE_IFUS
+
+    for plate_ifu in tqdm(plate_ifu_list, desc="Processing galaxies", unit="galaxy"):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
-        fit_dm_nfw(plate_ifu, plot_enable=False)
+        try:
+            fit_dm_nfw(plate_ifu, plot_enable=False)
+        except Exception as e:
+            print(f"Error processing {plate_ifu}: {e}")
+            # continue to next plate_ifu
+            continue
+
 
 if __name__ == "__main__":
     main()

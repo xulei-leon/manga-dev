@@ -419,7 +419,6 @@ class VelRot:
 
         fit_parameters = {
             'result': 'success',
-            'IFU': self.PLATE_IFU,
             'Vc': f"{Vc_fit:.3f}",
             'Vc_err': f"{Vc_err:.3f}",
             'Rt': f"{Rt_fit:.3f}",

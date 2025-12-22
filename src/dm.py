@@ -22,6 +22,7 @@ class DmNfw:
     drpall_util: DrpallUtil
     PLATE_IFU: str
     plot_enable: bool
+    fit_debug: bool = False
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -271,14 +272,14 @@ class DmNfw:
             # ---------------------
             # M200 prior: from SHMR
             M200_log_mu = M200_log_from_Mstar(M_star)  # expected log10(M200) from Mstar
-            M200_log_sigma = 0.2
+            M200_log_sigma = 0.5
             # M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
             # student-t prior for robustness
             M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
             log_c_mu = np.log10(5.0)
-            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.3, lower=logc_min, upper=logc_max)
+            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.5, lower=logc_min, upper=logc_max)
 
             # sigma_0 prior: half normal
             # sigma_0 > 0
@@ -335,35 +336,98 @@ class DmNfw:
             draws=2000
             tune=1000
             chains=4
-            target_accept=0.9
+            target_accept=0.95
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
-            trace = pm.sample(init="adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler='nutpie', target_accept=target_accept, cores=min(chains, 4),
-                              progressbar=True,
+            if self.fit_debug:
+                displaybar = True
+            else:
+                displaybar = False
+
+            trace = pm.sample(init="jitter+adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler='nutpie', target_accept=target_accept, cores=min(chains, 4),
+                              progressbar=displaybar,
                               return_inferencedata=True, compute_convergence_checks=True)
 
+            pm.compute_log_likelihood(trace)
             if self.plot_enable:
                 ppc = pm.sample_posterior_predictive(trace, var_names=["v_rot_obs"], random_seed=42, extend_inferencedata=True)
 
         # ---------------------
         # 5) postprocess
         # ---------------------
+
         # summary with diagnostics
         summary = az.summary(trace, var_names=["M200", "c", "sigma_0"], round_to=3)
+        M200_mean = float(summary.loc["M200", "mean"])
+        c_mean = float(summary.loc["c", "mean"])
+        sigma0_mean = float(summary.loc["sigma_0", "mean"])
+        M200_sd = float(summary.loc["M200", "sd"])
+        c_sd = float(summary.loc["c", "sd"])
+        sigma0_sd = float(summary.loc["sigma_0", "sd"])
+        M200_r_hat = float(summary.loc["M200", "r_hat"])
+        c_r_hat = float(summary.loc["c", "r_hat"])
+        sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
 
-        # median estimates
-        M200_mean = float(trace.posterior["M200"].mean().values)
-        c_mean = float(trace.posterior["c"].mean().values)
-        sigma0_mean = float(trace.posterior["sigma_0"].mean().values)
+        # LOO
+        # Request pointwise LOO to include pareto_k values for diagnostics
+        model_loo = az.loo(trace, pointwise=True)
+        elpd_loo_est = float(model_loo.elpd_loo)
+        elpd_loo_se = float(model_loo.se)
+        p_loo = float(model_loo.p_loo)
+        max_k = float(model_loo.pareto_k.max().values)
+        mean_k = float(model_loo.pareto_k.mean().values)
+        good_k_fraction = float(np.sum(model_loo.pareto_k.values < 0.7) / len(model_loo.pareto_k.values))
 
-        M200_sd = float(trace.posterior["M200"].std().values)
-        c_sd = float(trace.posterior["c"].std().values)
-        sigma0_sd = float(trace.posterior["sigma_0"].std().values)
+
+        # the posterior mean/std was used as expected values
+        # M200_mean = float(trace.posterior["M200"].mean().values)
+        # c_mean = float(trace.posterior["c"].mean().values)
+        # sigma0_mean = float(trace.posterior["sigma_0"].mean().values)
+        # M200_sd = float(trace.posterior["M200"].std().values)
+        # c_sd = float(trace.posterior["c"].std().values)
+        # sigma0_sd = float(trace.posterior["sigma_0"].std().values)
 
         # derived quantities using your helper functions (they expect numeric inputs)
         V200_calc = self._calc_V200_from_M200(M200_mean, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
+
+        # compute fitted velocity profiles using mean params (use your helpers)
+        vel_rot_sq_fit = self._vel_rot_sq_profile(radius, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
+        vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_mean, c=c_mean, z=z)
+        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
+
+        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
+        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
+        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
+
+        # ---------------------
+        # Inference summary
+        # ---------------------
+        if self.fit_debug:
+            # RMSE vel_rot
+            vel_total_fit_valid = vel_total_fit[valid_mask]
+            vel_rot_fit_mean = np.nanmean(vel_rot_valid)
+            rmse_vel_rot = np.sqrt(np.nanmean((vel_rot_valid - vel_total_fit_valid) ** 2))
+
+            print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
+            print("--- Summary ---")
+            print(summary)
+            print("--- LOO ---")
+            print(f"{model_loo}")
+            print(f"--- median estimates ---")
+            print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+            print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
+            print(f"--- caculate ---")
+            print(f" Stellar Mass       : {M_star:.3e} Msun")
+            print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
+            print(f" Calc: V200         : {V200_calc:.3f} km/s")
+            print(f" Calc: r200         : {r200_calc:.3f} kpc")
+            print(f" Calc: c            : {c_calc:.3f}")
+            print("---------------------")
+            print(f" Vel rot RMSE       : {rmse_vel_rot:.2f} km/s ({rmse_vel_rot/vel_rot_fit_mean:.2%})")
+            print("------------------------------------------------------------\n")
 
         # ---------------------
         # plot
@@ -387,7 +451,6 @@ class DmNfw:
             plt.tight_layout()
             plt.show()
 
-
             # v_rot fit plot
             plt.figure(figsize=(8,6))
             plt.errorbar(radius_valid, vel_rot_valid, yerr=vel_rot_err_valid, fmt='o', label='Observed V_rot', alpha=0.5)
@@ -408,42 +471,33 @@ class DmNfw:
             plt.tight_layout()
             plt.show()
 
+        success = True
+        inf_result = {
+            'radius': radius,
+            'vel_rot': vel_total_fit,
+            'vel_dm': vel_dm_fit,
+            'vel_star': vel_star_fit,
+        }
 
-        # compute fitted velocity profiles using mean params (use your helpers)
-        vel_rot_sq_fit = self._vel_rot_sq_profile(radius, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
-        vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius, M200_mean, c=c_mean, z=z)
-        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius, M_star, Re)
+        inf_params = {
+            'M200': M200_mean,
+            'M200_std': M200_sd,
+            'M200_r_hat': M200_r_hat,
+            'c': c_mean,
+            'c_std': c_sd,
+            'c_r_hat': c_r_hat,
+            'sigma_0': sigma0_mean,
+            'sigma_0_std': sigma0_sd,
+            'sigma_0_r_hat': sigma0_r_hat,
+            'elpd_loo_est': elpd_loo_est,
+            'elpd_loo_se': elpd_loo_se,
+            'p_loo': p_loo,
+            'max_k': max_k,
+            'mean_k': mean_k,
+            'good_k_fraction': good_k_fraction,
+        }
 
-        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
-        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
-        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
-
-
-        # RMSE vel_rot
-        vel_total_fit_valid = vel_total_fit[valid_mask]
-        vel_rot_fit_mean = np.nanmean(vel_rot_valid)
-        rmse_vel_rot = np.sqrt(np.nanmean((vel_rot_valid - vel_total_fit_valid) ** 2))
-
-
-        print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
-        print(summary)
-        print(f"--- median estimates ---")
-        print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
-        print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-        print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
-        print(f"--- caculate ---")
-        print(f" Stellar Mass       : {M_star:.3e} Msun")
-        print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
-        print(f" Calc: V200         : {V200_calc:.3f} km/s")
-        print(f" Calc: r200         : {r200_calc:.3f} kpc")
-        print(f" Calc: c            : {c_calc:.3f}")
-        print("---------------------")
-        print(f" Vel rot RMSE       : {rmse_vel_rot:.2f} km/s ({rmse_vel_rot/vel_rot_fit_mean:.2%})")
-        print("------------------------------------------------------------\n")
-
-
-        return radius, vel_total_fit, vel_dm_fit, vel_star_fit
-
+        return success, inf_result, inf_params
 
 
     ################################################################################
@@ -457,12 +511,16 @@ class DmNfw:
         self.plot_enable = plot_enable
         return
 
+    def set_fit_debug(self, fit_debug: bool) -> None:
+        self.fit_debug = fit_debug
+        return
+
     def set_stellar_util(self, stellar_util: Stellar) -> None:
         self.stellar_util = stellar_util
         return
 
     def inf_dm_nfw(self, radius: np.ndarray, vel_rot: np.ndarray, vel_rot_err: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         z = self._get_z()
-        radius_fit, vel_total, vel_dm_fit, vel_star_fit = self._inf_dm_nfw_pymc(radius, vel_rot, vel_rot_err)
-        return radius_fit, vel_total, vel_dm_fit, vel_star_fit
+        return self._inf_dm_nfw_pymc(radius, vel_rot, vel_rot_err)
+
 

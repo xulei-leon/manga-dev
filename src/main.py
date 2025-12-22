@@ -16,12 +16,13 @@ root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / "data"
 fits_util = FitsUtil(data_dir)
 
-VEL_FIT_PARAM_FILE = data_dir / "vel_rot_param.csv"
+VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
+DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
 
 
 # Store vel rot fit parameters as CSV file
-def store_vel_rot_fit_parameters(PLATE_IFU: str, fit_parameters: dict):
-    output_file = VEL_FIT_PARAM_FILE
+def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
+    output_file = data_dir / filename
 
     if output_file.exists():
         try:
@@ -37,6 +38,7 @@ def store_vel_rot_fit_parameters(PLATE_IFU: str, fit_parameters: dict):
     df.rename_axis('PLATE_IFU', inplace=True)
     df.to_csv(output_file)
     return
+
 
 def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     print("#######################################################")
@@ -66,8 +68,8 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
 
-    success, fit_result, fit_parameters = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
-    store_vel_rot_fit_parameters(PLATE_IFU, fit_parameters)
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    store_params_file(PLATE_IFU, fit_params, filename=VEL_FIT_PARAM_FILENAME)
 
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
@@ -90,9 +92,19 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
     dm_nfw.set_plot_enable(plot_enable)
+    dm_nfw.set_fit_debug(False)
 
     # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
-    r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
+    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
+    store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
+    if not success:
+        print(f"Inferring dark matter NFW failed for {PLATE_IFU}")
+        return
+
+    r_dm_fit = inf_result['radius']
+    V_total_fit = inf_result['vel_rot']
+    V_dm_fit = inf_result['vel_dm']
+    V_stellar_fit = inf_result['vel_star']
 
 
     print("#######################################################")
@@ -143,7 +155,7 @@ def main():
 
     for plate_ifu in TEST_PLATE_IFUS:
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
-        fit_dm_nfw(plate_ifu, plot_enable=True)
+        fit_dm_nfw(plate_ifu, plot_enable=False)
 
 if __name__ == "__main__":
     main()

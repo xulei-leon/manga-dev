@@ -34,7 +34,7 @@ class FitsUtil:
     # example plateifu:
     # "8550-12704"
     # manga-8550-12704-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz
-    def get_maps_file(self, plateifu: str) -> Path:
+    def get_maps_file(self, plateifu: str, checksum: bool = False) -> Path:
         plateifu = plateifu.strip()
         if "-" not in plateifu:
             raise ValueError("plateifu must be in 'plate-ifu' format, e.g. '8550-12704'")
@@ -43,6 +43,9 @@ class FitsUtil:
         ret_path = Path(self.dap_dir / filename)
 
         if (ret_path).exists() and (ret_path.with_suffix('.sha256')).exists():
+            if not checksum:
+                return ret_path
+
             # checksum for file
             sha256_checksum = self._compute_sha256(ret_path)
             checksum_file = ret_path.with_suffix('.sha256')
@@ -63,8 +66,6 @@ class FitsUtil:
                 return ret_path
             else:
                 print(f"Checksum mismatch for {ret_path}; re-downloading.")
-        else:
-            print(f"MAPS file or checksum missing: {ret_path}")
 
 
         print(f"Warning: file {filename} need to be downloaded.")

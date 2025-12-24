@@ -32,8 +32,8 @@ def galaxy_filter():
     mass_mean = np.nanmean(mass_values)
     mass_std = np.nanstd(mass_values)
     mass_median = np.nanmedian(mass_values)
-    mass_min = mass_mean - 0.4 * mass_std
-    mass_max = mass_mean + 0.4 * mass_std
+    mass_min = mass_mean - 2.0 * mass_std
+    mass_max = mass_mean + 2.0 * mass_std
 
     mass_list, _ = drpall_util.search_plateifu_by_stellar_mass(mass_min, mass_max)
 
@@ -50,8 +50,8 @@ def galaxy_filter():
     r_eff_mean = np.nanmean(r_eff_values)
     r_eff_std = np.nanstd(r_eff_values)
     r_eff_median = np.nanmedian(r_eff_values)
-    r_eff_min = r_eff_mean - 0.5 * r_eff_std
-    r_eff_max = r_eff_mean + 0.5 * r_eff_std
+    r_eff_min = r_eff_mean - 1.0 * r_eff_std
+    r_eff_max = r_eff_mean + 1.0 * r_eff_std
 
     r_eff_list, _ = drpall_util.search_plateifu_by_effective_radius(r_eff_min, r_eff_max)
     print(f"  Max effective radius : {r_eff_max:.2f} arcsec")
@@ -65,7 +65,7 @@ def galaxy_filter():
 
     return final_plateifus
 
-def maps_download(fits_util: FitsUtil, plateifu_list: list[str]):
+def fits_download(fits_util: FitsUtil, plateifu_list: list[str]):
     total = len(plateifu_list)
     if total == 0:
         print("No plateifu to download.")
@@ -73,15 +73,16 @@ def maps_download(fits_util: FitsUtil, plateifu_list: list[str]):
 
     # Use tqdm to display a progress bar and ensure maps_file is used (e.g., print saved path)
     for plateifu in tqdm(plateifu_list, desc="Downloading maps", unit="galaxy"):
+        print(f"\n# {plateifu}")
+
         try:
-            maps_file = fits_util.get_maps_file(plateifu)
+            maps_file = fits_util.get_maps_file(plateifu, checksum=True)
             # use the returned maps_file (print path or perform further processing)
             if maps_file:
                 tqdm.write(f"Saved: {maps_file}")
         except Exception as e:
             tqdm.write(f"Error processing {plateifu}: {e}")
             print(f"Error processing {plateifu}: {e}")
-
 
         try:
             image_file = fits_util.get_image_file(plateifu)
@@ -90,8 +91,6 @@ def maps_download(fits_util: FitsUtil, plateifu_list: list[str]):
         except Exception as e:
             tqdm.write(f"Error processing {plateifu} image: {e}")
             print(f"Error processing {plateifu} image: {e}")
-
-
 
 
 def main():
@@ -110,7 +109,7 @@ def main():
             f.write(f"{plateifu}\n")
     print(f"  Selected plateifus saved to: {output_file}")
 
-    maps_download(fits_util, plateifus)
+    fits_download(fits_util, plateifus)
     return
 
 

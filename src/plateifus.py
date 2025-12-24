@@ -8,8 +8,8 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 
 
-INC_MIN = 30.0  # minimum inclination angle in degrees
-INC_MAX = 60.0  # maximum inclination angle in degrees
+INC_MIN = 25.0  # minimum inclination angle in degrees
+INC_MAX = 70.0  # maximum inclination angle in degrees
 
 
 root_dir = Path(__file__).resolve().parent.parent
@@ -50,8 +50,8 @@ def galaxy_filter():
     r_eff_mean = np.nanmean(r_eff_values)
     r_eff_std = np.nanstd(r_eff_values)
     r_eff_median = np.nanmedian(r_eff_values)
-    r_eff_min = r_eff_mean - 1.0 * r_eff_std
-    r_eff_max = r_eff_mean + 1.0 * r_eff_std
+    r_eff_min = r_eff_mean - 2.0 * r_eff_std
+    r_eff_max = r_eff_mean + 2.0 * r_eff_std
 
     r_eff_list, _ = drpall_util.search_plateifu_by_effective_radius(r_eff_min, r_eff_max)
     print(f"  Max effective radius : {r_eff_max:.2f} arcsec")
@@ -60,7 +60,10 @@ def galaxy_filter():
     print()
 
     # Final selection: intersection of all three criteria
-    final_plateifus = set(inc_list) & set(mass_list) & set(r_eff_list)
+    final_plateifus = set(inc_list)
+    # final_plateifus &= set(mass_list)
+    # final_plateifus &= set(r_eff_list)
+
     final_plateifus = sorted(list(final_plateifus))
 
     return final_plateifus

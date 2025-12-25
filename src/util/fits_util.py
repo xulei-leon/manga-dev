@@ -68,7 +68,7 @@ class FitsUtil:
                 print(f"Checksum mismatch for {ret_path}; re-downloading.")
 
 
-        print(f"Warning: file {filename} need to be downloaded.")
+        print(f" Warning: MAPS file {filename} need to be downloaded.")
         # remove existing file if any
         try:
             if ret_path.exists():
@@ -97,7 +97,7 @@ class FitsUtil:
         filename = "drpall-v3_1_1.fits"
         ret_path = Path(self.drp_dir / filename)
         if not (ret_path).exists():
-            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
+            print(f" Warning: drpall file {filename} need to be downloaded first.")
             self.dl_drpall(filename)
         return ret_path
 
@@ -105,7 +105,7 @@ class FitsUtil:
         filename = "manga-firefly-v3_1_1-mastar.fits"
         ret_path = Path(self.firefly_dir / filename)
         if not (ret_path).exists():
-            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
+            print(f" Warning: firefly file {filename} need to be downloaded first.")
             self.dl_firefly_mastar(filename)
         return ret_path
 
@@ -122,7 +122,7 @@ class FitsUtil:
         ret_path = Path(self.images_dir / filename)
 
         if not (ret_path).exists():
-            print(f"Warning: file {filename} does not exist; it may need to be downloaded first.")
+            print(f" Warning: image file {filename} need to be downloaded first.")
             dl_success = self.dl_image(plateifu, filename)
             if not dl_success:
                 raise FileNotFoundError(f"Unable to obtain image file: {filename}")

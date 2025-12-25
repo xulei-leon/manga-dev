@@ -31,7 +31,7 @@ PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
 NRMSE_THRESHOLD = 0.20  # threshold for normalized root mean square error to filter weak fitting
-RMAX_RT_RATIO_THRESHOLD = 3.0  # threshold for Rmax / Rt to filter bad Rt fitting
+RMAX_RT_RATIO_THRESHOLD = 2.5  # threshold for Rmax / Rt to filter bad Rt fitting
 
 ######################################################################
 # class
@@ -239,7 +239,7 @@ class VelRot:
     ################################################################################
     # Fitting methods
     ################################################################################
-    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
+    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None, fit_check: bool=False) -> tuple[bool, dict, dict]:
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
         radius_valid = radius_map[valid_mask]
         vel_obs_valid = vel_obs_map[valid_mask]
@@ -247,13 +247,14 @@ class VelRot:
         phi_map_valid = phi_map[valid_mask]
 
         inc_act = self.get_inc_rad()
+        R_max = np.nanmax(radius_valid)
 
         ######################################
         # normal all fit parameters
         ######################################
         params_range = {
             'Vc': (20.0, 500.0),  # km/s
-            'Rt': (np.nanmax(radius_valid)*0.01, np.nanmax(radius_valid)*1.0),  # kpc
+            'Rt': (R_max * 0.01, R_max * 1.0),  # kpc
         }
 
         def _denormalize_params(params_n):
@@ -287,15 +288,16 @@ class VelRot:
         #--------------------------------------
         # filter Rt
         #--------------------------------------
-        if np.nanmax(radius_valid) / Rt_fit < RMAX_RT_RATIO_THRESHOLD:
-            print(f"Error: Fitting Rotational Velocity: Rmax / Rt = {np.nanmax(radius_valid) / Rt_fit:.3f} < {RMAX_RT_RATIO_THRESHOLD}")
+        if fit_check and (R_max / Rt_fit < RMAX_RT_RATIO_THRESHOLD):
+            print(f"Error: Fitting Rotational Velocity: Rmax / Rt = {R_max / Rt_fit:.3f} < {RMAX_RT_RATIO_THRESHOLD}")
             fit_parameters = {
                 'result': 'error_Rmax_Rt',
-                'IFU': self.PLATE_IFU,
+                'R_max': f"{R_max:.3f}",
                 'Vc': f"{Vc_fit:.3f}",
                 'Vc_err': 0.0,
                 'Rt': f"{Rt_fit:.3f}",
                 'Rt_err': 0.0,
+                'Rt_ratio': f"{R_max/Rt_fit:.3f}",
                 'NRMSE': 0.0,
             }
             return False, None, fit_parameters
@@ -317,15 +319,16 @@ class VelRot:
         #--------------------------------------
         # filter weak fitting
         #--------------------------------------
-        if NRMSE > NRMSE_THRESHOLD:
+        if fit_check and (NRMSE > NRMSE_THRESHOLD):
             print(f"Error: Fitting Rotational Velocity: NRMSE = {NRMSE:.3f} > {NRMSE_THRESHOLD}")
             fit_parameters = {
                 'result': 'error_NRMSE',
-                'IFU': self.PLATE_IFU,
+                'R_max': f"{R_max:.3f}",
                 'Vc': f"{Vc_fit:.3f}",
                 'Vc_err': 0.0,
                 'Rt': f"{Rt_fit:.3f}",
                 'Rt_err': 0.0,
+                'Rt_ratio': f"{R_max/Rt_fit:.3f}",
                 'NRMSE': f"{NRMSE:.3f}",
             }
             return False, None, fit_parameters
@@ -419,10 +422,12 @@ class VelRot:
 
         fit_parameters = {
             'result': 'success',
+            'R_max': f"{R_max:.3f}",
             'Vc': f"{Vc_fit:.3f}",
             'Vc_err': f"{Vc_err:.3f}",
             'Rt': f"{Rt_fit:.3f}",
             'Rt_err': f"{Rt_err:.3f}",
+            'Rt_ratio': f"{R_max/Rt_fit:.3f}",
             'NRMSE': f"{NRMSE:.3f}",
         }
 
@@ -460,8 +465,8 @@ class VelRot:
         v_rot_map = self._vel_rot_disproject_profile(v_obs_map, inc_rad, phi_map)
         return r_map, v_rot_map, ivar_map
 
-    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
-        return self._fit_vel_rot(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None, fit_check: bool=False):
+        return self._fit_vel_rot(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit, fit_check=fit_check)
 
 
 ######################################################

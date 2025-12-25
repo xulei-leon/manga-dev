@@ -18,6 +18,7 @@ data_dir = root_dir / "data"
 fits_util = FitsUtil(data_dir)
 
 VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
+VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
 DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
 
 
@@ -41,7 +42,7 @@ def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
     return
 
 
-def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
+def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True):
     print("#######################################################")
     print("# 1. load necessary files")
     print("#######################################################")
@@ -69,11 +70,21 @@ def fit_dm_nfw(PLATE_IFU, plot_enable:bool=False):
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
 
-    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
-    store_params_file(PLATE_IFU, fit_params, filename=VEL_FIT_PARAM_FILENAME)
+    if process_nfw:
+        fit_check = True
+        vel_rot_filename = VEL_FIT_PARAM_FILENAME
+    else:
+        fit_check = False
+        vel_rot_filename = VEL_FIT_PARAM_ALL_FILENAME
+
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit, fit_check=fit_check)
+    store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
 
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
+        return
+
+    if not process_nfw:
         return
 
     r_rot_fit = fit_result['radius']
@@ -170,12 +181,13 @@ def main():
     for plate_ifu in tqdm(plate_ifu_list, desc="Processing galaxies", unit="galaxy"):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
         try:
-            fit_dm_nfw(plate_ifu, plot_enable=False)
+            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=IS_PROCESS_NFW)
         except Exception as e:
             print(f"Error processing {plate_ifu}: {e}")
             # continue to next plate_ifu
             continue
 
+IS_PROCESS_NFW = True
 
 if __name__ == "__main__":
     main()

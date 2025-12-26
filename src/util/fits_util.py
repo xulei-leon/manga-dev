@@ -34,7 +34,7 @@ class FitsUtil:
     # example plateifu:
     # "8550-12704"
     # manga-8550-12704-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz
-    def get_maps_file(self, plateifu: str, checksum: bool = False) -> Path:
+    def get_maps_file(self, plateifu: str, checksum: bool = False, download: bool=True) -> Path:
         plateifu = plateifu.strip()
         if "-" not in plateifu:
             raise ValueError("plateifu must be in 'plate-ifu' format, e.g. '8550-12704'")
@@ -67,6 +67,8 @@ class FitsUtil:
             else:
                 print(f"Checksum mismatch for {ret_path}; re-downloading.")
 
+        if not download:
+            return None
 
         print(f" Warning: MAPS file {filename} need to be downloaded.")
         # remove existing file if any

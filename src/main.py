@@ -41,14 +41,38 @@ def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
     df.to_csv(output_file)
     return
 
+def get_params_file(PLATE_IFU: str, filename:str):
+    output_file = data_dir / filename
+
+    if not output_file.exists():
+        return None
+
+    try:
+        all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+    except pd.errors.EmptyDataError:
+        return None
+
+    if PLATE_IFU in all_fit_parameters:
+        return all_fit_parameters[PLATE_IFU]
+    else:
+        return None
+
 
 def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True):
+    nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME)
+    if process_nfw and nfw_param is not None:
+        print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
+        return
+
     print("#######################################################")
     print("# 1. load necessary files")
     print("#######################################################")
     drpall_file = fits_util.get_drpall_file()
     firefly_file = fits_util.get_firefly_file()
-    maps_file = fits_util.get_maps_file(PLATE_IFU)
+    maps_file = fits_util.get_maps_file(PLATE_IFU, checksum=False, download=False)
+    if maps_file is None:
+        print(f"MAPS file for {PLATE_IFU} not found locally. Skipping processing.")
+        return
 
     print(f"DRPALL file: {drpall_file}")
     print(f"FIREFLY file: {firefly_file}")
@@ -170,6 +194,9 @@ def get_plate_ifu_list():
 
     with open(plate_ifu_file, 'r') as f:
         plate_ifu_list = [line.strip() for line in f if line.strip()]
+
+    # sort the list
+    plate_ifu_list.sort()
     return plate_ifu_list
 
 

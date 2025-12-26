@@ -2,6 +2,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import gc
 
 # my imports
 from util.maps_util import MapsUtil
@@ -205,16 +207,22 @@ def main():
     if not plate_ifu_list:
         plate_ifu_list = TEST_PLATE_IFUS
 
-    for plate_ifu in tqdm(plate_ifu_list, desc="Processing galaxies", unit="galaxy"):
+    def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
         try:
-            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=IS_PROCESS_NFW)
+            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=RUN_NFW)
         except Exception as e:
             print(f"Error processing {plate_ifu}: {e}")
-            # continue to next plate_ifu
-            continue
+        finally:
+            # Clear pymc internal cache to free up memory
+            gc.collect()
 
-IS_PROCESS_NFW = True
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_process, plate_ifu) for plate_ifu in plate_ifu_list]
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
+            pass
+
+RUN_NFW = True
 
 if __name__ == "__main__":
     main()

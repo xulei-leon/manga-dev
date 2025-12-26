@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 import gc
 
 # my imports
@@ -23,24 +24,30 @@ VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
 VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
 DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
 
+csv_lock = Lock()
 
 # Store vel rot fit parameters as CSV file
 def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
     output_file = data_dir / filename
 
-    if output_file.exists():
-        try:
-            all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
-        except pd.errors.EmptyDataError:
+    with csv_lock:
+        if output_file.exists():
+            try:
+                all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+            except pd.errors.EmptyDataError:
+                all_fit_parameters = {}
+        else:
             all_fit_parameters = {}
-    else:
-        all_fit_parameters = {}
 
-    all_fit_parameters[PLATE_IFU] = fit_parameters
+        # clean previous entry
+        if PLATE_IFU in all_fit_parameters:
+            del all_fit_parameters[PLATE_IFU]
 
-    df = pd.DataFrame.from_dict(all_fit_parameters, orient='index')
-    df.rename_axis('PLATE_IFU', inplace=True)
-    df.to_csv(output_file)
+        all_fit_parameters[PLATE_IFU] = fit_parameters
+
+        df = pd.DataFrame.from_dict(all_fit_parameters, orient='index')
+        df.rename_axis('PLATE_IFU', inplace=True)
+        df.to_csv(output_file)
     return
 
 def get_params_file(PLATE_IFU: str, filename:str):
@@ -49,10 +56,11 @@ def get_params_file(PLATE_IFU: str, filename:str):
     if not output_file.exists():
         return None
 
-    try:
-        all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
-    except pd.errors.EmptyDataError:
-        return None
+    with csv_lock:
+        try:
+            all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+        except pd.errors.EmptyDataError:
+            return None
 
     if PLATE_IFU in all_fit_parameters:
         return all_fit_parameters[PLATE_IFU]
@@ -65,6 +73,12 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     if process_nfw and nfw_param is not None:
         print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
         return
+
+    vel_rot_param = get_params_file(PLATE_IFU, VEL_FIT_PARAM_FILENAME)
+    if not process_nfw and vel_rot_param is not None:
+        if vel_rot_param['result'] != 'success':
+            print(f"Velocity rotation fit previously failed for {PLATE_IFU}. Skipping processing.")
+            return
 
     print("#######################################################")
     print("# 1. load necessary files")

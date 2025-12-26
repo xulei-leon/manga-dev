@@ -294,11 +294,11 @@ class VelRot:
                 'result': 'error_Rmax_Rt',
                 'R_max': f"{R_max:.3f}",
                 'Vc': f"{Vc_fit:.3f}",
-                'Vc_err': 0.0,
+                'Vc_err': '0.0',
                 'Rt': f"{Rt_fit:.3f}",
-                'Rt_err': 0.0,
+                'Rt_err': '0.0',
                 'Rt_ratio': f"{R_max/Rt_fit:.3f}",
-                'NRMSE': 0.0,
+                'NRMSE': '0.0'
             }
             return False, None, fit_parameters
 
@@ -325,9 +325,9 @@ class VelRot:
                 'result': 'error_NRMSE',
                 'R_max': f"{R_max:.3f}",
                 'Vc': f"{Vc_fit:.3f}",
-                'Vc_err': 0.0,
+                'Vc_err': '0.0',
                 'Rt': f"{Rt_fit:.3f}",
-                'Rt_err': 0.0,
+                'Rt_err': '0.0',
                 'Rt_ratio': f"{R_max/Rt_fit:.3f}",
                 'NRMSE': f"{NRMSE:.3f}",
             }

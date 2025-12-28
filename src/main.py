@@ -194,14 +194,14 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     return
 
 TEST_PLATE_IFUS = [
-    "7957-3701",
-    "8078-1902",
-    "10218-6102",
-    "8329-6103",
+    # "7957-3701",
+    # "8078-1902",
+    # "10218-6102",
+    # "8329-6103",
     "8723-12703",
-    "8723-12705",
-    "7495-12704",
-    "10220-12705"
+    # "8723-12705",
+    # "7495-12704",
+    # "10220-12705"
 ]
 
 PLATES_FILENAME = "plateifus.txt"
@@ -217,24 +217,19 @@ def get_plate_ifu_list():
 
 
 def main():
+    plate_ifu_list = []
     plate_ifu_list = get_plate_ifu_list()
     if not plate_ifu_list:
         plate_ifu_list = TEST_PLATE_IFUS
-
-    def _process(plate_ifu):
-        print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
-        try:
-            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=RUN_NFW)
-        except Exception as e:
-            print(f"Error processing {plate_ifu}: {e}")
-        finally:
-            # Clear pymc internal cache to free up memory
-            gc.collect()
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(_process, plate_ifu) for plate_ifu in plate_ifu_list]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
-            pass
+        for plate_ifu in tqdm(plate_ifu_list, desc="Processing galaxies", unit="galaxy"):
+            print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
+            try:
+                process_plate_ifu(plate_ifu, plot_enable=True, process_nfw=RUN_NFW)
+            except Exception as e:
+                print(f"Error processing {plate_ifu}: {e}")
+            finally:
+                # Clear pymc internal cache to free up memory
+                gc.collect()
 
 RUN_NFW = True
 

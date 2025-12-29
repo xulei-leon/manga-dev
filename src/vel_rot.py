@@ -27,7 +27,7 @@ from util.plot_util import PlotUtil
 # constants definitions
 ######################################################################
 SNR_THRESHOLD = 10.0
-PHI_LIMIT_DEG = 60.0
+PHI_LIMIT_DEG = 45.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 VEL_SYSTEM_ERROR = 0.0  # km/s, floor error as systematic uncertainty in velocity measurements
 NRMSE_THRESHOLD = 0.20  # threshold for normalized root mean square error to filter weak fitting
@@ -77,7 +77,7 @@ class VelRot:
 
 
     # Filter the velocity map with SNR above the threshold and within ±phi_limit of the major axis.
-    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, phi_map: np.ndarray, snr_threshold: float = 10.0, phi_limit_deg: float = 60.0) -> np.ndarray:
+    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, phi_map: np.ndarray, snr_threshold: float = SNR_THRESHOLD, phi_limit_deg: float = PHI_LIMIT_DEG) -> np.ndarray:
         phi_delta = (phi_map + np.pi/2) % np.pi - np.pi/2
         phi_limit_rad = np.radians(phi_limit_deg)
         valid_mask = ((snr_map >= snr_threshold) & (np.abs(phi_delta) <= phi_limit_rad) & np.isfinite(vel_map))
@@ -275,6 +275,11 @@ class VelRot:
         def model_func(r, Vc_n, Rt_n, V0_n, Vsys_n):
             Vc, Rt, V0, Vsys = _denormalize_params([Vc_n, Rt_n, V0_n, Vsys_n])
             vel_rot_model = self._vel_rot_arctan_profile(r, V0, Vc, Rt)
+
+            # Penalize negative V_rot
+            if np.any(vel_rot_model < 0):
+                return np.full_like(r, np.inf) # Return huge error to penalize
+
             vel_obs_model = Vsys + self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
             # fixed the sign of vel_obs_model to be the same as vel_valid
             vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
@@ -593,7 +598,7 @@ class VelRot:
         if radius_fit is None:
             radius_fit = radius_map
 
-        vel_rot_fitted = self._vel_rot_tan_sout_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit) + Vsys_fit
+        vel_rot_fitted = self._vel_rot_tan_sout_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit)
 
         ######################################
         # Standard Errors of the output fitted velocity
@@ -684,10 +689,10 @@ class VelRot:
         return r_map, vel_obs_map, ivar_map, phi_map
 
     # disprojected velocity
-    def get_vel_obs_disp(self):
+    def get_vel_obs_disp(self, vel_sys: float):
         r_map, v_obs_map, ivar_map, phi_map = self._get_vel_obs_raw(type='gas')
         inc_rad = self.get_inc_rad()
-        v_rot_map = self._vel_rot_disproject_profile(v_obs_map, inc_rad, phi_map)
+        v_rot_map = self._vel_rot_disproject_profile(v_obs_map-vel_sys, inc_rad, phi_map)
         return r_map, v_rot_map, ivar_map
 
     def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None, fit_check: bool=False):
@@ -724,11 +729,10 @@ def test_process(PLATE_IFU: str):
     print(f"Calculated PA: {np.degrees(pa):.3f} deg, Inc: {np.degrees(inc_rad):.3f} deg")
 
     r_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
-    r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp()
 
     # Fitting rotational velocity
-    success, fit_result, _ = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
-    # success, fit_result, _ = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
+    # success, fit_result, _ = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
+    success, fit_result, fit_params = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
@@ -736,6 +740,9 @@ def test_process(PLATE_IFU: str):
     r_rot_fit = fit_result['radius']
     V_rot_fit = fit_result['vel_rot']
     V_rot_fit_err = fit_result['vel_err']
+    V_sys = float(fit_params['Vsys'])
+
+    r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(V_sys)
 
     print("#######################################################")
     print(f"# {PLATE_IFU} calculate results")

@@ -107,8 +107,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
-    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp()
-    radius_fit = vel_rot.get_radius_fit(np.nanmax(r_disp_map), count=1000)
+    radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
     if process_nfw:
         fit_check = True
@@ -130,6 +129,9 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     r_rot_fit = fit_result['radius']
     V_rot_fit = fit_result['vel_rot']
     V_rot_err = fit_result['vel_err']
+    V_sys = float(fit_params['Vsys'])
+
+    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(V_sys)
 
     print("#######################################################")
     print("# 3. calculate stellar rotation velocity V(r)")

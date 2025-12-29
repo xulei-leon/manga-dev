@@ -29,9 +29,10 @@ from util.plot_util import PlotUtil
 SNR_THRESHOLD = 10.0
 PHI_LIMIT_DEG = 60.0
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-VEL_SYSTEM_ERROR = 20.0  # km/s, floor error as systematic uncertainty in velocity measurements
+VEL_SYSTEM_ERROR = 0.0  # km/s, floor error as systematic uncertainty in velocity measurements
 NRMSE_THRESHOLD = 0.20  # threshold for normalized root mean square error to filter weak fitting
 RMAX_RT_RATIO_THRESHOLD = 2.5  # threshold for Rmax / Rt to filter bad Rt fitting
+CHI_SQ_V_THRESHOLD = 5.0  # threshold for reduced chi-squared to filter weak fitting
 
 ######################################################################
 # class
@@ -83,6 +84,7 @@ class VelRot:
 
         vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
         vel_map_filtered[valid_mask] = vel_map[valid_mask]
+
         return vel_map_filtered
 
     # PA: The position angle of the major axis of the galaxy, measured from north to east.
@@ -255,21 +257,25 @@ class VelRot:
         params_range = {
             'Vc': (20.0, 500.0),  # km/s
             'Rt': (R_max * 0.01, R_max * 1.0),  # kpc
+            'V0': (-100.0, 100.0),  # km/s
+            'Vsys': (0.0, 100.0),  # km/s
         }
 
         def _denormalize_params(params_n):
-            Vc_n, Rt_n = params_n
+            Vc_n, Rt_n, V0_n, Vsys_n = params_n
             Vc = Vc_n * (params_range['Vc'][1] - params_range['Vc'][0]) + params_range['Vc'][0]
             Rt = Rt_n * (params_range['Rt'][1] - params_range['Rt'][0]) + params_range['Rt'][0]
-            return [Vc, Rt]
+            V0 = V0_n * (params_range['V0'][1] - params_range['V0'][0]) + params_range['V0'][0]
+            Vsys = Vsys_n * (params_range['Vsys'][1] - params_range['Vsys'][0]) + params_range['Vsys'][0]
+            return [Vc, Rt, V0, Vsys]
 
         ######################################
         # Fitting process using curve_fit
         ######################################
-        def model_func(r, Vc_n, Rt_n):
-            Vc, Rt = _denormalize_params([Vc_n, Rt_n])
-            vel_rot_model = self._vel_rot_arctan_profile(r, 0.0, Vc, Rt)
-            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
+        def model_func(r, Vc_n, Rt_n, V0_n, Vsys_n):
+            Vc, Rt, V0, Vsys = _denormalize_params([Vc_n, Rt_n, V0_n, Vsys_n])
+            vel_rot_model = self._vel_rot_arctan_profile(r, V0, Vc, Rt)
+            vel_obs_model = Vsys + self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
             # fixed the sign of vel_obs_model to be the same as vel_valid
             vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
             return vel_obs_model
@@ -277,12 +283,11 @@ class VelRot:
         # sigma: Standard Deviation of the Errors
         sigma = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)  # adding floor error
 
-        initial_guess = [0.5, 0.3] # normalized initial guesses
-        bounds = ([0.0, 0.0], [1.0, 1.0])  # normalized bounds
-
+        initial_guess = [0.5, 0.3, 0.5, 0.1] # normalized initial guesses
+        bounds = ([0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0])  # normalized bounds
         # Perform curve fitting
         popt, pcov = curve_fit(model_func, radius_valid, vel_obs_valid, p0=initial_guess, sigma=sigma, absolute_sigma=True, bounds=bounds, maxfev=10000)
-        Vc_fit, Rt_fit = _denormalize_params(popt)
+        Vc_fit, Rt_fit, V0_fit, Vsys_fit = _denormalize_params(popt)
 
 
         #--------------------------------------
@@ -297,6 +302,10 @@ class VelRot:
                 'Vc_err': '0.0',
                 'Rt': f"{Rt_fit:.3f}",
                 'Rt_err': '0.0',
+                'V0': f"{V0_fit:.3f}",
+                'V0_err': '0.0',
+                'Vsys': f"{Vsys_fit:.3f}",
+                'Vsys_err': '0.0',
                 'Rt_ratio': f"{R_max/Rt_fit:.3f}",
                 'NRMSE': '0.0'
             }
@@ -316,25 +325,29 @@ class VelRot:
         # NRMSE: Normalized Root Mean Square Error
         NRMSE = RMSE / np.mean(np.abs(vel_obs_valid))
 
+        CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
+
         #--------------------------------------
         # filter weak fitting
         #--------------------------------------
-        if fit_check and (NRMSE > NRMSE_THRESHOLD):
-            print(f"Error: Fitting Rotational Velocity: NRMSE = {NRMSE:.3f} > {NRMSE_THRESHOLD}")
+        if fit_check and (CHI_SQ_V > CHI_SQ_V_THRESHOLD):
+            print(f"Error: Fitting Rotational Velocity: CHI_SQ_V = {CHI_SQ_V:.3f} > {CHI_SQ_V_THRESHOLD}")
             fit_parameters = {
-                'result': 'error_NRMSE',
+                'result': 'error_CHI_SQ_V',
                 'R_max': f"{R_max:.3f}",
                 'Vc': f"{Vc_fit:.3f}",
                 'Vc_err': '0.0',
                 'Rt': f"{Rt_fit:.3f}",
                 'Rt_err': '0.0',
+                'V0': f"{V0_fit:.3f}",
+                'V0_err': '0.0',
+                'Vsys': f"{Vsys_fit:.3f}",
+                'Vsys_err': '0.0',
                 'Rt_ratio': f"{R_max/Rt_fit:.3f}",
-                'NRMSE': f"{NRMSE:.3f}",
+                'CHI_SQ_V': f"{CHI_SQ_V:.2f}",
             }
             return False, None, fit_parameters
-
-        CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
-        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
 
         # Adjusted Coefficient of Determination (R²)
         R_SQ_ADJ = self._calc_R_sq_adj(vel_obs_valid, vel_obs_model, ivar_map_valid, k=len(popt))
@@ -352,24 +365,30 @@ class VelRot:
 
         # Standard Errors of the Parameters
         perr = np.sqrt(np.diag(pcov))
-        Vc_norm_err, Rt_norm_err = perr
-        Vc_err, Rt_err = (
+        Vc_norm_err, Rt_norm_err, V0_norm_err, Vsys_norm_err = perr
+        Vc_err, Rt_err, V0_err, Vsys_err = (
             Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
             Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
+            V0_norm_err * (params_range['V0'][1] - params_range['V0'][0]),
+            Vsys_norm_err * (params_range['Vsys'][1] - params_range['Vsys'][0]),
         )
         Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
         Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
+        V0_err_pct = (V0_err / V0_fit) * 100 if V0_fit != 0 else np.nan
+        Vsys_err_pct = (Vsys_err / Vsys_fit) * 100 if Vsys_fit != 0 else np.nan
 
         if self.fit_debug:
             print(f"\n------------ Fitted Rotational Velocity (arctan curve-fit) ------------")
             print(f" IFU        : {self.PLATE_IFU}")
             print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
             print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
+            print(f" Fit  V0    : {V0_fit:.3f} km/s, ± {V0_err:.3f} km/s", f"({V0_err_pct:.2f} %)")
+            print(f" Fit  Vsys  : {Vsys_fit:.3f} km/s, ± {Vsys_err:.3f} km/s", f"({Vsys_err_pct:.2f} %)")
             print("--------------")
             print(f" RMSE                   : {RMSE:.3f} km/s")
             print(f" NRMSE                  : {NRMSE:.3f}")
             print("--------------")
-            print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
+            print(f" Reduced Chi-Squared    : {CHI_SQ_V:.2f}")
             print(f" Adjusted R²            : {R_SQ_ADJ:.4f}")
             print(f" MAE                    : {MAE:.3f} km/s")
             print(f" MAPE                   : {MAPE:.3f} %")
@@ -383,7 +402,7 @@ class VelRot:
         if radius_fit is None:
             radius_fit = radius_map
 
-        vel_rot_fitted = self._vel_rot_arctan_profile(radius_fit, 0.0, Vc_fit, Rt_fit)
+        vel_rot_fitted = self._vel_rot_arctan_profile(radius_fit, V0_fit, Vc_fit, Rt_fit)
 
         ######################################
         # Standard Errors of the output fitted velocity
@@ -393,6 +412,8 @@ class VelRot:
         # Partial derivatives
         dV_dVc = (2 / np.pi) * np.arctan(radius_fit / Rt_fit)
         dV_dRt = (-2 / np.pi) * Vc_fit * (radius_fit / (Rt_fit**2 + radius_fit**2))
+        dV_dV0 = 1.0
+        dV_dVsys = 1.0
 
         # Error propagation including covariance
         # sigma_f^2 = (df/dp1)^2 * sigma_p1^2 + (df/dp2)^2 * sigma_p2^2 + 2 * (df/dp1)*(df/dp2) * cov(p1, p2)
@@ -401,18 +422,39 @@ class VelRot:
         # Scale covariance matrix to physical units
         scale_matrix = np.array([
             params_range['Vc'][1] - params_range['Vc'][0],
-            params_range['Rt'][1] - params_range['Rt'][0]
+            params_range['Rt'][1] - params_range['Rt'][0],
+            params_range['V0'][1] - params_range['V0'][0],
+            params_range['Vsys'][1] - params_range['Vsys'][0],
         ])
         pcov_physical = pcov * np.outer(scale_matrix, scale_matrix)
 
         var_Vc = pcov_physical[0, 0]
         var_Rt = pcov_physical[1, 1]
+        var_V0 = pcov_physical[2, 2]
+        var_Vsys = pcov_physical[3, 3]
         cov_Vc_Rt = pcov_physical[0, 1]
+        cov_Vc_V0 = pcov_physical[0, 2]
+        cov_Vc_Vsys = pcov_physical[0, 3]
+        cov_Rt_V0 = pcov_physical[1, 2]
+        cov_Rt_Vsys = pcov_physical[1, 3]
+        cov_V0_Vsys = pcov_physical[2, 3]
 
-        vel_fit_var = (dV_dVc**2 * var_Vc) + (dV_dRt**2 * var_Rt) + (2 * dV_dVc * dV_dRt * cov_Vc_Rt) + (VEL_SYSTEM_ERROR)**2  # adding floor error
+        vel_fit_var = (
+            (dV_dVc ** 2) * var_Vc +
+            (dV_dRt ** 2) * var_Rt +
+            (dV_dV0 ** 2) * var_V0 +
+            (dV_dVsys ** 2) * var_Vsys +
+            2 * dV_dVc * dV_dRt * cov_Vc_Rt +
+            2 * dV_dVc * dV_dV0 * cov_Vc_V0 +
+            2 * dV_dVc * dV_dVsys * cov_Vc_Vsys +
+            2 * dV_dRt * dV_dV0 * cov_Rt_V0 +
+            2 * dV_dRt * dV_dVsys * cov_Rt_Vsys +
+            2 * dV_dV0 * dV_dVsys * cov_V0_Vsys +
+            (VEL_SYSTEM_ERROR) ** 2  # adding floor error
+        )
+
         vel_fit_err = np.sqrt(vel_fit_var)
         print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
-
 
         fit_result = {
             'radius': radius_fit,
@@ -427,10 +469,193 @@ class VelRot:
             'Vc_err': f"{Vc_err:.3f}",
             'Rt': f"{Rt_fit:.3f}",
             'Rt_err': f"{Rt_err:.3f}",
+            'V0': f"{V0_fit:.3f}",
+            'V0_err': f"{V0_err:.3f}",
+            'Vsys': f"{Vsys_fit:.3f}",
+            'Vsys_err': f"{Vsys_err:.3f}",
             'Rt_ratio': f"{R_max/Rt_fit:.3f}",
             'NRMSE': f"{NRMSE:.3f}",
         }
 
+        return True, fit_result, fit_parameters
+
+    # use tanh profile to fit vel_rot
+    def _fit_vel_rot_tan(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None, fit_check: bool=False) -> tuple[bool, dict, dict]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > 0.01)
+        radius_valid = radius_map[valid_mask]
+        vel_obs_valid = vel_obs_map[valid_mask]
+        ivar_map_valid = ivar_map[valid_mask]
+        phi_map_valid = phi_map[valid_mask]
+
+        inc_act = self.get_inc_rad()
+        R_max = np.nanmax(radius_valid)
+
+
+        ######################################
+        # normal all fit parameters
+        ######################################
+        params_range = {
+            'Vc': (20.0, 500.0),  # km/s
+            'Rt': (R_max * 0.01, R_max * 1.0),  # kpc
+            's_out': (-10.0, 10.0),  # km/s/kpc
+            'Vsys': (0.0, 100.0),  # km/s
+        }
+
+        def _denormalize_params(params_n):
+            Vc_n, Rt_n, s_out_n, Vsys_n = params_n
+            Vc = Vc_n * (params_range['Vc'][1] - params_range['Vc'][0]) + params_range['Vc'][0]
+            Rt = Rt_n * (params_range['Rt'][1] - params_range['Rt'][0]) + params_range['Rt'][0]
+            s_out = s_out_n * (params_range['s_out'][1] - params_range['s_out'][0]) + params_range['s_out'][0]
+            Vsys = Vsys_n * (params_range['Vsys'][1] - params_range['Vsys'][0]) + params_range['Vsys'][0]
+            return [Vc, Rt, s_out, Vsys]
+
+        ######################################
+        # Fitting process using curve_fit
+        ######################################
+        def model_func(r, Vc_n, Rt_n, s_out_n, Vsys_n):
+            Vc, Rt, s_out, Vsys = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n])
+            vel_rot_model = self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
+            vel_obs_model = Vsys + self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
+            # fixed the sign of vel_obs_model to be the same as vel_valid
+            vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
+            return vel_obs_model
+
+        # sigma: Standard Deviation of the Errors
+        sigma = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)  # adding floor error
+
+        initial_guess = [0.5, 0.2, 0.5, 0.1] # normalized initial guesses
+        bounds = ([0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0])  # normalized bounds
+
+        # Perform curve fitting
+        popt, pcov = curve_fit(model_func, radius_valid, vel_obs_valid, p0=initial_guess, sigma=sigma, absolute_sigma=True, bounds=bounds, maxfev=10000)
+        Vc_fit, Rt_fit, s_out_fit, Vsys_fit = _denormalize_params(popt)
+
+        ######################################
+        # Error estimation
+        ######################################
+        # Reduced Chi-Squared
+        vel_rot_model = self._vel_rot_tan_sout_profile(radius_valid, Vc_fit, Rt_fit, s_out_fit)
+        vel_obs_model = Vsys_fit + self._vel_obs_project_profile(vel_rot_model, inc_act, phi_map_valid)
+        # set the sign of vel_obs_model to be the same as vel_valid
+        vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
+        # RMSE: Root Mean Square Error
+        RMSE = np.sqrt(np.nansum((vel_obs_valid - vel_obs_model)**2) / np.sum(np.isfinite(vel_obs_valid)))
+        # NRMSE: Normalized Root Mean Square Error
+        NRMSE = RMSE / np.mean(np.abs(vel_obs_valid))
+        CHI_SQ_V = self._calc_chi_sq_v(vel_obs_valid, vel_obs_model, ivar_map_valid, num_params=len(popt))
+        F_factor = np.maximum(np.sqrt(CHI_SQ_V), 1.0)
+        # Adjusted Coefficient of Determination (R²)
+        R_SQ_ADJ = self._calc_R_sq_adj(vel_obs_valid, vel_obs_model, ivar_map_valid, k=len(popt))
+        # MAE: Mean Absolute Error
+        MAE = np.sum(np.abs(vel_obs_valid - vel_obs_model)) / np.sum(np.isfinite(vel_obs_valid))
+        mask_pos = (vel_obs_valid > 1.0)
+        # MAPE: Mean Absolute Percentage Error
+        MAPE = np.sum(np.abs((vel_obs_valid[mask_pos] - vel_obs_model[mask_pos]) / vel_obs_valid[mask_pos])) / np.sum(mask_pos) * 100.0
+        # SMAPE: Symmetric Mean Absolute Percentage Error
+        SMAPE = (100.0 / np.sum(np.isfinite(vel_obs_valid))) * np.sum(2.0 * np.abs(vel_obs_valid - vel_obs_model) / (np.abs(vel_obs_valid) + np.abs(vel_obs_model)))
+        # Correlation Matrix
+        COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
+        # Standard Errors of the Parameters
+        perr = np.sqrt(np.diag(pcov))
+        Vc_norm_err, Rt_norm_err, s_out_norm_err, Vsys_norm_err = perr
+        Vc_err, Rt_err, s_out_err, Vsys_err = (
+            Vc_norm_err * (params_range['Vc'][1] - params_range['Vc'][0]),
+            Rt_norm_err * (params_range['Rt'][1] - params_range['Rt'][0]),
+            s_out_norm_err * (params_range['s_out'][1] - params_range['s_out'][0]),
+            Vsys_norm_err * (params_range['Vsys'][1] - params_range['Vsys'][0]),
+        )
+        Vc_err_pct = (Vc_err / Vc_fit) * 100 if Vc_fit != 0 else np.nan
+        Rt_err_pct = (Rt_err / Rt_fit) * 100 if Rt_fit != 0 else np.nan
+        s_out_err_pct = (s_out_err / s_out_fit) * 100 if s_out_fit != 0 else np.nan
+        Vsys_err_pct = (Vsys_err / Vsys_fit) * 100 if Vsys_fit != 0 else np.nan
+        if self.fit_debug:
+            print(f"\n------------ Fitted Rotational Velocity (tanh + sout curve-fit) ------------")
+            print(f" IFU        : {self.PLATE_IFU}")
+            print(f" Fit  Vc    : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
+            print(f" Fit  Rt    : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
+            print(f" Fit  s_out : {s_out_fit:.3f} km/s/kpc, ± {s_out_err:.3f} km/s/kpc", f"({s_out_err_pct:.2f} %)")
+            print(f" Fit  Vsys  : {Vsys_fit:.3f} km/s, ± {Vsys_err:.3f} km/s", f"({Vsys_err_pct:.2f} %)")
+            print("--------------")
+            print(f" RMSE                   : {RMSE:.3f} km/s")
+            print(f" NRMSE                  : {NRMSE:.3f}")
+            print("--------------")
+            print(f" Reduced Chi-Squared    : {CHI_SQ_V:.2f}")
+            print(f" Adjusted R²            : {R_SQ_ADJ:.4f}")
+            print(f" MAE                    : {MAE:.3f} km/s")
+            print(f" MAPE                   : {MAPE:.3f} %")
+            print(f" SMAPE                  : {SMAPE:.2f} %")
+            print(f" Correlation Matrix     : \n{COR_MATRIX}")
+            print("--------------------------------------------------------------------\n")
+
+        ######################################
+        # Return fitted velocity profile
+        ######################################
+        if radius_fit is None:
+            radius_fit = radius_map
+
+        vel_rot_fitted = self._vel_rot_tan_sout_profile(radius_fit, Vc_fit, Rt_fit, s_out_fit) + Vsys_fit
+
+        ######################################
+        # Standard Errors of the output fitted velocity
+        ######################################
+        # Using propagation of uncertainty
+        #  V(r) = Vc * tanh(r / Rt) + s_out * r
+        # Partial derivatives
+        dV_dVc = np.tanh(radius_fit / Rt_fit)
+        dV_dRt = -Vc_fit * (radius_fit / (Rt_fit**2 * np.cosh(radius_fit / Rt_fit)**2))
+        dV_dsout = radius_fit
+        dV_dVsys = 1.0
+        # Error propagation including covariance
+        # sigma_f^2 = (df/dp1)^2 * sigma_p1^2 + (df/dp2)^2 * sigma_p2^2 + 2 * (df/dp1)*(df/dp2) * cov(p1, p2)
+        # Note: pcov is normalized, need to scale it back to physical units
+        # Scale covariance matrix to physical units
+        scale_matrix = np.array([
+            params_range['Vc'][1] - params_range['Vc'][0],
+            params_range['Rt'][1] - params_range['Rt'][0],
+            params_range['s_out'][1] - params_range['s_out'][0],
+            params_range['Vsys'][1] - params_range['Vsys'][0],
+        ])
+        pcov_physical = pcov * np.outer(scale_matrix, scale_matrix)
+        var_Vc = pcov_physical[0, 0]
+        var_Rt = pcov_physical[1, 1]
+        var_sout = pcov_physical[2, 2]
+        var_Vsys = pcov_physical[3, 3]
+        cov_Vc_Rt = pcov_physical[0, 1]
+        cov_Vc_sout = pcov_physical[0, 2]
+        cov_Vc_Vsys = pcov_physical[0, 3]
+        cov_Rt_sout = pcov_physical[1, 2]
+        cov_Rt_Vsys = pcov_physical[1, 3]
+        cov_sout_Vsys = pcov_physical[2, 3]
+        vel_fit_var = (
+            (dV_dVc**2 * var_Vc) +
+            (dV_dRt**2 * var_Rt) +
+            (dV_dsout**2 * var_sout) +
+            (dV_dVsys**2 * var_Vsys) +
+            (2 * dV_dVc * dV_dRt * cov_Vc_Rt) +
+            (2 * dV_dVc * dV_dsout * cov_Vc_sout) +
+            (2 * dV_dVc * dV_dVsys * cov_Vc_Vsys) +
+            (2 * dV_dRt * dV_dsout * cov_Rt_sout) +
+            (2 * dV_dRt * dV_dVsys * cov_Rt_Vsys) +
+            (2 * dV_dsout * dV_dVsys * cov_sout_Vsys) +
+            (VEL_SYSTEM_ERROR)**2  # adding floor error
+        )
+        vel_fit_err = np.sqrt(vel_fit_var)
+        print(f"Velocity Fit Standard Errors: range: [{np.nanmin(vel_fit_err):.3f}, {np.nanmax(vel_fit_err):.3f}] km/s")
+
+
+        fit_result = {
+            'radius': radius_fit,
+            'vel_rot': vel_rot_fitted,
+            'vel_err': vel_fit_err,
+        }
+        fit_parameters = {
+            'result': 'success',
+            'R_max': f"{R_max:.3f}",
+            'Vc': f"{Vc_fit:.3f}",
+            'Rt': f"{Rt_fit:.3f}",
+            's_out': f"{s_out_fit:.3f}",
+            'Vsys': f"{Vsys_fit:.3f}",
+        }
         return True, fit_result, fit_parameters
 
 
@@ -498,13 +723,12 @@ def test_process(PLATE_IFU: str):
     pa, inc_rad = vel_rot._calc_pa_inc()
     print(f"Calculated PA: {np.degrees(pa):.3f} deg, Inc: {np.degrees(inc_rad):.3f} deg")
 
-
     r_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
-
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp()
 
     # Fitting rotational velocity
-    success, fit_result, _ = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    success, fit_result, _ = vel_rot._fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
+    # success, fit_result, _ = vel_rot._fit_vel_rot_tan(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit, fit_check=False)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
@@ -525,6 +749,7 @@ def test_process(PLATE_IFU: str):
     # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title=f"[{PLATE_IFU}] Obs Raw", r_rot2_map=r_disp_map, v_rot2_map=V_disp_map, title2=f"[{PLATE_IFU}] Obs Deprojected")
     # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title=f"[{PLATE_IFU}] Obs Raw", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2=f"[{PLATE_IFU}] Obs Fit")
     plot_util.plot_rv_curve(r_disp_map, V_disp_map, title=f" [{PLATE_IFU}] Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2=f" [{PLATE_IFU}] Obs Fit")
+
     return
 
 

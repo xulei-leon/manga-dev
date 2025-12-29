@@ -231,7 +231,7 @@ def main():
             # Clear pymc internal cache to free up memory
             gc.collect()
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = [executor.submit(_process, plate_ifu) for plate_ifu in plate_ifu_list]
         for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
             pass

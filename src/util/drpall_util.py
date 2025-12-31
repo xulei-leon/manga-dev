@@ -250,3 +250,16 @@ class DrpallUtil:
         plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
         return plateifu_list, reff[sel]
 
+    def search_plateifu_by_sersic_n(self, sersic_n_min: float, sersic_n_max: float) -> Table:
+        drall = self._load_table(self.drpall_file)
+        galaxies = self.select_target_galaxies(drall)
+        highqual = self.select_high_quality(galaxies)
+        nrows = len(highqual)
+
+        sersic_n = self._get_col_as_int(highqual, ['NSA_SERSIC_N', 'nsa_sersic_n'], nrows, dtype=np.float64)
+        sel = (sersic_n >= sersic_n_min) & (sersic_n <= sersic_n_max)
+        result = highqual[sel]
+        uniquegals = self.unique_by_id(result, ['MANGAID', 'mangaid', 'MANGA_ID', 'MANGA_Id'])
+        plateifu_list = self._get_col_as_str(uniquegals, ['PLATEIFU', 'plateifu', 'PLATE_IFU', 'plate_ifu'], len(uniquegals))
+        return plateifu_list, sersic_n[sel]
+

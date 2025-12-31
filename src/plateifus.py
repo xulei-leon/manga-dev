@@ -11,7 +11,8 @@ from util.fits_util import FitsUtil
 
 INC_MIN = 25.0  # minimum inclination angle in degrees
 INC_MAX = 70.0  # maximum inclination angle in degrees
-
+SERSIC_N_MIN = 0.8
+SERSIC_N_MAX = 2.0
 
 root_dir = Path(__file__).resolve().parent.parent
 fits_util = FitsUtil(root_dir / "data")
@@ -27,6 +28,11 @@ def galaxy_filter():
     inc_list, _ = drpall_util.search_plateifu_by_inc(INC_MIN, INC_MAX)
     print(f"-- Galaxies with inclination between {INC_MIN} and {INC_MAX} degrees:")
     print(f"  Total found: {len(inc_list)}")
+    print()
+
+    sersic_n_list, _ = drpall_util.search_plateifu_by_sersic_n(SERSIC_N_MIN, SERSIC_N_MAX)
+    print(f"-- Galaxies with Sersic n between {SERSIC_N_MIN} and {SERSIC_N_MAX}:")
+    print(f"  Total found: {len(sersic_n_list)}")
     print()
 
     # _, mass_values = drpall_util.search_plateifu_by_stellar_mass(0.0, np.inf)
@@ -62,6 +68,7 @@ def galaxy_filter():
 
     # Final selection: intersection of all three criteria
     final_plateifus = set(inc_list)
+    final_plateifus &= set(sersic_n_list)
     # final_plateifus &= set(mass_list)
     # final_plateifus &= set(r_eff_list)
 
@@ -119,7 +126,7 @@ def main():
             f.write(f"{plateifu}\n")
     print(f"  Selected plateifus saved to: {output_file}")
 
-    fits_download(fits_util, plateifus)
+    # fits_download(fits_util, plateifus)
     return
 
 

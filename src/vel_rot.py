@@ -1,10 +1,5 @@
 
-from ctypes.wintypes import PINT
-from inspect import Parameter
 from pathlib import Path
-from tkinter import N
-from turtle import shape
-
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -80,10 +75,10 @@ class VelRot:
 
 
     # Filter the velocity map with SNR above the threshold and within ±phi_limit of the major axis.
-    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, phi_map: np.ndarray, snr_threshold: float = SNR_THRESHOLD, phi_limit_deg: float = PHI_LIMIT_DEG) -> np.ndarray:
+    def _vel_map_filter(self, vel_map: np.ndarray, snr_map: np.ndarray, phi_map: np.ndarray) -> np.ndarray:
         phi_delta = (phi_map + np.pi/2) % np.pi - np.pi/2
-        phi_limit_rad = np.radians(phi_limit_deg)
-        valid_mask = ((snr_map >= snr_threshold) & (np.abs(phi_delta) <= phi_limit_rad) & np.isfinite(vel_map))
+        phi_limit_rad = np.radians(PHI_LIMIT_DEG)
+        valid_mask = ((snr_map >= SNR_THRESHOLD) & (np.abs(phi_delta) <= phi_limit_rad) & np.isfinite(vel_map))
 
         vel_map_filtered = np.full_like(vel_map, np.nan, dtype=float)
         vel_map_filtered[valid_mask] = vel_map[valid_mask]
@@ -143,9 +138,9 @@ class VelRot:
 
         azimuth_rad_map = np.radians(azimuth_map)
 
-        filtered_vel_map = self._vel_map_filter(v_obs_map, snr_map, azimuth_rad_map, snr_threshold=SNR_THRESHOLD, phi_limit_deg=PHI_LIMIT_DEG)
+        filtered_vel_map = self._vel_map_filter(v_obs_map, snr_map, azimuth_rad_map)
         # print(f"Filtered Velocity map shape: {filtered_vel_map.shape}, Unit: {v_unit}, Range: [{np.nanmin(filtered_vel_map):.3f}, {np.nanmax(filtered_vel_map):.3f}]")
-        # print(f"Velocity data before filtering: {np.sum(np.isfinite(v_obs_map))}, after filtering: {np.sum(np.isfinite(filtered_vel_map))}")
+        print(f"Velocity data before filter: {np.sum(np.isfinite(v_obs_map))}, after filter: {np.sum(np.isfinite(filtered_vel_map))}")
 
         r_obs_map = np.where(np.isfinite(filtered_vel_map), radius_h_kpc_map, np.nan)
         v_obs_map = filtered_vel_map
@@ -254,6 +249,7 @@ class VelRot:
 
         inc_act = self.get_inc_rad()
         R_max = np.nanmax(radius_valid)
+        SIGMA_OBS_BAR = np.sqrt(1.0 / np.nanmean(ivar_map_valid))
 
         ######################################
         # normal all fit parameters
@@ -296,6 +292,12 @@ class VelRot:
 
         # normalized initial guesses
         params = lm_model.make_params(Vc_n=0.5, Rt_n=0.2, s_out_n=0.5, Vsys_n=0.1, inc_n=0.5, phi_delta_n=0.5)
+
+        # Set inclination to calculated value
+        params['inc_n'].set(value=(inc_act - params_range['inc'][0]) / (params_range['inc'][1] - params_range['inc'][0]))
+        params['inc_n'].vary = False  # fix inclination during fitting
+        params['phi_delta_n'].set(value=0.5)  # start from zero offset
+        params['phi_delta_n'].vary = False  # fix phi_delta during fitting
 
         # normalized bounds [0, 1]
         for name in ("Vc_n", "Rt_n", "s_out_n", "Vsys_n", "inc_n", "phi_delta_n"):
@@ -387,20 +389,21 @@ class VelRot:
         if self.fit_debug:
             print(f"\n------------ Fitted Rotational Velocity (tanh + sout lmfit) ------------")
             print(f" IFU                    : {self.PLATE_IFU}")
-            print(f" Fit  Vc                : {Vc_fit:.3f} km/s, ± {Vc_err:.3f} km/s", f"({Vc_err_pct:.2f} %)")
-            print(f" Fit  Rt                : {Rt_fit:.3f} kpc/h, ± {Rt_err:.3f} kpc/h", f"({Rt_err_pct:.2f} %)")
-            print(f" Fit  s_out             : {s_out_fit:.3f} km/s/kpc, ± {s_out_err:.3f} km/s/kpc", f"({s_out_err_pct:.2f} %)")
-            print(f" Fit  Vsys              : {Vsys_fit:.3f} km/s, ± {Vsys_err:.3f} km/s", f"({Vsys_err_pct:.2f} %)")
-            print(f" Fit  inc               : {inc_fit:.3f} rad, ± {inc_err:.3f} rad", f"({inc_err_pct:.2f} %)")
-            print(f" Fit  phi_delta         : {phi_delta_fit:.3f} rad, ± {phi_delta_err:.3f} rad", f"({phi_delta_err_pct:.2f} %)")
+            print(f" Fit  Vc                : {Vc_fit:.1e} km/s, ± {Vc_err:.0e} km/s", f"({Vc_err_pct:.2f} %)")
+            print(f" Fit  Rt                : {Rt_fit:.1e} kpc/h, ± {Rt_err:.0e} kpc/h", f"({Rt_err_pct:.2f} %)")
+            print(f" Fit  s_out             : {s_out_fit:.1e} km/s/kpc, ± {s_out_err:.0e} km/s/kpc", f"({s_out_err_pct:.2f} %)")
+            print(f" Fit  Vsys              : {Vsys_fit:.1e} km/s, ± {Vsys_err:.0e} km/s", f"({Vsys_err_pct:.2f} %)")
+            print(f" Fit  inc               : {inc_fit:.1e} rad, ± {inc_err:.0e} rad", f"({inc_err_pct:.2f} %)")
+            print(f" Fit  phi_delta         : {phi_delta_fit:.1e} rad, ± {phi_delta_err:.0e} rad", f"({phi_delta_err_pct:.2f} %)")
             print("--------------")
-            print(f" Calc inc from b/a      : {inc_act:.3f} rad, {np.degrees(inc_act):.2f} deg")
+            print(f" Calc inc from b/a      : {inc_act:.1e} rad, {np.degrees(inc_act):.2f} deg")
             print("--------------")
             print(f" Reduced Chi-Squared    : {CHI_SQ_V:.2f}")
             print(f" RMSE                   : {RMSE:.3f} km/s")
             print(f" NRMSE                  : {NRMSE:.3f}")
             print(f" Correlation Matrix     : \n{COR_MATRIX if COR_MATRIX is not None else 'N/A'}")
             print("--------------------------------------------------------------------\n")
+
 
         ######################################
         # Return fitted velocity profile
@@ -409,41 +412,93 @@ class VelRot:
             radius_fit = radius_map
 
         # Evaluate vel_rot(r) using lmfit, and get uncertainties via eval_uncertainty
-        def velrot_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
+        def vel_rot_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
             Vc, Rt, s_out, _Vsys, inc, phi_delta = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n])
             return self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
 
-        velrot_model = Model(velrot_func, independent_vars=["r"])
-        vel_rot_fitted = velrot_model.eval(params=lm_result.params, r=radius_fit)
+        vel_rot_model = Model(vel_rot_func, independent_vars=["r"])
+        vel_rot_fitted = vel_rot_model.eval(params=lm_result.params, r=radius_fit)
 
         # lmfit uncertainty propagation (uses covariance internally); fallback to NaN if unavailable
         try:
-            vel_fit_err = velrot_model.eval_uncertainty(params=lm_result.params, r=radius_fit, sigma=1) * F_factor
+            vel_fit_err = vel_rot_model.eval_uncertainty(params=lm_result.params, r=radius_fit, sigma=1) * F_factor
         except Exception:
             vel_fit_err = np.full_like(vel_rot_fitted, np.nan, dtype=float)
 
+        # ### Plot the residue graph ###
+        # if self.fit_debug:
+        #     unc_v = np.sqrt(1/ ivar_map_valid)
+
+        #     clip_mask = np.where(np.abs(residuals) <= 3 * unc_v, True, False)
+        #     clipped_residuals = residuals[clip_mask]
+        #     clipped_radius = radius_valid[clip_mask]
+        #     clipped_unc_v = unc_v[clip_mask]
+        #     red_chi_2 = np.sum((clipped_residuals / clipped_unc_v)**2) / (len(clipped_residuals) - 6)
+        #     print(red_chi_2)
+
+        #     plt.figure(figsize=(20,6))
+        #     plt.errorbar(
+        #         clipped_radius,
+        #         clipped_residuals,
+        #         yerr = clipped_unc_v,
+        #         marker = "o",
+        #         color="b",
+        #         ecolor="r",
+        #         markersize=2,
+        #         capsize=1,
+        #         capthick=1,
+        #         elinewidth=1,
+        #         zorder=1,
+        #         linestyle="none",
+        #         )
+
+        #     plt.show()
+
+        # Apply filter to output maps
+        residuals = np.abs(vel_obs_valid) - np.abs(vel_obs_model)
+        stderr = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)
+        STD_ERROR_RATIO = RMSE / SIGMA_OBS_BAR if SIGMA_OBS_BAR > 0 else np.nan
+        clip_mask_1d = np.abs(residuals) <= STD_ERROR_RATIO * stderr
+
+        # Map the 1D mask (for valid points) back to the original map shape
+        clip_mask = np.zeros_like(vel_obs_map, dtype=bool)
+        clip_mask[valid_mask] = clip_mask_1d
+
+        print(f"length of valid vel_obs: {np.sum(valid_mask)}, after 3-sigma clipping: {np.sum(clip_mask)}")
+
+        vel_obs_mask = np.full_like(vel_obs_map, np.nan, dtype=float)
+        vel_obs_mask[clip_mask] = vel_obs_map[clip_mask]
+        ivar_mask = np.full_like(ivar_map, np.nan, dtype=float)
+        ivar_mask[clip_mask] = ivar_map[clip_mask]
+        radius_mask = np.full_like(radius_map, np.nan, dtype=float)
+        radius_mask[clip_mask] = radius_map[clip_mask]
+
         fit_result = {
-            'radius': radius_fit,
+            'radius_obs': radius_mask,
+            'vel_obs': vel_obs_mask,
+            'ivar_obs': ivar_mask,
+            'radius_rot': radius_fit,
             'vel_rot': vel_rot_fitted,
             'vel_err': vel_fit_err,
         }
         fit_parameters = {
             'result': 'success',
-            'Vc': f"{Vc_fit:.3f}",
+            'Vc': f"{Vc_fit:.2f}",
             'Vc_err': f"{Vc_err:.3f}",
-            'Rt': f"{Rt_fit:.3f}",
+            'Rt': f"{Rt_fit:.2f}",
             'Rt_err': f"{Rt_err:.3f}",
-            's_out': f"{s_out_fit:.3f}",
+            's_out': f"{s_out_fit:.2f}",
             's_out_err': f"{s_out_err:.3f}",
-            'Vsys': f"{Vsys_fit:.3f}",
+            'Vsys': f"{Vsys_fit:.2f}",
             'Vsys_err': f"{Vsys_err:.3f}",
-            'inc': f"{inc_fit:.3f}",
+            'inc': f"{inc_fit:.2f}",
             'inc_err': f"{inc_err:.3f}",
             'phi_delta': f"{phi_delta_fit:.3f}",
             'phi_delta_err': f"{phi_delta_err:.3f}",
             'R_max': f"{R_max:.3f}",
+            'RMSE': f"{RMSE:.3f}",
             'NRMSE': f"{NRMSE:.3f}",
-            'CHI_SQ_V': f"{CHI_SQ_V:.3f}",
+            'CHI_SQ_V': f"{CHI_SQ_V:.2f}",
         }
         return True, fit_result, fit_parameters
 
@@ -519,11 +574,26 @@ def test_process(PLATE_IFU: str):
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
 
-    r_rot_fit = fit_result['radius']
+    r_rot_fit = fit_result['radius_rot']
     V_rot_fit = fit_result['vel_rot']
     V_rot_fit_err = fit_result['vel_err']
     inc_rad_fit = float(fit_params['inc'])
     V_sys_fit = float(fit_params['Vsys'])
+
+    # second fitting
+    # r_obs_new = fit_result['radius_obs']
+    # V_obs_new = fit_result['vel_obs']
+    # ivar_obs_new = fit_result['ivar_obs']
+    # success, fit_result, fit_params = vel_rot._fit_vel_rot(r_obs_new, V_obs_new, ivar_obs_new, phi_map, radius_fit=r_fit, fit_check=False)
+    # if not success:
+    #     print(f"Fitting rotational velocity failed for {PLATE_IFU}")
+    #     return
+
+    # r_rot_fit = fit_result['radius_rot']
+    # V_rot_fit = fit_result['vel_rot']
+    # V_rot_fit_err = fit_result['vel_err']
+    # inc_rad_fit = float(fit_params['inc'])
+    # V_sys_fit = float(fit_params['Vsys'])
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(inc_rad_fit, V_sys_fit)
 
@@ -545,14 +615,14 @@ def test_process(PLATE_IFU: str):
 
 def main():
     TEST_PLATE_IFUS = [
-        "7957-3701",
-        "8078-1902",
-        "10218-6102",
+        # "7957-3701",
+        # "8078-1902",
+        # "10218-6102",
         "8329-6103",
-        "8723-12703",
-        "8723-12705",
-        "7495-12704",
-        "10220-12705"
+        # "8723-12703",
+        # "8723-12705",
+        # "7495-12704",
+        # "10220-12705"
     ]
 
     for plate_ifu in TEST_PLATE_IFUS:

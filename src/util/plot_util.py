@@ -146,30 +146,44 @@ class PlotUtil:
         plt.show()
 
     # plot r-v curve
-    def plot_rv_curve(self, r_rot_map: np.ndarray, v_rot_map: np.ndarray, title: str="", r_rot2_map: np.ndarray=None, v_rot2_map: np.ndarray=None, title2: str="", residuals: np.ndarray=None):
-        # Keep signs consistent: if v_rot < 0, set r_rot negative; else positive
-        r_rot_map = np.asarray(r_rot_map, dtype=float)
-        v_rot_map = np.asarray(v_rot_map, dtype=float)
-        r_signed = np.where(v_rot_map < 0, -np.abs(r_rot_map), np.abs(r_rot_map))
+    def plot_rv_curve(self, r1_map: np.ndarray, V1_map: np.ndarray, title: str="", r2_map: np.ndarray=None, V2_map: np.ndarray=None, title2: str="", residuals: np.ndarray=None):
+        r1_map = np.asarray(r1_map, dtype=float)
+        V1_map = np.asarray(V1_map, dtype=float)
+        r1_map = np.sign(V1_map) * np.abs(r1_map)
+
+        # Broadcast + flatten to avoid shape-mismatch boolean indexing errors
+        r1, V1 = np.broadcast_arrays(r1_map, V1_map)
+        r1 = r1.ravel()
+        V1 = V1.ravel()
 
         # Mask invalid values for gas rotation
-        valid_gas = np.isfinite(r_signed) & np.isfinite(v_rot_map)
+        valid_gas = np.isfinite(r1) & np.isfinite(V1)
 
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.scatter(r_signed[valid_gas], v_rot_map[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Velocity')
+        ax.scatter(r1[valid_gas], V1[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Velocity')
 
         # Plot stellar velocity if provided
-        if r_rot2_map is not None and v_rot2_map is not None:
-            r_rot2_map = np.asarray(r_rot2_map, dtype=float)
-            v_rot2_map = np.asarray(v_rot2_map, dtype=float)
-            r2_signed = np.where(v_rot2_map < 0, -np.abs(r_rot2_map), np.abs(r_rot2_map))
+        if r2_map is not None and V2_map is not None:
+            r2_map = np.asarray(r2_map, dtype=float)
+            V2_map = np.asarray(V2_map, dtype=float)
+            r2_map = np.sign(V2_map) * np.abs(r2_map)
+
+            r2, V2 = np.broadcast_arrays(r2_map, V2_map)
+            r2 = r2.ravel()
+            V2 = V2.ravel()
+
             # Mask invalid values for stellar velocity
-            valid_stellar = np.isfinite(r2_signed) & np.isfinite(v_rot2_map)
-            ax.scatter(r2_signed[valid_stellar], v_rot2_map[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
+            valid_stellar = np.isfinite(r2) & np.isfinite(V2)
+            ax.scatter(r2[valid_stellar], V2[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
 
             if residuals is not None:
                 residuals = np.asarray(residuals, dtype=float)
-                ax.scatter(r2_signed[valid_stellar], residuals[valid_stellar], s=2, color='green', alpha=0.2, label='Residuals')
+                r2b, V2b, res = np.broadcast_arrays(r2_map, V2_map, residuals)
+                r2b = r2b.ravel()
+                res = res.ravel()
+
+                valid_residuals = np.isfinite(r2b) & np.isfinite(res)
+                ax.scatter(r2b[valid_residuals], res[valid_residuals], s=2, color='green', alpha=0.2, label='Residuals')
                 ax.axhline(0, color='black', linestyle='-')
 
         ax.set_title(f"Galaxy Rotation Curve (R-V)")

@@ -1,5 +1,7 @@
 
+from calendar import c
 from pathlib import Path
+from tabnanny import check
 from tkinter import N
 import matplotlib.pyplot as plt
 import numpy as np
@@ -297,7 +299,7 @@ class VelRot:
             'Vc': (20.0, 500.0),  # km/s
             'Rt': (R_max * 0.01, R_max * 1.0),  # kpc
             's_out': (-10.0, 10.0),  # km/s/kpc
-            'Vsys': (0.0, 100.0),  # km/s
+            'Vsys': (-100.0, 100.0),  # km/s
             'inc': (np.deg2rad(np.rad2deg(inc_act)-10), np.deg2rad(np.rad2deg(inc_act)+10)),  # rad
             'phi_delta': (np.deg2rad(-10), np.deg2rad(10)),  # rad
         }
@@ -318,9 +320,11 @@ class VelRot:
         def model_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
             Vc, Rt, s_out, Vsys, inc, phi_delta = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n])
             vel_rot_model = self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
-            vel_obs_model = Vsys + self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid - phi_delta)
+            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid - phi_delta)
             # fixed the sign of vel_obs_model to be the same as vel_valid
-            vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
+            sign = np.sign(vel_obs_valid)
+            vel_obs_model = np.abs(vel_obs_model) * sign
+            vel_obs_model += Vsys  # add systemic velocity
             return vel_obs_model
 
         # sigma: Standard Deviation of the Errors
@@ -330,7 +334,7 @@ class VelRot:
         lm_model = Model(model_func, independent_vars=["r"])
 
         # normalized initial guesses
-        params = lm_model.make_params(Vc_n=0.5, Rt_n=0.2, s_out_n=0.5, Vsys_n=0.1, inc_n=0.5, phi_delta_n=0.5)
+        params = lm_model.make_params(Vc_n=0.5, Rt_n=0.2, s_out_n=0.5, Vsys_n=0.5, inc_n=0.5, phi_delta_n=0.5)
 
         # Fix some parameters during fitting
         params['inc_n'].set(value=(inc_act - params_range['inc'][0]) / (params_range['inc'][1] - params_range['inc'][0]))
@@ -527,8 +531,8 @@ class VelRot:
         _, inc_rad = self._calc_pa_inc()
         return inc_rad
 
-    def get_radius_fit(self, radius_max, count: int=100) -> np.ndarray:
-        radius_fit = np.linspace(0.0, radius_max, num=count)
+    def get_radius_fit(self, radius_max, count: int=200) -> np.ndarray:
+        radius_fit = np.linspace(-radius_max, radius_max, num=count)
         return radius_fit
 
     # observed velocity
@@ -548,7 +552,7 @@ class VelRot:
 ######################################################
 # main function for test
 ######################################################
-def test_process(PLATE_IFU: str):
+def test_process(PLATE_IFU: str, check: bool=True) -> None:
     fits_util = FitsUtil(data_dir)
     drpall_file = fits_util.get_drpall_file()
     firefly_file = fits_util.get_firefly_file()
@@ -602,9 +606,10 @@ def test_process(PLATE_IFU: str):
     data_count = np.sum(np.isfinite(V_obs_new))
     NRMSE = float(fit_params['NRMSE'])
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    if (data_count < VEL_OBS_COUNT_THRESHOLD1) or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
-        print(f"First fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
-        return
+    if check:
+        if ((data_count < VEL_OBS_COUNT_THRESHOLD1)) or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
+            print(f"First fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+            return
 
     #----------------------------------------------------------------------
     # Second fitting
@@ -636,13 +641,13 @@ def test_process(PLATE_IFU: str):
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(inc_rad_fit, V_sys_fit, phi_delta_fit)
 
-    # plot_util.plot_rv_curve(r_obs_raw, V_obs_raw, title=f"[{PLATE_IFU}] Obs Raw", r_rot2_map=r_disp_map, v_rot2_map=V_disp_map, title2=f"[{PLATE_IFU}] Obs Deprojected")
+    # plot_util.plot_rv_curve(r_obs_raw, V_obs_raw, title=f"[{PLATE_IFU}] Obs Raw", r2_map=r_disp_map, V2_map=V_disp_map, title2=f"[{PLATE_IFU}] Obs Deprojected")
 
     # V_obs Vs. V_rot fitted
-    # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title=f"[{PLATE_IFU}] Obs Raw", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2=f"[{PLATE_IFU}] Obs Fit")
+    # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title=f"[{PLATE_IFU}] Obs Raw", r2_map=r_rot_fit, V2_map=V_rot_fit, title2=f"[{PLATE_IFU}] Obs Fit")
 
     # V_disp Vs. V_rot fitted
-    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title=f" [{PLATE_IFU}] Obs Deproject", r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2=f" [{PLATE_IFU}] Obs Fit")
+    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title=f" [{PLATE_IFU}] Obs Deproject", r2_map=r_rot_fit, V2_map=V_rot_fit, title2=f" [{PLATE_IFU}] Obs Fit")
 
     return
 
@@ -662,7 +667,7 @@ VEL_ROT_PARAM_FILE = "vel_rot_param_all.csv"
 def get_plate_list_from_fit():
     param_file = data_dir / VEL_ROT_PARAM_FILE
     df = pd.read_csv(param_file)
-    df = df[df['fit_result'] == 'success']
+    df = df[df['result'] == 'success']
     plate_ifu_list = df['PLATE_IFU'].tolist()
     plate_ifu_list = [str(plate_ifu) for plate_ifu in plate_ifu_list]
     plate_ifu_list.sort()
@@ -679,13 +684,16 @@ TEST_PLATE_IFUS = [
     "10220-12705"
 ]
 
-def main(ifu_type: str=None):
+def main(ifu: str=None):
     plate_ifu_list = []
-
-    if ifu_type == "all":
+    check = True
+    if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
-    elif ifu_type == "fit":
+    elif ifu == "fit":
         plate_ifu_list = get_plate_list_from_fit()
+    elif ifu is not None:
+        plate_ifu_list = [ifu]
+        check = False
 
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
@@ -694,7 +702,7 @@ def main(ifu_type: str=None):
     for plate_ifu in plate_ifu_list:
         print(f"\n\n================ Processing [{plate_ifu}] ================")
         try:
-            test_process(plate_ifu)
+            test_process(plate_ifu, check=check)
         except Exception as e:
             print(f"Error processing {plate_ifu}: {e}")
             continue
@@ -704,8 +712,8 @@ import argparse
 # main entry
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Velocity Rotation Curve Fitting")
-    parser.add_argument("--type", type=str, help="Specific Plate-IFU to process")
+    parser.add_argument("--ifu", type=str, help="Specific Plate-IFU to process")
     args = parser.parse_args()
 
-    main(ifu_type=args.type)
+    main(ifu=args.ifu)
 

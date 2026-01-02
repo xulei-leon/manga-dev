@@ -32,6 +32,7 @@ CHI_SQ_V_THRESHOLD1 = 5.0  # looser threshold for first fitting
 CHI_SQ_V_THRESHOLD2 = 3.0  # threshold for reduced chi-squared to filter weak fitting
 VEL_OBS_COUNT_THRESHOLD1 = 150  # minimum number of valid velocity data points
 VEL_OBS_COUNT_THRESHOLD2 = 100  # minimum number of valid velocity data points
+RMAX_RT_FACTOR = 2.5  # factor to determine maximum radius for fitting
 
 csv_lock = Lock()
 
@@ -134,13 +135,20 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     inc_rad_fit = float(fit_params['inc'])
     V_sys_fit = float(fit_params['Vsys'])
     phi_delta_fit = float(fit_params['phi_delta'])
+    Rmax = float(fit_params['Rmax'])
+    Rt = float(fit_params['Rt'])
 
     # Filter fitting parameters
     data_count = np.sum(np.isfinite(V_obs_map))
     NRMSE = float(fit_params['NRMSE'])
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    if data_count < VEL_OBS_COUNT_THRESHOLD1 or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
-        print(f"First fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+    if data_count < VEL_OBS_COUNT_THRESHOLD1 or \
+        (NRMSE > NRMSE_THRESHOLD1) or \
+        (CHI_SQ_V > CHI_SQ_V_THRESHOLD1) or \
+        (Rmax < Rt * RMAX_RT_FACTOR):
+        print(f"First fitting results failure for {PLATE_IFU}, data amount: {data_count}, "
+              f"NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, "
+              f"Rmax: {Rmax:.3f}, Rt: {Rt:.3f}, skipping...")
         return
 
     #----------------------------------------------------------------------
@@ -218,19 +226,19 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
         plot_util.plot_galaxy_image(PLATE_IFU)
 
         # plot RC curves
-        plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
+        plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
                                 r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Observed Fit")
 
-        plot_util.plot_rv_curve(r_rot_map=r_disp_map, v_rot_map=V_disp_map, title="Observed Deproject",
+        plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
                                 r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-        plot_util.plot_rv_curve(r_rot_map=r_rot_fit, v_rot_map=V_rot_fit, title="Observed Fit",
+        plot_util.plot_rv_curve(r1_map=r_rot_fit, V1_map=V_rot_fit, title="Observed Fit",
                                 r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
 
-        plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
+        plot_util.plot_rv_curve(r1_map=r_dm_fit, V1_map=V_total_fit, title="Fit Total",
                             r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
 
-        plot_util.plot_rv_curve(r_rot_map=r_dm_fit, v_rot_map=V_total_fit, title="Fit Total",
+        plot_util.plot_rv_curve(r1_map=r_dm_fit, V1_map=V_total_fit, title="Fit Total",
                                 r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
 
     return

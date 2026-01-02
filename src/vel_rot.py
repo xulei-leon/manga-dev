@@ -657,6 +657,16 @@ def get_plate_ifu_list():
     plate_ifu_list.sort()
     return plate_ifu_list
 
+import pandas as pd
+VEL_ROT_PARAM_FILE = "vel_rot_param_all.csv"
+def get_plate_list_from_param_file():
+    param_file = data_dir / VEL_ROT_PARAM_FILE
+    df = pd.read_csv(param_file)
+    plate_ifu_list = df['PLATE_IFU'].tolist()
+    plate_ifu_list = [str(plate_ifu) for plate_ifu in plate_ifu_list]
+    plate_ifu_list.sort()
+    return plate_ifu_list
+
 TEST_PLATE_IFUS = [
     "7957-3701",
     "8078-1902",
@@ -668,13 +678,16 @@ TEST_PLATE_IFUS = [
     "10220-12705"
 ]
 
-def main():
+def main(ifu_type: str=None):
     plate_ifu_list = []
-    plate_ifu_list = get_plate_ifu_list()
+
+    if ifu_type == "all":
+        plate_ifu_list = get_plate_ifu_list()
+    elif ifu_type == "fit":
+        plate_ifu_list = get_plate_list_from_param_file()
+
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
-    else:
-        print(f"Total {len(plate_ifu_list)} plate-IFUs to process.")
 
 
     for plate_ifu in plate_ifu_list:
@@ -685,8 +698,13 @@ def main():
             print(f"Error processing {plate_ifu}: {e}")
             continue
 
+import argparse
 
 # main entry
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Velocity Rotation Curve Fitting")
+    parser.add_argument("--type", type=str, help="Specific Plate-IFU to process")
+    args = parser.parse_args()
+
+    main(ifu_type=args.type)
 

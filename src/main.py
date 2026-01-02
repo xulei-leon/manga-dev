@@ -1,6 +1,6 @@
-from ctypes.wintypes import PINT
-from encodings.punycode import T
 from pathlib import Path
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -259,8 +259,7 @@ def get_plate_ifu_list():
 
 
 
-def main():
-    plate_ifu_list = []
+def main(run_nfw: bool = True, workers: int = 1):
     plate_ifu_list = get_plate_ifu_list()
     if not plate_ifu_list:
         plate_ifu_list = TEST_PLATE_IFUS
@@ -268,25 +267,34 @@ def main():
     def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
         try:
-            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=RUN_NFW)
+            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw)
         except Exception as e:
             print(f"Error processing {plate_ifu}: {e}")
         finally:
             # Clear pymc internal cache to free up memory
             gc.collect()
 
-    for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
-        _process(plate_ifu)
+    workers = max(1, int(workers or 1))
+    if workers == 1:
+        for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
+            _process(plate_ifu)
+        return
 
-RUN_NFW = True
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_process, plate_ifu): plate_ifu for plate_ifu in plate_ifu_list}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
+            plate_ifu = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Unhandled error processing {plate_ifu}: {e}")
+
 import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
-    parser.add_argument('--nfw-off', action='store_true', help='Process dark matter NFW fitting.')
+    parser.add_argument('--nfw-off', type=bool,default=False, help='Disable dark matter NFW fitting.')
+    parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
     args = parser.parse_args()
-    if args.nfw_off:
-        print("DM NFW fitting disabled.")
-        RUN_NFW = False
 
-    main()
+    main(run_nfw=not args.nfw_off, workers=args.threads)

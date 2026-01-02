@@ -261,7 +261,7 @@ def get_plate_ifu_list():
 
 def main():
     plate_ifu_list = []
-    # plate_ifu_list = get_plate_ifu_list()
+    plate_ifu_list = get_plate_ifu_list()
     if not plate_ifu_list:
         plate_ifu_list = TEST_PLATE_IFUS
 

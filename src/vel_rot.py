@@ -659,9 +659,10 @@ def get_plate_ifu_list():
 
 import pandas as pd
 VEL_ROT_PARAM_FILE = "vel_rot_param_all.csv"
-def get_plate_list_from_param_file():
+def get_plate_list_from_fit():
     param_file = data_dir / VEL_ROT_PARAM_FILE
     df = pd.read_csv(param_file)
+    df = df[df['fit_result'] == 'success']
     plate_ifu_list = df['PLATE_IFU'].tolist()
     plate_ifu_list = [str(plate_ifu) for plate_ifu in plate_ifu_list]
     plate_ifu_list.sort()
@@ -684,7 +685,7 @@ def main(ifu_type: str=None):
     if ifu_type == "all":
         plate_ifu_list = get_plate_ifu_list()
     elif ifu_type == "fit":
-        plate_ifu_list = get_plate_list_from_param_file()
+        plate_ifu_list = get_plate_list_from_fit()
 
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS

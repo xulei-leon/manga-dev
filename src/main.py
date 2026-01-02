@@ -257,11 +257,28 @@ def get_plate_ifu_list():
     plate_ifu_list.sort()
     return plate_ifu_list
 
+import pandas as pd
+VEL_ROT_PARAM_FILE = "vel_rot_param_all.csv"
+def get_plate_list_from_fit():
+    param_file = data_dir / VEL_ROT_PARAM_FILE
+    df = pd.read_csv(param_file)
+    df = df[df['result'] == 'success']
+    plate_ifu_list = df['PLATE_IFU'].tolist()
+    plate_ifu_list = [str(plate_ifu) for plate_ifu in plate_ifu_list]
+    plate_ifu_list.sort()
+    return plate_ifu_list
 
-
-def main(run_nfw: bool = True, workers: int = 1):
+def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None):
     plate_ifu_list = get_plate_ifu_list()
     if not plate_ifu_list:
+        plate_ifu_list = TEST_PLATE_IFUS
+
+    if ifu_type == "all":
+        plate_ifu_list = get_plate_ifu_list()
+    elif ifu_type == "fit":
+        plate_ifu_list = get_plate_list_from_fit()
+
+    if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
 
     def _process(plate_ifu):
@@ -274,7 +291,6 @@ def main(run_nfw: bool = True, workers: int = 1):
             # Clear pymc internal cache to free up memory
             gc.collect()
 
-    workers = max(1, int(workers or 1))
     if workers == 1:
         for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
             _process(plate_ifu)
@@ -295,6 +311,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
     parser.add_argument('--nfw-off', type=bool,default=False, help='Disable dark matter NFW fitting.')
     parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
+    parser.add_argument('--type', type=str, default=None, help='Type of data to process (all, fit, etc.)')
     args = parser.parse_args()
 
-    main(run_nfw=not args.nfw_off, workers=args.threads)
+    main(run_nfw=not args.nfw_off, workers=args.threads, ifu_type=args.type)

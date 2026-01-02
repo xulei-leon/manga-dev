@@ -87,7 +87,7 @@ class MapsUtil:
         hdr = self.hdu['PRIMARY'].header
         pa_val = hdr.get('ECOOPA', None)
         return pa_val
-    
+
     def get_ba(self) -> float | None:
         hdr = self.hdu['PRIMARY'].header
         ellip_val = hdr.get('ECOOELL', None)
@@ -138,7 +138,7 @@ class MapsUtil:
     # EMLINE_GSIGMA
     # EMLINE_INSTSIGMA
     # sigma_gas^2 = EMLINE_GSIGMA^2 - EMLINE_INSTSIGMA^2
-    def get_eml_sigma_map(self, channel_name='Ha-6564') -> tuple[np.ndarray, np.ndarray]:
+    def get_eml_gsigma_map(self, channel_name='Ha-6564') -> tuple[np.ndarray, np.ndarray]:
         """Return the gas velocity dispersion map, its unit, and masked IVAR from the MAPS file."""
         hdr = self.hdu['EMLINE_GSIGMA'].header
         sigma_unit = hdr.get('BUNIT', '')
@@ -161,8 +161,8 @@ class MapsUtil:
         return sigma_obs, sigma_inst
 
 
-    # STELLAR_SIGMA: Raw line-of-sight stellar velocity dispersion measurements in km/s. 
-    # STELLAR_SIGMACORR: Quadrature correction for STELLAR_SIGMA to obtain the astrophysical velocity dispersion. 
+    # STELLAR_SIGMA: Raw line-of-sight stellar velocity dispersion measurements in km/s.
+    # STELLAR_SIGMACORR: Quadrature correction for STELLAR_SIGMA to obtain the astrophysical velocity dispersion.
     # sigma_ast^2 = STELLAR_SIGMA^2 - STELLAR_SIGMACORR^2
     def get_stellar_sigma_map(self) -> tuple[np.ndarray, np.ndarray]:
         """Return the stellar velocity dispersion map, its unit, and masked IVAR from the MAPS file."""

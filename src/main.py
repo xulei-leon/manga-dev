@@ -1,8 +1,9 @@
+from ctypes.wintypes import PINT
+from encodings.punycode import T
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import gc
 
@@ -23,6 +24,14 @@ fits_util = FitsUtil(data_dir)
 VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
 VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
 DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
+
+# Thresholds for filtering fitting results
+NRMSE_THRESHOLD1 = 0.07  # threshold for first fitting
+NRMSE_THRESHOLD2 = 0.05  # tighter threshold for second fitting
+CHI_SQ_V_THRESHOLD1 = 5.0  # looser threshold for first fitting
+CHI_SQ_V_THRESHOLD2 = 3.0  # threshold for reduced chi-squared to filter weak fitting
+VEL_OBS_COUNT_THRESHOLD1 = 150  # minimum number of valid velocity data points
+VEL_OBS_COUNT_THRESHOLD2 = 100  # minimum number of valid velocity data points
 
 csv_lock = Lock()
 
@@ -80,9 +89,6 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
             print(f"Velocity rotation fit previously failed for {PLATE_IFU}. Skipping processing.")
             return
 
-    print("#######################################################")
-    print("# 1. load necessary files")
-    print("#######################################################")
     drpall_file = fits_util.get_drpall_file()
     firefly_file = fits_util.get_firefly_file()
     maps_file = fits_util.get_maps_file(PLATE_IFU, checksum=False, download=False)
@@ -99,10 +105,6 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    print("")
-    print("#######################################################")
-    print("# 2. calculate rot rotation velocity V(r)")
-    print("#######################################################")
     vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
@@ -110,38 +112,76 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
     if process_nfw:
-        fit_check = True
         vel_rot_filename = VEL_FIT_PARAM_FILENAME
     else:
-        fit_check = False
         vel_rot_filename = VEL_FIT_PARAM_ALL_FILENAME
 
-    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit, fit_check=fit_check)
-    store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
-
+    #----------------------------------------------------------------------
+    # First fitting
+    #----------------------------------------------------------------------
+    print(f"## First fitting {PLATE_IFU} ##")
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
 
+    r_obs_map = fit_result['radius_obs']
+    V_obs_map = fit_result['vel_obs']
+    ivar_obs_map = fit_result['ivar_obs']
+    r_rot_fit = fit_result['radius_rot']
+    V_rot_fit = fit_result['vel_rot']
+    stderr_rot_fit = fit_result['stderr_rot']
+    inc_rad_fit = float(fit_params['inc'])
+    V_sys_fit = float(fit_params['Vsys'])
+    phi_delta_fit = float(fit_params['phi_delta'])
+
+    # Filter fitting parameters
+    data_count = np.sum(np.isfinite(V_obs_map))
+    NRMSE = float(fit_params['NRMSE'])
+    CHI_SQ_V = float(fit_params['CHI_SQ_V'])
+    if data_count < VEL_OBS_COUNT_THRESHOLD1 or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
+        print(f"First fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+        return
+
+    #----------------------------------------------------------------------
+    # Second fitting
+    #----------------------------------------------------------------------
+    # print(f"## Second fitting {PLATE_IFU} ##")
+    # success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=radius_fit)
+    # if not success:
+    #     print(f"Fitting rotational velocity failed for {PLATE_IFU}")
+    #     return
+
+
+    # r_rot_fit = fit_result['radius_rot']
+    # V_rot_fit = fit_result['vel_rot']
+    # stderr_rot_fit = fit_result['stderr_rot']
+    # inc_rad_fit = float(fit_params['inc'])
+    # V_sys_fit = float(fit_params['Vsys'])
+    # phi_delta_fit = float(fit_params['phi_delta'])
+
+    # # Filter fitting parameters
+    # data_count = np.sum(np.isfinite(V_obs_map))
+    # NRMSE = float(fit_params['NRMSE'])
+    # CHI_SQ_V = float(fit_params['CHI_SQ_V'])
+    # if data_count < VEL_OBS_COUNT_THRESHOLD2 or (NRMSE > NRMSE_THRESHOLD2):
+    #     print(f"Second fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+    #     return
+    #----------------------------------------------------------------------
+    # End of second fitting
+    #----------------------------------------------------------------------
+    store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
     if not process_nfw:
         return
 
-    r_rot_fit = fit_result['radius']
-    V_rot_fit = fit_result['vel_rot']
-    V_rot_err = fit_result['vel_err']
-    V_sys = float(fit_params['Vsys'])
+    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=V_sys_fit, phi_delta=phi_delta_fit)
 
-    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(V_sys)
-
-    print("#######################################################")
-    print("# 3. calculate stellar rotation velocity V(r)")
-    print("#######################################################")
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
 
-    print("#######################################################")
-    print("# 4. calculate dark-matter rotation velocity V(r)")
-    print("#######################################################")
+    #--------------------------------------------------------
+    # DM NFW fitting
+    #--------------------------------------------------------
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
@@ -149,7 +189,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     dm_nfw.set_fit_debug(False)
 
     # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
-    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
+    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, stderr_rot_fit)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")
@@ -161,9 +201,9 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     V_stellar_fit = inf_result['vel_star']
 
 
-    print("#######################################################")
-    print("# Results")
-    print("#######################################################")
+    #--------------------------------------------------------
+    # DM NFW fitting
+    #--------------------------------------------------------
     print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
     print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
@@ -218,8 +258,10 @@ def get_plate_ifu_list():
     return plate_ifu_list
 
 
+
 def main():
-    plate_ifu_list = get_plate_ifu_list()
+    plate_ifu_list = []
+    # plate_ifu_list = get_plate_ifu_list()
     if not plate_ifu_list:
         plate_ifu_list = TEST_PLATE_IFUS
 
@@ -233,12 +275,18 @@ def main():
             # Clear pymc internal cache to free up memory
             gc.collect()
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        futures = [executor.submit(_process, plate_ifu) for plate_ifu in plate_ifu_list]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
-            pass
+    for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
+        _process(plate_ifu)
 
 RUN_NFW = True
+import argparse
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
+    parser.add_argument('--nfw-off', action='store_true', help='Process dark matter NFW fitting.')
+    args = parser.parse_args()
+    if args.nfw_off:
+        print("DM NFW fitting disabled.")
+        RUN_NFW = False
+
     main()

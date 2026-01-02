@@ -67,7 +67,7 @@ def fits_download(fits_util: FitsUtil, plateifu_list: list[str]):
                 plateifu = futures.get(fut, "unknown")
                 tqdm.write(f"Unhandled error for {plateifu}: {e}")
 
-def main():
+def main(is_download: bool = False):
     plateifus = galaxy_filter()
     print(f"== Filter selection of galaxies:")
     print(f"  Total selected galaxies: {len(plateifus)}")
@@ -79,9 +79,18 @@ def main():
             f.write(f"{plateifu}\n")
     print(f"  Selected plateifus saved to: {output_file}")
 
-    fits_download(fits_util, plateifus)
+    if is_download:
+        fits_download(fits_util, plateifus)
+
     return
 
 
+import argparse
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Filter MaNGA plateifus and download FITS files.")
+    parser.add_argument("--download", action="store_true", help="Download FITS files for selected plateifus.")
+    args = parser.parse_args()
+
+    is_download = args.download
+    main(is_download=is_download)

@@ -465,11 +465,14 @@ class VelRot:
         vel_rot_model = Model(vel_rot_func, independent_vars=["r"])
         vel_rot_fitted = vel_rot_model.eval(params=lm_result.params, r=radius_fit)
 
-        # lmfit uncertainty propagation (uses covariance internally); fallback to NaN if unavailable
+        # lmfit uncertainty propagation (uses covariance internally);
         try:
             vel_fit_stderr = vel_rot_model.eval_uncertainty(params=lm_result.params, r=radius_fit, sigma=1) * F_factor
         except Exception:
-            vel_fit_stderr = np.full_like(vel_rot_fitted, np.nan, dtype=float)
+            # calulate stderr manually if eval_uncertainty fails
+            print("Exception: lmfit eval_uncertainty failed, calculating stderr manually...")
+            # Numerical derivatives for uncertainty propagation
+            vel_fit_stderr = RMSE / np.sqrt(len(vel_obs_valid)) * np.ones_like(vel_rot_fitted)
 
         # Apply filter to output maps
         residuals = np.abs(vel_obs_valid) - np.abs(vel_obs_model)

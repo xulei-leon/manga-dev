@@ -1,3 +1,4 @@
+from doctest import debug
 from pathlib import Path
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -78,7 +79,7 @@ def get_params_file(PLATE_IFU: str, filename:str):
         return None
 
 
-def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True):
+def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True, debug: bool=False):
     nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME)
     if process_nfw and nfw_param is not None:
         print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
@@ -133,7 +134,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     V_rot_fit = fit_result['vel_rot']
     stderr_rot_fit = fit_result['stderr_rot']
     inc_rad_fit = float(fit_params['inc'])
-    V_sys_fit = float(fit_params['Vsys'])
+    vel_sys_fit = float(fit_params['v_sys'])
     phi_delta_fit = float(fit_params['phi_delta'])
     Rmax = float(fit_params['Rmax'])
     Rt = float(fit_params['Rt'])
@@ -151,38 +152,11 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
               f"Rmax: {Rmax:.3f}, Rt: {Rt:.3f}, skipping...")
         return
 
-    #----------------------------------------------------------------------
-    # Second fitting
-    #----------------------------------------------------------------------
-    # print(f"## Second fitting {PLATE_IFU} ##")
-    # success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=radius_fit)
-    # if not success:
-    #     print(f"Fitting rotational velocity failed for {PLATE_IFU}")
-    #     return
-
-
-    # r_rot_fit = fit_result['radius_rot']
-    # V_rot_fit = fit_result['vel_rot']
-    # stderr_rot_fit = fit_result['stderr_rot']
-    # inc_rad_fit = float(fit_params['inc'])
-    # V_sys_fit = float(fit_params['Vsys'])
-    # phi_delta_fit = float(fit_params['phi_delta'])
-
-    # # Filter fitting parameters
-    # data_count = np.sum(np.isfinite(V_obs_map))
-    # NRMSE = float(fit_params['NRMSE'])
-    # CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    # if data_count < VEL_OBS_COUNT_THRESHOLD2 or (NRMSE > NRMSE_THRESHOLD2):
-    #     print(f"Second fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
-    #     return
-    #----------------------------------------------------------------------
-    # End of second fitting
-    #----------------------------------------------------------------------
     store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
     if not process_nfw:
         return
 
-    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=V_sys_fit, phi_delta=phi_delta_fit)
+    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
 
     stellar = Stellar(drpall_util, firefly_util, maps_util)
     stellar.set_PLATE_IFU(PLATE_IFU)
@@ -194,10 +168,14 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
     dm_nfw.set_plot_enable(plot_enable)
-    dm_nfw.set_fit_debug(False)
+    dm_nfw.set_fit_debug(debug)
 
-    # r_dm_fit, V_total_fit, V_dm_fit, V_stellar_fit = dm_nfw.fit_dm_nfw(r_rot_fit, V_rot_fit, V_rot_err)
-    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(r_rot_fit, V_rot_fit, stderr_rot_fit)
+    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,
+                                                        vel_obs=V_obs_map,
+                                                        ivar_obs=ivar_obs_map,
+                                                        vel_sys=vel_sys_fit,
+                                                        inc_rad=inc_rad_fit,
+                                                        phi_map=phi_map)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")
@@ -276,7 +254,7 @@ def get_plate_list_from_fit():
     plate_ifu_list.sort()
     return plate_ifu_list
 
-def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None):
+def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None, debug: bool = False):
     plate_ifu_list = []
 
     if ifu_type == "all":
@@ -292,7 +270,7 @@ def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None):
     def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
         try:
-            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw)
+            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw, debug=debug)
         except Exception as e:
             print(f"Error processing {plate_ifu}: {e}")
         finally:
@@ -320,8 +298,9 @@ if __name__ == "__main__":
     parser.add_argument('--nfw', type=str, default="on", help='Run dark matter NFW fitting.')
     parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
     parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode.')
     args = parser.parse_args()
 
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
 
-    main(run_nfw=nfw_enable, workers=args.threads, ifu_type=args.ifu)
+    main(run_nfw=nfw_enable, workers=args.threads, ifu_type=args.ifu, debug=args.debug)

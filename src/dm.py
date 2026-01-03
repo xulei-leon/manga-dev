@@ -180,7 +180,10 @@ class DmNfw:
         # ---------------------
         # 1) data selection / precompute
         # ---------------------
-        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) &
+        vel_rot = np.where(vel_rot < 0, np.nan, vel_rot)
+        radius = np.where(radius < 0, np.nan, radius)
+
+        valid_mask = (np.isfinite(vel_rot) & np.isfinite(radius) & np.isfinite(vel_rot_err) &
                     (radius > 0.01) & (radius < 1.0 * np.nanmax(radius)))
         radius_valid = radius[valid_mask]
         vel_rot_valid = vel_rot[valid_mask]
@@ -242,21 +245,20 @@ class DmNfw:
             den = pt.log1p(c) - c / (1.0 + c)
             return num, den
 
-        # V_dm^2 closure (uses V200 deterministic)
-        def v_dm_sq_profile(r_arr, M200, c):
+        def v_dm_sq_profile(r_arr, M200, c, V200):
             x = x_from_M200(r_arr, M200)
             num, den = nfw_num_den(x, c)
             x_safe = pt.maximum(x, 1e-6)
             den_safe = pt.maximum(den, 1e-6)
-            return (V200_t**2 / x_safe) * (num / den_safe)
+            return (V200**2 / x_safe) * (num / den_safe)
 
         # V_drift^2 closure
         def v_drift_sq_profile(r_arr, sigma_0):
             return 2.0 * (sigma_0 ** 2) * (r_arr / Re)
 
         # total v_rot^2 closure
-        def v_rot_sq_profile(r_arr, M200, c, sigma_0, v_star_sq):
-            v_dm = v_dm_sq_profile(r_arr, M200, c)
+        def v_rot_sq_profile(r_arr, M200, c, sigma_0, v_star_sq, V200):
+            v_dm = v_dm_sq_profile(r_arr, M200, c, V200)
             # convert precomputed stellar array to tensor so ops are all in pytensor
             v_star_tensor = pt.as_tensor_variable(v_star_sq)
             v_drift = v_drift_sq_profile(r_arr, sigma_0)
@@ -273,9 +275,9 @@ class DmNfw:
             # M200 prior: from SHMR
             M200_log_mu = M200_log_from_Mstar(M_star)  # expected log10(M200) from Mstar
             M200_log_sigma = 0.5
-            # M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
+            M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
             # student-t prior for robustness
-            M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
+            # M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
             log_c_mu = np.log10(5.0)
@@ -294,9 +296,9 @@ class DmNfw:
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_dm_sq = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t))
+            v_dm_sq = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t, V200_t))
             v_drift_sq = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t))
-            v_rot_sq = pm.Deterministic("v_rot_sq", v_rot_sq_profile(r, M200_t, c_t, sigma_0_t, v_star_sq))
+            v_rot_sq = pm.Deterministic("v_rot_sq", v_rot_sq_profile(r, M200_t, c_t, sigma_0_t, v_star_sq, V200_t))
 
             # ---------------------
             # likelihood
@@ -308,6 +310,7 @@ class DmNfw:
             # likelihood: observed rotation velocities
             v_rot_obs_sigma = vel_rot_err_valid
             v_rot_obs = vel_rot_valid
+
             pm.Normal("v_rot_obs", mu=v_model, sigma=v_rot_obs_sigma, observed=v_rot_obs)
 
             # ---------------------

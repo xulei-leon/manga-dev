@@ -277,14 +277,14 @@ def get_plate_list_from_fit():
     return plate_ifu_list
 
 def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None):
-    plate_ifu_list = get_plate_ifu_list()
-    if not plate_ifu_list:
-        plate_ifu_list = TEST_PLATE_IFUS
+    plate_ifu_list = []
 
     if ifu_type == "all":
         plate_ifu_list = get_plate_ifu_list()
     elif ifu_type == "fit":
         plate_ifu_list = get_plate_list_from_fit()
+    elif ifu_type == "test":
+        plate_ifu_list = TEST_PLATE_IFUS
 
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
@@ -317,9 +317,11 @@ import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
-    parser.add_argument('--nfw-off', type=bool,default=False, help='Disable dark matter NFW fitting.')
+    parser.add_argument('--nfw', type=str, default="on", help='Run dark matter NFW fitting.')
     parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
-    parser.add_argument('--type', type=str, default=None, help='Type of data to process (all, fit, etc.)')
+    parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
     args = parser.parse_args()
 
-    main(run_nfw=not args.nfw_off, workers=args.threads, ifu_type=args.type)
+    nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
+
+    main(run_nfw=nfw_enable, workers=args.threads, ifu_type=args.ifu)

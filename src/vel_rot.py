@@ -508,7 +508,7 @@ class VelRot:
             'Vsys': f"{Vsys_fit:.2f}",
             'inc': f"{inc_fit:.2f}",
             'phi_delta': f"{phi_delta_fit:.3f}",
-            'R_max': f"{R_max:.3f}",
+            'Rmax': f"{R_max:.3f}",
             'RMSE': f"{RMSE:.3f}",
             'NRMSE': f"{NRMSE:.3f}",
             'CHI_SQ_V': f"{CHI_SQ_V:.2f}",

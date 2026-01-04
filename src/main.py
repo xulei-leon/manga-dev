@@ -181,10 +181,10 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")
         return
 
-    r_dm_fit = inf_result['radius']
-    V_total_fit = inf_result['vel_rot']
-    V_dm_fit = inf_result['vel_dm']
-    V_stellar_fit = inf_result['vel_star']
+    r_inf = inf_result['radius']
+    V_rot_inf = inf_result['vel_rot']
+    V_dm_inf = inf_result['vel_dm']
+    V_star_inf = inf_result['vel_star']
 
 
     #--------------------------------------------------------
@@ -192,32 +192,32 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     #--------------------------------------------------------
     print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
-    print(f"V_total_fit shape: {V_total_fit.shape}, range: [{np.nanmin(V_total_fit):,.1f}, {np.nanmax(V_total_fit):,.1f}] km/s")
-    print(f"V_dm_fit shape: {V_dm_fit.shape}, range: [{np.nanmin(V_dm_fit):,.1f}, {np.nanmax(V_dm_fit):,.1f}] km/s")
-    print(f"V_stellar_fit shape: {V_stellar_fit.shape}, range: [{np.nanmin(V_stellar_fit):,.1f}, {np.nanmax(V_stellar_fit):,.1f}] km/s")
+    print(f"V_total_fit shape: {V_rot_inf.shape}, range: [{np.nanmin(V_rot_inf):,.1f}, {np.nanmax(V_rot_inf):,.1f}] km/s")
+    print(f"V_dm_fit shape: {V_dm_inf.shape}, range: [{np.nanmin(V_dm_inf):,.1f}, {np.nanmax(V_dm_inf):,.1f}] km/s")
+    print(f"V_stellar_fit shape: {V_star_inf.shape}, range: [{np.nanmin(V_star_inf):,.1f}, {np.nanmax(V_star_inf):,.1f}] km/s")
 
     ########################################################
     ## plot velocity map
     ########################################################
-    if  plot_enable:
+    if  debug or plot_enable:
         # plot galaxy image
-        plot_util.plot_galaxy_image(PLATE_IFU)
+        # plot_util.plot_galaxy_image(PLATE_IFU)
 
         # plot RC curves
-        plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
-                                r_rot2_map=r_rot_fit, v_rot2_map=V_rot_fit, title2="Observed Fit")
+        # plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
+        #                         r2_map=r_rot_fit, V2_map=V_rot_fit, title2="Observed Fit")
 
-        plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
-                                r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
+        # plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
+        #                         r2_map=r_inf, V2_map=V_rot_inf, title2="Fitted Total")
 
         plot_util.plot_rv_curve(r1_map=r_rot_fit, V1_map=V_rot_fit, title="Observed Fit",
-                                r_rot2_map=r_dm_fit, v_rot2_map=V_total_fit, title2="Fitted Total")
+                                r2_map=r_inf, V2_map=V_rot_inf, title2="Fitted Total")
 
-        plot_util.plot_rv_curve(r1_map=r_dm_fit, V1_map=V_total_fit, title="Fit Total",
-                            r_rot2_map=r_dm_fit, v_rot2_map=V_dm_fit, title2="Fit DM")
+        # plot_util.plot_rv_curve(r1_map=r_inf, V1_map=V_rot_inf, title="Fit Total",
+        #                     r2_map=r_inf, V2_map=V_dm_inf, title2="Fit DM")
 
-        plot_util.plot_rv_curve(r1_map=r_dm_fit, V1_map=V_total_fit, title="Fit Total",
-                                r_rot2_map=r_dm_fit, v_rot2_map=V_stellar_fit, title2="Fit Star")
+        # plot_util.plot_rv_curve(r1_map=r_inf, V1_map=V_rot_inf, title="Fit Total",
+        #                         r2_map=r_inf, V2_map=V_star_inf, title2="Fit Star")
 
     return
 
@@ -254,28 +254,33 @@ def get_plate_list_from_fit():
     plate_ifu_list.sort()
     return plate_ifu_list
 
-def main(run_nfw: bool = True, workers: int = 1, ifu_type: str = None, debug: bool = False):
+def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = False):
     plate_ifu_list = []
 
-    if ifu_type == "all":
+    if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
-    elif ifu_type == "fit":
+    elif ifu == "fit":
         plate_ifu_list = get_plate_list_from_fit()
-    elif ifu_type == "test":
+    elif ifu == "test":
         plate_ifu_list = TEST_PLATE_IFUS
+    else:
+        plate_ifu_list = [ifu]
 
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
 
     def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
-        try:
+        if debug:
             process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw, debug=debug)
-        except Exception as e:
-            print(f"Error processing {plate_ifu}: {e}")
-        finally:
-            # Clear pymc internal cache to free up memory
-            gc.collect()
+        else:
+            try:
+                process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw, debug=debug)
+            except Exception as e:
+                print(f"Error processing {plate_ifu}: {e}")
+
+        # Clear pymc internal cache to free up memory
+        gc.collect()
 
     if workers == 1:
         for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
@@ -303,4 +308,4 @@ if __name__ == "__main__":
 
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
 
-    main(run_nfw=nfw_enable, workers=args.threads, ifu_type=args.ifu, debug=args.debug)
+    main(run_nfw=nfw_enable, workers=args.threads, ifu=args.ifu, debug=args.debug)

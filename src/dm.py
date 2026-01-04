@@ -3,6 +3,7 @@ from pathlib import Path
 from re import M, S
 import numpy as np
 from scipy.optimize import brentq
+from scipy import special
 import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
@@ -110,6 +111,20 @@ class DmNfw:
         M200 = V200**3 / (10 * G * Hz)  # in Msun
         return M200
 
+    # Moster-like SHMR
+    def _calc_Mstar_from_Mhalo(self, Mhalo: float, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+        x = Mhalo / M1
+        f = 2.0 * N / (x**(-beta) + x**(gamma))
+        return f * Mhalo
+
+    # invert (in log10 space)
+    def _calc_M200_log_from_Mstar(self, Mstar: float, Mmin=1e9, Mmax=1e15):
+        def f(logM):
+            M = 10**logM
+            return self._calc_Mstar_from_Mhalo(M) - Mstar
+
+        return brentq(f, float(np.log10(Mmin)), float(np.log10(Mmax)))
+
     ################################################################################
     # profile
     ################################################################################
@@ -152,6 +167,13 @@ class DmNfw:
         V_dm_sq = (V200**2 / x) * (num / den)
         return V_dm_sq
 
+    def _special(self, y):
+        I_0 = special.i0(y)
+        I_1 = special.i1(y)
+        K_0 = special.k0(y)
+        K_1 = special.k1(y)
+        return I_0, I_1, K_0, K_1
+
 
     ########################################################################################
     # Use the following equation to fit DM profile:
@@ -180,9 +202,6 @@ class DmNfw:
         # ---------------------
         # 1) data selection / precompute
         # ---------------------
-        vel_obs = np.where(vel_obs < 0, np.nan, vel_obs)
-        radius_obs = np.where(radius_obs < 0, np.nan, radius_obs)
-
         valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius_obs) & np.isfinite(ivar_obs) & np.isfinite(phi_map) &
                     (radius_obs > 0.01) & (radius_obs < 1.0 * np.nanmax(radius_obs)))
         radius_valid = radius_obs[valid_mask]
@@ -201,8 +220,13 @@ class DmNfw:
         M_star, Re = self.stellar_util.fit_stellar_mass()
         z = self._get_z()
 
+        Mmin=1e9
+        Mmax=1e15
+        M200_log_mu = self._calc_M200_log_from_Mstar(M_star, Mmin=Mmin, Mmax=Mmax)  # expected log10(M200) from Mstar
+
         # precompute stellar contribution v_star^2 (numpy array)
-        v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
+        # Do not convert to tensor yet, do it inside the model
+        # v_star_sq = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
 
         # get H(z) in km/s/kpc
         Hz = self._calc_Hz_kpc(z)
@@ -216,23 +240,46 @@ class DmNfw:
         c_min, c_max = (1.0, 50.0)
         logc_min, logc_max = np.log10(c_min), np.log10(c_max)
 
+
+        # pt can not handle special functions inside the model well,
+        # so precompute I0, I1, K0, K1 here
+        _rd = Re / 1.678
+        _y = radius_valid / (2.0 * _rd)
+        I_0, I_1, K_0, K_1 = self._special(_y)
+
         # ---------------------
         # helper functions (closures)
+        # Note: use pytensor operations instead of numpy/scipy inside the model
         # ---------------------
 
-        # Moster-like SHMR
-        def Mstar_from_Mhalo(Mhalo, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
-            x = Mhalo / M1
-            f = 2.0 * N / (x**(-beta) + x**(gamma))
-            return f * Mhalo
+        # Mstar
+        def v_sq_bulge_hernquist(r, MB, a):
+            r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
+            v_sq = G * MB * r / (r + a)**2
+            return v_sq
 
-        # invert (in log10 space)
-        def M200_log_from_Mstar(Mstar, Mmin=1e9, Mmax=1e15):
-            def f(logM):
-                M = 10**logM
-                return Mstar_from_Mhalo(M) - Mstar
+        # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+        def v_sq_disk_freeman(r, M_d, Rd):
+            r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
+            y = r / (2.0 * Rd)
 
-            return brentq(f, float(np.log10(Mmin)), float(np.log10(Mmax)))
+            v_sq = (2.0 * G * M_d / Rd) * (pt.square(y)) * (I_0 * K_0 - I_1 * K_1)
+            return v_sq
+
+        # M_star: total mass of star
+        # Re: Half-mass radius
+        # f_bulge: bulge mass fraction
+        # a: Hernquist scale radius
+        # V_star^2 = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
+        def v_star_sq_profile(r, Mstar, Re, f_bulge, a):
+            Rd = Re / 1.678
+            MB = f_bulge * Mstar
+            MD = (1 - f_bulge) * Mstar
+
+            v_bulge_sq = v_sq_bulge_hernquist(r, MB, a)
+            v_disk_sq = v_sq_disk_freeman(r, MD, Rd)
+            v_baryon_sq = v_bulge_sq + v_disk_sq
+            return v_baryon_sq
 
         # r200 closure (kpc) from M200 and Hz
         def r200_from_M200(M200):
@@ -261,17 +308,13 @@ class DmNfw:
             return 2.0 * (sigma_0 ** 2) * (r_arr / Re)
 
         # total v_rot^2 closure
-        def v_rot_sq_profile(r_arr, M200, c, sigma_0, v_star_sq, V200):
-            v_dm = v_dm_sq_profile(r_arr, M200, c, V200)
-            # convert precomputed stellar array to tensor so ops are all in pytensor
-            v_star_tensor = pt.as_tensor_variable(v_star_sq)
-            v_drift = v_drift_sq_profile(r_arr, sigma_0)
-            return v_dm + v_star_tensor - v_drift
+        def v_rot_sq_profile(v_dm_sq, v_star_sq, v_drift_sq):
+            return v_dm_sq + v_star_sq - v_drift_sq
 
         # Formula: v_obs = v_sys + v_rot * (sin(i) * cos(phi - phi_0))
         # Warning: The sign of the calculated velocity may be different from the observed velocity.
         def v_obs_project_profile(v_rot, inc, phi_map):
-            phi_delta = (phi_map + np.pi) % (2 * np.pi)  # phi_map is (phi - phi_0)
+            phi_delta = (phi_map + pt.pi) % (2 * pt.pi)  # phi_map is (phi - phi_0)
             correction = pt.sin(inc) * pt.cos(phi_delta)
             v_obs = v_rot * correction
             return v_obs
@@ -280,43 +323,64 @@ class DmNfw:
         # 3) PyMC model
         # ---------------------
         with pm.Model() as model:
-
             # ---------------------
             # prior distributions
             # ---------------------
             # M200 prior: from SHMR
-            M200_log_mu = M200_log_from_Mstar(M_star)  # expected log10(M200) from Mstar
-            M200_log_sigma = 0.5
-            M200_log_t = pm.Normal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma)  # auxiliary variable for prior
+            M200_log_sigma = 0.25
+            M200_log_t = pm.TruncatedNormal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma, lower=pt.log10(Mmin), upper=pt.log10(Mmax))
             # student-t prior for robustness
             # M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
-            log_c_mu = np.log10(5.0)
-            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.5, lower=logc_min, upper=logc_max)
+            log_c_mu = pt.log10(5.0)
+            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.25, lower=logc_min, upper=logc_max)
 
             # sigma_0 prior: half normal
             # sigma_0 > 0
             sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
 
             # v_sys prior: normal prior around measured value
-            v_sys_t = pm.Normal("v_sys", mu=vel_sys, sigma=5.0)
+            v_sys_delta = 20.0
+            v_sys_t = pm.TruncatedNormal("v_sys", mu=vel_sys, sigma=5.0, lower=vel_sys - v_sys_delta, upper=vel_sys + v_sys_delta)
 
             # inc prior: normal prior around measured value
-            inc_t = pm.Normal("inc", mu=inc_rad, sigma=0.1)
+            inc_delta = pt.deg2rad(10)
+            inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
+
+            # Mstar prior
+            # Mstar_log_mu = pt.log10(M_star)
+            # Mstar_log_t = pm.Normal("Mstar_log", mu=Mstar_log_mu, sigma=0.05 * Mstar_log_mu)
+
+
+            # Re prior
+            # Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=0.1 * Re, lower=0.1 * Re, upper=10.0 * Re)
+
+            # f_bulge prior
+            f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
+
+            # a prior
+            a_mu = Re / 1.8
+            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.1, lower=0.01, upper=10.0)
 
             # ---------------------
             # deterministic relations
             # ---------------------
+            Re_t = pm.Deterministic("Re", pt.as_tensor_variable(np.array(Re)))
+
+            # Mstar_t = pm.Deterministic("Mstar", 10 ** Mstar_log_t)
+            Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(np.array(M_star)))
+
             # V200: derived from M200
             M200_t = pm.Deterministic("M200", 10 ** M200_log_t)
             c_t = pm.Deterministic("c", 10 ** c_log_t)
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
+            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar_t, Re_t, f_bulge_t, a_t))
             v_dm_sq_t = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t, V200_t))
             v_drift_sq_t = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t))
-            v_rot_sq_t = pm.Deterministic("v_rot_sq", v_rot_sq_profile(r, M200_t, c_t, sigma_0_t, v_star_sq, V200_t))
+            v_rot_sq_t = pm.Deterministic("v_rot_sq", v_rot_sq_profile(v_dm_sq_t, v_star_sq_t, v_drift_sq_t))
 
             # ---------------------
             # likelihood
@@ -326,7 +390,7 @@ class DmNfw:
             v_rot_model = pt.sqrt(v_rot_sq_pos)
             v_obs_model =  v_obs_project_profile(v_rot_model, inc_t, phi_map_valid)
             sign = pt.switch(vel_obs_valid >= 0, 1.0, -1.0)
-            v_obs_model = sign * v_obs_model + v_sys_t
+            v_obs_model = sign * pt.abs(v_obs_model) + v_sys_t
 
             # likelihood: observed rotation velocities
             v_obs_sigma = stderr_obs_valid
@@ -339,7 +403,8 @@ class DmNfw:
             # ---------------------
 
             # Add SHMR as a potential (log-prior)
-            pm.Potential("shmr_penalty", -0.5 * ((M200_log_t - M200_log_mu) / M200_log_sigma) ** 2)
+            # Do not double count if using truncated normal prior above
+            # pm.Potential("shmr_penalty", -0.5 * ((M200_log_t - M200_log_mu) / M200_log_sigma) ** 2)
 
             # Optionally add a c-M prior (cosmological relation) if desired:
             # Add c-M prior (cosmological relation) as a potential (log-prior)
@@ -357,9 +422,12 @@ class DmNfw:
             # ---------------------
             # 4) sampling options & run
             # ---------------------
-            draws=2000
-            tune=1000
-            chains=4
+            # draws=2000
+            # tune=1000
+            # chains=4
+            draws = 1000
+            tune = 500
+            chains = 2
             target_accept=0.95
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
@@ -374,32 +442,59 @@ class DmNfw:
 
             pm.compute_log_likelihood(trace)
             if self.plot_enable:
-                ppc = pm.sample_posterior_predictive(trace, var_names=["v_obs"], random_seed=42, extend_inferencedata=True)
+                ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)
 
         # ---------------------
         # 5) postprocess
         # ---------------------
-
         # summary with diagnostics
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc"], round_to=6)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'Mstar', 'Re', 'a'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"])
+        Mstar_mean = float(summary.loc["Mstar", "mean"])
+        Re_mean = float(summary.loc["Re", "mean"])
+        a_mean = float(summary.loc["a", "mean"])
 
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
         sigma0_sd = float(summary.loc["sigma_0", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"])
+        Mstar_sd = float(summary.loc["Mstar", "sd"])
+        Re_sd = float(summary.loc["Re", "sd"])
+        a_sd = float(summary.loc["a", "sd"])
+
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"])
+        Mstar_r_hat = float(summary.loc["Mstar", "r_hat"])
+        Re_r_hat = float(summary.loc["Re", "r_hat"])
+        a_r_hat = float(summary.loc["a", "r_hat"])
+
+        # extract posterior samples
+        posterior = trace.posterior
+        # v_obs_samples = posterior["v_obs"].stack(samples=("chain", "draw")).values
+        # v_obs_mean = np.mean(v_obs_samples, axis=1)
+        v_dm_sq_samples = posterior["v_dm_sq"].stack(samples=("chain", "draw")).values
+        v_dm_sq_mean = np.mean(v_dm_sq_samples, axis=1)
+        v_dm_mean = np.sqrt(np.clip(v_dm_sq_mean, a_min=0.0, a_max=None))
+        v_star_sq_samples = posterior["v_star_sq"].stack(samples=("chain", "draw")).values
+        v_star_sq_mean = np.mean(v_star_sq_samples, axis=1)
+        v_star_mean = np.sqrt(np.clip(v_star_sq_mean, a_min=0.0, a_max=None))
+        v_drift_sq_samples = posterior["v_drift_sq"].stack(samples=("chain", "draw")).values
+        v_drift_sq_mean = np.mean(v_drift_sq_samples, axis=1)
+        v_drift_mean = np.sqrt(np.clip(v_drift_sq_mean, a_min=0.0, a_max=None))
+        v_rot_sq_samples = posterior["v_rot_sq"].stack(samples=("chain", "draw")).values
+        v_rot_sq_mean = np.mean(v_rot_sq_samples, axis=1)
+        v_rot_mean = np.sqrt(np.clip(v_rot_sq_mean, a_min=0.0, a_max=None))
+
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -411,23 +506,29 @@ class DmNfw:
         mean_k = float(model_loo.pareto_k.mean().values)
         good_k_fraction = float(np.sum(model_loo.pareto_k.values < 0.7) / len(model_loo.pareto_k.values))
 
-
-        # derived quantities using your helper functions (they expect numeric inputs)
         V200_calc = self._calc_V200_from_M200(M200_mean, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
 
-        # compute fitted velocity profiles using mean params (use your helpers)
-        vel_rot_sq_fit = self._vel_rot_sq_profile(radius_obs, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
-        vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius_obs, M200_mean, c=c_mean, z=z)
-        vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius_obs, M_star, Re)
+        # compute fitted velocity profiles using mean params
+        # vel_rot_sq_fit = self._vel_rot_sq_profile(radius_valid, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
+        # vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius_valid, M200_mean, c=c_mean, z=z)
+        # vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
 
-        vel_total_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
-        vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
-        vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
+        # vel_rot_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
+        # vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
+        # vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
 
         # ---------------------
-        # Inference summary
+        # residual diagnostics
+        # ---------------------
+        # res_mean = vel_obs_valid - v_obs_mean
+        # rmse = np.sqrt(np.nanmean(res_mean**2))
+        # mae = np.nanmean(np.abs(res_mean))
+        # bias = np.nanmean(res_mean)
+
+        # ---------------------
+        # Inference summary info
         # ---------------------
         if self.fit_debug:
             print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
@@ -438,17 +539,24 @@ class DmNfw:
             print(f"--- median estimates ---")
             print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
             print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%} km/s)")
-            print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%} km/s)")
-            print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%} deg)")
+            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})")
+            print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
+            print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
+            print(f" Infer Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})")
+            print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/Re_mean:.2%})")
+            print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
             print(f"--- caculate ---")
-            print(f" Stellar Mass       : {M_star:.3e} Msun")
-            print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")
             print(f" Calc: c            : {c_calc:.3f}")
             print(f" Calc: v_sys        : {vel_sys:.3f} km/s")
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
+            print(f" Stellar Mass       : {M_star:.3e} Msun")
+            print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
+            print("--- diagnostics ---")
+            # print(f" RMSE               : {rmse:.3f} km/s")
+            # print(f" MAE                : {mae:.3f} km/s")
+            # print(f" Bias               : {bias:.3f} km/s")
             print("------------------------------------------------------------\n")
 
         # ---------------------
@@ -466,9 +574,8 @@ class DmNfw:
 
             # az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
 
-            idata = pm.to_inference_data(trace, posterior_predictive=ppc)
-            az.plot_pair(idata, var_names=["M200", "c", "sigma_0", "v_sys", "inc"], kind='kde', marginals=True)
-            az.plot_ppc(idata, data_pairs={"v_obs": "v_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
+            az.plot_pair(ppc_idata, var_names=["M200", "c", "sigma_0", "v_sys", "inc"], kind='kde', marginals=True)
+            az.plot_ppc(ppc_idata, data_pairs={"v_obs": "v_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
             plt.tight_layout()
             plt.show()
 
@@ -478,7 +585,7 @@ class DmNfw:
             r_plot = np.linspace(0.0, np.nanmax(radius_valid), num=500)
 
             # compute posterior predictive mean and credible intervals
-            v_obs_ppc = ppc.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
+            v_obs_ppc = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
             v_obs_interp = np.array([np.interp(r_plot, radius_valid, v_obs_ppc[:,i]) for i in range(v_obs_ppc.shape[1])])
             v_obs_mean = np.mean(v_obs_interp, axis=0)
             v_obs_hdi = az.hdi(v_obs_interp, hdi_prob=0.94)
@@ -494,10 +601,10 @@ class DmNfw:
 
         success = True
         inf_result = {
-            'radius': radius_obs,
-            'vel_rot': vel_total_fit,
-            'vel_dm': vel_dm_fit,
-            'vel_star': vel_star_fit,
+            'radius': radius_valid,
+            'vel_rot': v_rot_mean,
+            'vel_dm': v_dm_mean,
+            'vel_star': v_star_mean,
         }
 
         inf_params = {
@@ -516,6 +623,22 @@ class DmNfw:
             'inc': inc_mean,
             'inc_std': inc_sd,
             'inc_r_hat': inc_r_hat,
+            'Mstar': Mstar_mean,
+            'Mstar_std': Mstar_sd,
+            'Mstar_r_hat': Mstar_r_hat,
+            'Re': Re_mean,
+            'Re_std': Re_sd,
+            'Re_r_hat': Re_r_hat,
+            'a': a_mean,
+            'a_std': a_sd,
+            'a_r_hat': a_r_hat,
+            'v_star': v_star_mean,
+            'v_dm': v_dm_mean,
+            'v_drift': v_drift_mean,
+            'v_rot': v_rot_mean,
+            # 'rmse': rmse,
+            # 'mae': mae,
+            # 'bias': bias,
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,
             'p_loo': p_loo,

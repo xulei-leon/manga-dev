@@ -14,15 +14,13 @@
    Use conda to install packages.
     ```bash
     conda install -c conda-forge astropy
-    conda install -c conda-forge scipy matplotlib
+    conda install -c conda-forge scipy lmfit matplotlib
     conda install -c conda-forge ipython jupyter dask h5py pyarrow beautifulsoup4 html5lib bleach pandas pytz jplephem mpmath asdf-astropy bottleneck fsspec s3fs certifi tqdm
     conda install -c conda-forge pvextractor
     conda install -c conda-forge astroquery reproject
-    conda install -c conda-forge emcee
     conda install -c conda-forge nomkl
     conda install -c conda-forge seaborn numba xarray-einstats
-    conda install -c conda-forge pymc jax jaxlib arviz pytensor dm-tree
-    conda install -c conda-forge blackjax nutpie
+    conda install -c conda-forge pymc jax jaxlib arviz pytensor dm-tree nutpie
     ```
 
     Some packages need used pip to install.

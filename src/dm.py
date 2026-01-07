@@ -1,23 +1,20 @@
+import os
 from pathlib import Path
 
-from re import M, S
 import numpy as np
 from scipy.optimize import brentq
-from scipy import special
 import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
 from astropy import constants as const
-from astropy import units as u
 import matplotlib.pyplot as plt
 
-from util.maps_util import MapsUtil
 from util.drpall_util import DrpallUtil
-from util.fits_util import FitsUtil
-from util.firefly_util import FireflyUtil
-from vel_stellar import G, Stellar
+from vel_stellar import Stellar
 
 H = 0.674  # assuming H0 = 67.4 km/s/Mpc
+G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+
 
 class DmNfw:
     drpall_util: DrpallUtil
@@ -167,14 +164,6 @@ class DmNfw:
         V_dm_sq = (V200**2 / x) * (num / den)
         return V_dm_sq
 
-    def _special(self, y):
-        I_0 = special.i0(y)
-        I_1 = special.i1(y)
-        K_0 = special.k0(y)
-        K_1 = special.k1(y)
-        return I_0, I_1, K_0, K_1
-
-
     ########################################################################################
     # Use the following equation to fit DM profile:
     # ignoring gas contribution for simplification
@@ -217,12 +206,12 @@ class DmNfw:
         stderr_obs_valid = 1.0 / np.sqrt(ivar_obs_valid)
 
         # stellar quantities
-        M_star, Re = self.stellar_util.fit_stellar_mass()
+        Mstar, Re = self.stellar_util.fit_stellar_mass()
         z = self._get_z()
 
         Mmin=1e9
         Mmax=1e15
-        M200_log_mu = self._calc_M200_log_from_Mstar(M_star, Mmin=Mmin, Mmax=Mmax)  # expected log10(M200) from Mstar
+        M200_log_mu = self._calc_M200_log_from_Mstar(Mstar, Mmin=Mmin, Mmax=Mmax)  # expected log10(M200) from Mstar
 
         # precompute stellar contribution v_star^2 (numpy array)
         # Do not convert to tensor yet, do it inside the model
@@ -240,31 +229,41 @@ class DmNfw:
         c_min, c_max = (1.0, 50.0)
         logc_min, logc_max = np.log10(c_min), np.log10(c_max)
 
-
-        # pt can not handle special functions inside the model well,
-        # so precompute I0, I1, K0, K1 here
-        _rd = Re / 1.678
-        _y = radius_valid / (2.0 * _rd)
-        I_0, I_1, K_0, K_1 = self._special(_y)
-
         # ---------------------
         # helper functions (closures)
         # Note: use pytensor operations instead of numpy/scipy inside the model
         # ---------------------
 
         # Mstar
-        def v_sq_bulge_hernquist(r, MB, a):
+        def v_star_sq_bulge_hernquist(r, MB, a):
             r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
             v_sq = G * MB * r / (r + a)**2
             return v_sq
 
         # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-        def v_sq_disk_freeman(r, M_d, Rd):
-            r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
-            y = r / (2.0 * Rd)
+        # Calculate V_disk^2 using piecewise polynomial approximation
+        def v_star_sq_disk_freeman(r, M_d, Rd):
+            r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
+            x = r_safe / Rd
 
-            v_sq = (2.0 * G * M_d / Rd) * (pt.square(y)) * (I_0 * K_0 - I_1 * K_1)
+            # inner
+            f1 = 0.5 * x**2 - 0.0625 * x**4
+
+            # mid
+            a1, a2, a3 = 0.1935, 0.0480, -0.0019
+            b1, b2, b3 = 0.8215, 0.1936, 0.0103
+
+            num = a1 * x**2 + a2 * x**3 + a3 * x**4
+            den = 1.0 + b1*x + b2*x**2 + b3*x**3
+            f2 = num / den
+
+            # outer
+            f3= (1.0/x) * (1.0 - 0.5/x + 0.375/x**2)
+
+            f = pt.switch(pt.le(x, 1.5), f1, pt.switch(pt.le(x, 4.0), f2, f3))
+            v_sq = (G * M_d / Rd) * f
             return v_sq
+
 
         # M_star: total mass of star
         # Re: Half-mass radius
@@ -276,8 +275,8 @@ class DmNfw:
             MB = f_bulge * Mstar
             MD = (1 - f_bulge) * Mstar
 
-            v_bulge_sq = v_sq_bulge_hernquist(r, MB, a)
-            v_disk_sq = v_sq_disk_freeman(r, MD, Rd)
+            v_bulge_sq = v_star_sq_bulge_hernquist(r, MB, a)
+            v_disk_sq = v_star_sq_disk_freeman(r, MD, Rd)
             v_baryon_sq = v_bulge_sq + v_disk_sq
             return v_baryon_sq
 
@@ -348,13 +347,9 @@ class DmNfw:
             inc_delta = pt.deg2rad(10)
             inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
 
-            # Mstar prior
-            # Mstar_log_mu = pt.log10(M_star)
-            # Mstar_log_t = pm.Normal("Mstar_log", mu=Mstar_log_mu, sigma=0.05 * Mstar_log_mu)
-
 
             # Re prior
-            # Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=0.1 * Re, lower=0.1 * Re, upper=10.0 * Re)
+            Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=0.1 * Re, lower=0.1 * Re, upper=10.0 * Re)
 
             # f_bulge prior
             f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
@@ -366,18 +361,13 @@ class DmNfw:
             # ---------------------
             # deterministic relations
             # ---------------------
-            Re_t = pm.Deterministic("Re", pt.as_tensor_variable(np.array(Re)))
-
-            # Mstar_t = pm.Deterministic("Mstar", 10 ** Mstar_log_t)
-            Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(np.array(M_star)))
-
             # V200: derived from M200
             M200_t = pm.Deterministic("M200", 10 ** M200_log_t)
             c_t = pm.Deterministic("c", 10 ** c_log_t)
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar_t, Re_t, f_bulge_t, a_t))
+            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar, Re_t, f_bulge_t, a_t))
             v_dm_sq_t = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t, V200_t))
             v_drift_sq_t = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t))
             v_rot_sq_t = pm.Deterministic("v_rot_sq", v_rot_sq_profile(v_dm_sq_t, v_star_sq_t, v_drift_sq_t))
@@ -448,14 +438,13 @@ class DmNfw:
         # 5) postprocess
         # ---------------------
         # summary with diagnostics
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'Mstar', 'Re', 'a'], round_to=3)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'Re', 'a'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"])
-        Mstar_mean = float(summary.loc["Mstar", "mean"])
         Re_mean = float(summary.loc["Re", "mean"])
         a_mean = float(summary.loc["a", "mean"])
 
@@ -464,7 +453,6 @@ class DmNfw:
         sigma0_sd = float(summary.loc["sigma_0", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"])
-        Mstar_sd = float(summary.loc["Mstar", "sd"])
         Re_sd = float(summary.loc["Re", "sd"])
         a_sd = float(summary.loc["a", "sd"])
 
@@ -474,7 +462,6 @@ class DmNfw:
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"])
-        Mstar_r_hat = float(summary.loc["Mstar", "r_hat"])
         Re_r_hat = float(summary.loc["Re", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
 
@@ -542,7 +529,6 @@ class DmNfw:
             print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})")
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
-            print(f" Infer Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})")
             print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/Re_mean:.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
             print(f"--- caculate ---")
@@ -551,7 +537,7 @@ class DmNfw:
             print(f" Calc: c            : {c_calc:.3f}")
             print(f" Calc: v_sys        : {vel_sys:.3f} km/s")
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
-            print(f" Stellar Mass       : {M_star:.3e} Msun")
+            print(f" Stellar Mass       : {Mstar:.3e} Msun")
             print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
             print("--- diagnostics ---")
             # print(f" RMSE               : {rmse:.3f} km/s")
@@ -623,9 +609,6 @@ class DmNfw:
             'inc': inc_mean,
             'inc_std': inc_sd,
             'inc_r_hat': inc_r_hat,
-            'Mstar': Mstar_mean,
-            'Mstar_std': Mstar_sd,
-            'Mstar_r_hat': Mstar_r_hat,
             'Re': Re_mean,
             'Re_std': Re_sd,
             'Re_r_hat': Re_r_hat,

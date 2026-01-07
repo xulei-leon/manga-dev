@@ -282,7 +282,8 @@ def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = 
         # Clear pymc internal cache to free up memory
         gc.collect()
 
-    if workers == 1:
+    # plot do not work well with multithreading
+    if workers == 1 or debug:
         for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
             _process(plate_ifu)
         return

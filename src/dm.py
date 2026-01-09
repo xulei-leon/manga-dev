@@ -202,6 +202,9 @@ class DmNfw:
             print("Not enough valid data points for fitting.")
             return None
 
+        print(f"NFW pymc radius valid: range=[{np.min(radius_valid):.2f}, {np.max(radius_valid):.2f}] kpc")
+        print(f"NFW pymc vel obs valid {len(vel_obs_valid)}: range=[{np.min(vel_obs_valid):.2f}, {np.max(vel_obs_valid):.2f}] km/s")
+
         # calculate stderr from ivar
         stderr_obs_valid = 1.0 / np.sqrt(ivar_obs_valid)
 
@@ -344,12 +347,11 @@ class DmNfw:
             v_sys_t = pm.TruncatedNormal("v_sys", mu=vel_sys, sigma=5.0, lower=vel_sys - v_sys_delta, upper=vel_sys + v_sys_delta)
 
             # inc prior: normal prior around measured value
-            inc_delta = pt.deg2rad(10)
+            inc_delta = pt.deg2rad(5.0)
             inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
 
-
             # Re prior
-            Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=0.1 * Re, lower=0.1 * Re, upper=10.0 * Re)
+            # Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=0.1 * Re, lower=0.1 * Re, upper=10.0 * Re)
 
             # f_bulge prior
             f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
@@ -367,7 +369,7 @@ class DmNfw:
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar, Re_t, f_bulge_t, a_t))
+            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar, Re, f_bulge_t, a_t))
             v_dm_sq_t = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t, V200_t))
             v_drift_sq_t = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t))
             v_rot_sq_t = pm.Deterministic("v_rot_sq", v_rot_sq_profile(v_dm_sq_t, v_star_sq_t, v_drift_sq_t))
@@ -378,9 +380,9 @@ class DmNfw:
             # model velocity: ensure non-negative argument to sqrt
             v_rot_sq_pos = pt.maximum(v_rot_sq_t, 1e-6)
             v_rot_model = pt.sqrt(v_rot_sq_pos)
-            v_obs_model =  v_obs_project_profile(v_rot_model, inc_t, phi_map_valid)
-            sign = pt.switch(vel_obs_valid >= 0, 1.0, -1.0)
-            v_obs_model = sign * pt.abs(v_obs_model) + v_sys_t
+            v_profile =  v_obs_project_profile(v_rot_model, inc_t, phi_map_valid)
+            vel_obs_sign = pt.switch(vel_obs_valid >= 0, 1.0, -1.0)
+            v_obs_model = vel_obs_sign * (pt.abs(v_profile) + v_sys_t)
 
             # likelihood: observed rotation velocities
             v_obs_sigma = stderr_obs_valid
@@ -404,20 +406,20 @@ class DmNfw:
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
             #
-            neg_term = pt.maximum(-v_rot_sq_t, 0.0)
-            tau_penalty = 1e-4
-            penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
-            pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
+            # neg_term = pt.maximum(-v_rot_sq_t, 0.0)
+            # tau_penalty = 1e-4
+            # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
+            # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
 
             # ---------------------
             # 4) sampling options & run
             # ---------------------
-            # draws=2000
-            # tune=1000
-            # chains=4
-            draws = 1000
-            tune = 500
-            chains = 2
+            draws=2000
+            tune=1000
+            chains=4
+            # draws = 1000
+            # tune = 500
+            # chains = 2
             target_accept=0.95
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
@@ -438,14 +440,14 @@ class DmNfw:
         # 5) postprocess
         # ---------------------
         # summary with diagnostics
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'Re', 'a'], round_to=3)
+        # variable in the posterior. Exclude it from the az.summary var_names list.
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'a'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"])
-        Re_mean = float(summary.loc["Re", "mean"])
         a_mean = float(summary.loc["a", "mean"])
 
         M200_sd = float(summary.loc["M200", "sd"])
@@ -453,16 +455,13 @@ class DmNfw:
         sigma0_sd = float(summary.loc["sigma_0", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"])
-        Re_sd = float(summary.loc["Re", "sd"])
         a_sd = float(summary.loc["a", "sd"])
-
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"])
-        Re_r_hat = float(summary.loc["Re", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
 
         # extract posterior samples
@@ -529,7 +528,6 @@ class DmNfw:
             print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})")
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
-            print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/Re_mean:.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
@@ -609,9 +607,6 @@ class DmNfw:
             'inc': inc_mean,
             'inc_std': inc_sd,
             'inc_r_hat': inc_r_hat,
-            'Re': Re_mean,
-            'Re_std': Re_sd,
-            'Re_r_hat': Re_r_hat,
             'a': a_mean,
             'a_std': a_sd,
             'a_r_hat': a_r_hat,

@@ -315,10 +315,10 @@ class DmNfw:
 
         # Formula: v_obs = v_sys + v_rot * (sin(i) * cos(phi - phi_0))
         # Warning: The sign of the calculated velocity may be different from the observed velocity.
-        def v_obs_project_profile(v_rot, inc, phi_map):
+        def v_obs_project_profile(v_rot, v_sys, inc, phi_map):
             phi_delta = (phi_map + pt.pi) % (2 * pt.pi)  # phi_map is (phi - phi_0)
             correction = pt.sin(inc) * pt.cos(phi_delta)
-            v_obs = v_rot * correction
+            v_obs = v_sys + v_rot * correction
             return v_obs
 
         # ---------------------
@@ -380,9 +380,7 @@ class DmNfw:
             # model velocity: ensure non-negative argument to sqrt
             v_rot_sq_pos = pt.maximum(v_rot_sq_t, 1e-6)
             v_rot_model = pt.sqrt(v_rot_sq_pos)
-            v_profile =  v_obs_project_profile(v_rot_model, inc_t, phi_map_valid)
-            vel_obs_sign = pt.switch(vel_obs_valid >= 0, 1.0, -1.0)
-            v_obs_model = vel_obs_sign * (pt.abs(v_profile) + v_sys_t)
+            v_obs_model =  v_obs_project_profile(v_rot_model, v_sys_t, inc_t, phi_map_valid)
 
             # likelihood: observed rotation velocities
             v_obs_sigma = stderr_obs_valid
@@ -406,10 +404,10 @@ class DmNfw:
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
             #
-            # neg_term = pt.maximum(-v_rot_sq_t, 0.0)
-            # tau_penalty = 1e-4
-            # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
-            # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
+            neg_term = pt.maximum(-v_rot_sq_t, 0.0)
+            tau_penalty = 1e-4
+            penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
+            pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
 
             # ---------------------
             # 4) sampling options & run
@@ -433,8 +431,7 @@ class DmNfw:
                               return_inferencedata=True, compute_convergence_checks=True)
 
             pm.compute_log_likelihood(trace)
-            if self.plot_enable:
-                ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)
+            ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)
 
         # ---------------------
         # 5) postprocess
@@ -481,7 +478,6 @@ class DmNfw:
         v_rot_sq_mean = np.mean(v_rot_sq_samples, axis=1)
         v_rot_mean = np.sqrt(np.clip(v_rot_sq_mean, a_min=0.0, a_max=None))
 
-
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
         model_loo = az.loo(trace, pointwise=True)
@@ -496,22 +492,47 @@ class DmNfw:
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
 
-        # compute fitted velocity profiles using mean params
-        # vel_rot_sq_fit = self._vel_rot_sq_profile(radius_valid, M200_mean, c_mean, z, M_star, Re, sigma0_mean)
-        # vel_dm_sq_fit = self._vel_dm_sq_profile_M200(radius_valid, M200_mean, c=c_mean, z=z)
-        # vel_star_sq_fit = self.stellar_util.stellar_vel_sq_profile(radius_valid, M_star, Re)
-
-        # vel_rot_fit = np.sqrt(np.clip(vel_rot_sq_fit, a_min=0.0, a_max=None))
-        # vel_dm_fit = np.sqrt(np.clip(vel_dm_sq_fit, a_min=0.0, a_max=None)) if vel_dm_sq_fit is not None else None
-        # vel_star_fit = np.sqrt(np.clip(vel_star_sq_fit, a_min=0.0, a_max=None))
-
         # ---------------------
         # residual diagnostics
         # ---------------------
-        # res_mean = vel_obs_valid - v_obs_mean
-        # rmse = np.sqrt(np.nanmean(res_mean**2))
-        # mae = np.nanmean(np.abs(res_mean))
-        # bias = np.nanmean(res_mean)
+        # posterior predictive v_obs
+        v_obs_ppc_raw = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
+
+        # Standardize to shape (n_samples, n_points) to avoid axis-order surprises
+        n_points = len(radius_valid)
+        if v_obs_ppc_raw.ndim != 2:
+            raise ValueError(f"Unexpected v_obs_ppc shape: {v_obs_ppc_raw.shape}")
+        if v_obs_ppc_raw.shape[-1] == n_points:
+            v_obs_ppc = v_obs_ppc_raw
+        elif v_obs_ppc_raw.shape[0] == n_points:
+            v_obs_ppc = v_obs_ppc_raw.T
+        else:
+            raise ValueError(
+                f"Posterior predictive v_obs shape {v_obs_ppc_raw.shape} does not match n_points={n_points}."
+            )
+
+        # Compute posterior predictive mean at the observed radius_valid points
+        v_obs_mean = np.mean(v_obs_ppc, axis=0)
+
+        # ---------------------
+        # residuals
+        # ---------------------
+        mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean) & np.isfinite(stderr_obs_valid) & (stderr_obs_valid > 0)
+        residual = vel_obs_valid - v_obs_mean
+        residual_std = np.full_like(residual, np.nan, dtype=float)
+        residual_std[mask] = residual[mask] / stderr_obs_valid[mask]
+
+        res_use = residual[mask]
+        rmse = float(np.sqrt(np.mean(res_use**2)))
+        nrmse = float(rmse / np.mean(np.abs(vel_obs_valid[mask])))
+        mae = float(np.mean(np.abs(res_use)))
+        bias = float(np.mean(res_use))
+
+        # chi^2 diagnostics (approx.)
+        chi2 = float(np.sum(residual_std[mask] ** 2))
+        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, f_bulge, a  -> ~7
+        dof = int(max(np.sum(mask) - 7, 1))
+        redchi = float(np.sqrt(chi2 / dof))
 
         # ---------------------
         # Inference summary info
@@ -538,9 +559,11 @@ class DmNfw:
             print(f" Stellar Mass       : {Mstar:.3e} Msun")
             print(f" Half-Mass R(Re)    : {Re:.3f} kpc")
             print("--- diagnostics ---")
-            # print(f" RMSE               : {rmse:.3f} km/s")
-            # print(f" MAE                : {mae:.3f} km/s")
-            # print(f" Bias               : {bias:.3f} km/s")
+            print(f" Reduced Chi        : {redchi:.3f}")
+            print(f" RMSE               : {rmse:.3f} km/s")
+            print(f" NRMSE              : {nrmse:.3f}")
+            print(f" MAE                : {mae:.3f} km/s")
+            print(f" Bias               : {bias:.3f} km/s")
             print("------------------------------------------------------------\n")
 
         # ---------------------
@@ -569,8 +592,23 @@ class DmNfw:
             r_plot = np.linspace(0.0, np.nanmax(radius_valid), num=500)
 
             # compute posterior predictive mean and credible intervals
-            v_obs_ppc = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
-            v_obs_interp = np.array([np.interp(r_plot, radius_valid, v_obs_ppc[:,i]) for i in range(v_obs_ppc.shape[1])])
+            v_obs_ppc_raw = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
+            n_points = len(radius_valid)
+            if v_obs_ppc_raw.ndim != 2:
+                raise ValueError(f"Unexpected v_obs_ppc shape: {v_obs_ppc_raw.shape}")
+            if v_obs_ppc_raw.shape[-1] == n_points:
+                v_obs_ppc = v_obs_ppc_raw
+            elif v_obs_ppc_raw.shape[0] == n_points:
+                v_obs_ppc = v_obs_ppc_raw.T
+            else:
+                raise ValueError(
+                    f"Posterior predictive v_obs shape {v_obs_ppc_raw.shape} does not match n_points={n_points}."
+                )
+
+            # Interpolate each posterior predictive sample onto r_plot
+            v_obs_interp = np.array([
+                np.interp(r_plot, radius_valid, v_obs_ppc[s, :]) for s in range(v_obs_ppc.shape[0])
+            ])
             v_obs_mean = np.mean(v_obs_interp, axis=0)
             v_obs_hdi = az.hdi(v_obs_interp, hdi_prob=0.94)
             plt.plot(r_plot, v_obs_mean, color='red', label='Posterior Predictive Mean V_obs')
@@ -586,9 +624,10 @@ class DmNfw:
         success = True
         inf_result = {
             'radius': radius_valid,
-            'vel_rot': v_rot_mean,
-            'vel_dm': v_dm_mean,
-            'vel_star': v_star_mean,
+            'v_rot': v_rot_mean,
+            'v_dm': v_dm_mean,
+            'v_star': v_star_mean,
+            'v_drift': v_drift_mean,
         }
 
         inf_params = {
@@ -610,13 +649,11 @@ class DmNfw:
             'a': a_mean,
             'a_std': a_sd,
             'a_r_hat': a_r_hat,
-            'v_star': v_star_mean,
-            'v_dm': v_dm_mean,
-            'v_drift': v_drift_mean,
-            'v_rot': v_rot_mean,
-            # 'rmse': rmse,
-            # 'mae': mae,
-            # 'bias': bias,
+            'rmse': rmse,
+            'mae': mae,
+            'bias': bias,
+            'chi2': chi2,
+            'chi2_red': redchi,
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,
             'p_loo': p_loo,

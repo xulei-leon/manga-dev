@@ -182,9 +182,9 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
         return
 
     r_inf = inf_result['radius']
-    V_rot_inf = inf_result['vel_rot']
-    V_dm_inf = inf_result['vel_dm']
-    V_star_inf = inf_result['vel_star']
+    V_rot_inf = inf_result['v_rot']
+    V_dm_inf = inf_result['v_dm']
+    V_star_inf = inf_result['v_star']
 
 
     #--------------------------------------------------------

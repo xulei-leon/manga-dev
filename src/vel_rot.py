@@ -320,11 +320,10 @@ class VelRot:
         def model_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
             Vc, Rt, s_out, Vsys, inc, phi_delta = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n])
             vel_rot_model = self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
-            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid - phi_delta)
+            vel_project = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid - phi_delta)
             # fixed the sign of vel_obs_model to be the same as vel_valid
             sign = np.sign(vel_obs_valid)
-            vel_obs_model = np.abs(vel_obs_model) * sign
-            vel_obs_model += Vsys  # add systemic velocity
+            vel_obs_model = sign * (np.abs(vel_project) + Vsys)
             return vel_obs_model
 
         # sigma: Standard Deviation of the Errors
@@ -508,7 +507,7 @@ class VelRot:
             'Vc': f"{Vc_fit:.2f}",
             'Rt': f"{Rt_fit:.2f}",
             's_out': f"{s_out_fit:.2f}",
-            'v_sys': f"{Vsys_fit:.2f}",
+            'Vsys': f"{Vsys_fit:.2f}",
             'inc': f"{inc_fit:.2f}",
             'phi_delta': f"{phi_delta_fit:.3f}",
             'Rmax': f"{R_max:.3f}",
@@ -611,36 +610,8 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
     if check:
         if ((data_count < VEL_OBS_COUNT_THRESHOLD1)) or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
-            print(f"First fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+            print(f"Fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
             return
-
-    #----------------------------------------------------------------------
-    # Second fitting
-    #----------------------------------------------------------------------
-    # print(f"## Second fitting {PLATE_IFU} ##")
-    # success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_new, V_obs_new, ivar_obs_new, phi_map, radius_fit=r_fit)
-    # if not success:
-    #     print(f"Fitting rotational velocity failed for {PLATE_IFU}")
-    #     return
-
-    # r_rot_fit = fit_result['radius_rot']
-    # V_rot_fit = fit_result['vel_rot']
-    # stderr_rot_fit = fit_result['stderr_rot']
-    # inc_rad_fit = float(fit_params['inc'])
-    # V_sys_fit = float(fit_params['Vsys'])
-    # phi_delta_fit = float(fit_params['phi_delta'])
-
-    # # Filter fitting parameters
-    # data_count = np.sum(np.isfinite(V_obs_new))
-    # NRMSE = float(fit_params['NRMSE'])
-    # CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    # if data_count < VEL_OBS_COUNT_THRESHOLD2 or (NRMSE > NRMSE_THRESHOLD2) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD2):
-    #     print(f"Second fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
-    #     return
-
-    #----------------------------------------------------------------------
-    # End of second fitting
-    #----------------------------------------------------------------------
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(inc_rad_fit, V_sys_fit, phi_delta_fit)
 
@@ -704,11 +675,8 @@ def main(ifu: str=None):
 
     for plate_ifu in plate_ifu_list:
         print(f"\n\n================ Processing [{plate_ifu}] ================")
-        try:
-            test_process(plate_ifu, check=check)
-        except Exception as e:
-            print(f"Error processing {plate_ifu}: {e}")
-            continue
+        test_process(plate_ifu, check=check)
+
 
 import argparse
 

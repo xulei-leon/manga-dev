@@ -134,7 +134,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     V_rot_fit = fit_result['vel_rot']
     stderr_rot_fit = fit_result['stderr_rot']
     inc_rad_fit = float(fit_params['inc'])
-    vel_sys_fit = float(fit_params['v_sys'])
+    vel_sys_fit = float(fit_params['Vsys'])
     phi_delta_fit = float(fit_params['phi_delta'])
     Rmax = float(fit_params['Rmax'])
     Rt = float(fit_params['Rt'])

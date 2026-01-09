@@ -33,12 +33,9 @@ PHI_DEG_THRESHOLD = 45.0
 IVAR_RATIO_THRESHOLD = 0.10  # drop the worst 10% of ivar values
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD1 = 0.07  # threshold for first fitting
-NRMSE_THRESHOLD2 = 0.05  # tighter threshold for second fitting
-CHI_SQ_V_THRESHOLD1 = 5.0  # looser threshold for first fitting
-CHI_SQ_V_THRESHOLD2 = 3.0  # threshold for reduced chi-squared to filter weak fitting
-VEL_OBS_COUNT_THRESHOLD1 = 150  # minimum number of valid velocity data points
-VEL_OBS_COUNT_THRESHOLD2 = 100  # minimum number of valid velocity data points
+NRMSE_THRESHOLD = 0.08  # threshold for first fitting
+CHI_SQ_V_THRESHOLD = 5.0  # looser threshold for first fitting
+VEL_OBS_COUNT_THRESHOLD = 150  # minimum number of valid velocity data points
 
 RADIUS_MIN_KPC = 0.1  # kpc/h
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
@@ -198,27 +195,30 @@ class VelRot:
     # Inclination Angle: The angle between the galaxy's disk and the plane of the sky.
     # Azimuthal Angle: The angle of the dataset within the galaxy's disk relative to the kinematic major axis (i.e., the line where the line-of-sight velocity is zero).
 
-    # Formula: V_obs = V_rot * (sin(i) * cos(phi - phi_0))
+    # Formula: V_obs = Vsys + V_rot * (sin(i) * cos(phi - phi_0))
     # Warning: The sign of the calculated velocity may be different from the observed velocity.
-    def _vel_obs_project_profile(self, vel_rot: np.ndarray, inc: float, phi_map: np.ndarray) -> np.ndarray:
+    def _vel_obs_project_profile(self, vel_rot: np.ndarray, vel_sys: float, inc: float, phi_map: np.ndarray) -> np.ndarray:
         phi_delta = (phi_map + np.pi) % (2 * np.pi)  # phi_map is (phi - phi_0)
 
         correction = np.sin(inc) * np.cos(phi_delta)
-        vel_obs = vel_rot * correction
+        vel_obs = vel_sys + vel_rot * correction
         return vel_obs
 
-    # formula: V_rot = V_obs / (sin(i) * cos(phi - phi_0))
-    def _vel_rot_disproject_profile(self, vel_obs: np.ndarray, inc: float, phi_map: np.ndarray) -> np.ndarray:
+    # formula: V_rot = (V_obs - Vsys) / (sin(i) * cos(phi - phi_0))
+    def _vel_rot_disproject_profile(self, vel_obs: np.ndarray, vel_sys: float, inc: float, phi_map: np.ndarray) -> np.ndarray:
         phi_delta = (phi_map + np.pi) % (2 * np.pi)  # phi_map is (phi - phi_0)
 
         correction = np.sin(inc) * np.cos(phi_delta)
         correction = np.where(np.abs(correction) < 1e-3, np.nan, correction)
-        vel_rot = vel_obs / correction
+        vel_disproject = (vel_obs - vel_sys) / correction
 
-        # set the sign of vel_rot to be the same as vel_obs
-        vel_rot = np.copysign(np.abs(vel_rot), vel_obs)
+        # set the sign of vel_disproject according to the phi_map quadrants
+        vel_disproject = np.where((phi_delta >= 0) & (phi_delta < np.pi/2), np.abs(vel_disproject), vel_disproject)
+        vel_disproject = np.where((phi_delta >= np.pi/2) & (phi_delta < np.pi), -np.abs(vel_disproject), vel_disproject)
+        vel_disproject = np.where((phi_delta >= np.pi) & (phi_delta < 3*np.pi/2), -np.abs(vel_disproject), vel_disproject)
+        vel_disproject = np.where((phi_delta >= 3*np.pi/2) & (phi_delta < 2*np.pi), np.abs(vel_disproject), vel_disproject)
 
-        return vel_rot
+        return vel_disproject
 
 
     ################################################################################
@@ -320,10 +320,8 @@ class VelRot:
         def model_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
             Vc, Rt, s_out, Vsys, inc, phi_delta = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n])
             vel_rot_model = self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
-            vel_project = self._vel_obs_project_profile(vel_rot_model, inc, phi_map_valid - phi_delta)
-            # fixed the sign of vel_obs_model to be the same as vel_valid
-            sign = np.sign(vel_obs_valid)
-            vel_obs_model = sign * (np.abs(vel_project) + Vsys)
+            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, Vsys, inc, phi_map_valid - phi_delta)
+            # vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
             return vel_obs_model
 
         # sigma: Standard Deviation of the Errors
@@ -544,7 +542,7 @@ class VelRot:
     # disprojected velocity
     def get_vel_obs_disp(self, inc_rad:float, vel_sys: float, phi_delta: float=0.0):
         r_map, v_obs_map, ivar_map, phi_map = self.get_vel_obs()
-        v_rot_map = self._vel_rot_disproject_profile(v_obs_map-vel_sys, inc_rad, phi_map - phi_delta)
+        v_rot_map = self._vel_rot_disproject_profile(v_obs_map, vel_sys, inc_rad, phi_map - phi_delta)
         return r_map, v_rot_map, ivar_map
 
     def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
@@ -576,7 +574,7 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     r_obs_raw, V_obs_raw, ivar_obs_raw, phi_map = vel_rot.get_vel_obs(is_filter=False)
 
     r_obs_map, V_obs_map, ivar_obs_map, phi_map = vel_rot.get_vel_obs()
-    if np.sum(np.isfinite(V_obs_map)) < min(VEL_OBS_COUNT_THRESHOLD1, VEL_OBS_COUNT_THRESHOLD2):
+    if np.sum(np.isfinite(V_obs_map)) < VEL_OBS_COUNT_THRESHOLD:
         print(f"Valid data {np.sum(np.isfinite(V_obs_map))} for {PLATE_IFU}, skipping...")
         return
 
@@ -588,7 +586,7 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     #----------------------------------------------------------------------
     # First fitting
     #----------------------------------------------------------------------
-    print(f"## First fitting {PLATE_IFU} ##")
+    print(f"## Fitting {PLATE_IFU} ##")
     success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
@@ -609,9 +607,11 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     NRMSE = float(fit_params['NRMSE'])
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
     if check:
-        if ((data_count < VEL_OBS_COUNT_THRESHOLD1)) or (NRMSE > NRMSE_THRESHOLD1) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD1):
-            print(f"Fitting results failure for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, skipping...")
+        if ((data_count < VEL_OBS_COUNT_THRESHOLD)) or (NRMSE > NRMSE_THRESHOLD) or (CHI_SQ_V > CHI_SQ_V_THRESHOLD):
+            print(f"Fitting results failure for {PLATE_IFU}, COUNT: {data_count}({VEL_OBS_COUNT_THRESHOLD}), NRMSE: {NRMSE:.3f}({NRMSE_THRESHOLD}), CHI_SQ_V: {CHI_SQ_V:.3f}({CHI_SQ_V_THRESHOLD}), skipping...")
             return
+        else:
+            print(f"Fitting results passed for {PLATE_IFU}, COUNT: {data_count}, NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}")
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(inc_rad_fit, V_sys_fit, phi_delta_fit)
 

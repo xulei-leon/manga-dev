@@ -445,6 +445,7 @@ class VelRot:
             print(f" RMSE                   : {RMSE:.3f} km/s")
             print(f" NRMSE                  : {NRMSE:.3f}")
             print(f" Correlation Matrix     : \n{COR_MATRIX if COR_MATRIX is not None else 'N/A'}")
+            print(f" Fit report             : \n{lm_result.fit_report()}")
             print("--------------------------------------------------------------------\n")
 
 
@@ -663,6 +664,7 @@ def main(ifu: str=None):
     check = True
     if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
+        except_info = False
     elif ifu == "fit":
         plate_ifu_list = get_plate_list_from_fit()
     elif ifu is not None:
@@ -675,8 +677,13 @@ def main(ifu: str=None):
 
     for plate_ifu in plate_ifu_list:
         print(f"\n\n================ Processing [{plate_ifu}] ================")
-        test_process(plate_ifu, check=check)
-
+        if except_info:
+            test_process(plate_ifu, check=check)
+        else:
+            try:
+                test_process(plate_ifu, check=check)
+            except Exception as e:
+                print(f"Exception occurred while processing {plate_ifu}: {e}")
 
 import argparse
 

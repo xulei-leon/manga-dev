@@ -267,6 +267,9 @@ class DmNfw:
             inc_delta = pt.deg2rad(5.0)
             inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
 
+            # phi_delta prior
+            phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
+
             # Notice: Do not use vbecause it is strongly degenerate with other parameters.
             # Re_star_mu = Re_star
             # Re_star_t = pm.TruncatedNormal("Re_star", mu=Re_star_mu, sigma=0.2*Re_star_mu, lower=1e-3*r_max, upper=1.0*r_max)
@@ -299,7 +302,7 @@ class DmNfw:
             # model velocity: ensure non-negative argument to sqrt
             v_rot_sq_pos = pt.maximum(v_rot_sq_t, 1e-6)
             v_rot_model = pt.sqrt(v_rot_sq_pos)
-            v_obs_model =  v_obs_project_profile(v_rot_model, v_sys_t, inc_t, phi_map_valid)
+            v_obs_model =  v_obs_project_profile(v_rot_model, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
             # likelihood: observed rotation velocities
             v_obs_sigma = stderr_obs_valid
@@ -355,7 +358,7 @@ class DmNfw:
         # ---------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "R_d", "v_sys", "inc", 'f_bulge', 'a'], round_to=3)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "R_d", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
@@ -363,7 +366,7 @@ class DmNfw:
         R_d_mean = float(summary.loc["R_d", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"])
-        # Re_star_mean = float(summary.loc["Re_star", "mean"])
+        phi_delta_mean = float(summary.loc["phi_delta", "mean"])
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
 
@@ -373,7 +376,7 @@ class DmNfw:
         R_d_sd = float(summary.loc["R_d", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"])
-        # Re_star_sd = float(summary.loc["Re_star", "sd"])
+        phi_delta_sd = float(summary.loc["phi_delta", "sd"])
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
 
@@ -383,14 +386,12 @@ class DmNfw:
         R_d_r_hat = float(summary.loc["R_d", "r_hat"])
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"])
+        phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"])
         f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
-        # Re_star_r_hat = float(summary.loc["Re_star", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
 
         # extract posterior samples
         posterior = trace.posterior
-        # v_obs_samples = posterior["v_obs"].stack(samples=("chain", "draw")).values
-        # v_obs_mean = np.mean(v_obs_samples, axis=1)
         v_dm_sq_samples = posterior["v_dm_sq"].stack(samples=("chain", "draw")).values
         v_dm_sq_mean = np.mean(v_dm_sq_samples, axis=1)
         v_dm_mean = np.sqrt(np.clip(v_dm_sq_mean, a_min=0.0, a_max=None))
@@ -478,7 +479,7 @@ class DmNfw:
             print(f" Infer R_d          : {R_d_mean:.3f} ± {R_d_sd:.3f} kpc ({R_d_sd/R_d_mean:.2%})")
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
-            # print(f" Infer Re_star      : {Re_star_mean:.3f} ± {Re_star_sd:.3f} kpc ({Re_star_sd/Re_star_mean:.2%})")
+            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/phi_delta_mean:.2%})")
             print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/f_bulge_mean:.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
             print(f"--- caculate ---")
@@ -567,27 +568,6 @@ class DmNfw:
             'c': c_mean,
             'c_std': c_sd,
             'c_r_hat': c_r_hat,
-            'sigma_0': sigma0_mean,
-            'sigma_0_std': sigma0_sd,
-            'sigma_0_r_hat': sigma0_r_hat,
-            'R_d': R_d_mean,
-            'R_d_std': R_d_sd,
-            'R_d_r_hat': R_d_r_hat,
-            'v_sys': v_sys_mean,
-            'v_sys_std': v_sys_sd,
-            'v_sys_r_hat': v_sys_r_hat,
-            'inc': inc_mean,
-            'inc_std': inc_sd,
-            'inc_r_hat': inc_r_hat,
-            # 'Re_star': Re_star_mean,
-            # 'Re_star_std': Re_star_sd,
-            # 'Re_star_r_hat': Re_star_r_hat,
-            'f_bulge': f_bulge_mean,
-            'f_bulge_std': f_bulge_sd,
-            'f_bulge_r_hat': f_bulge_r_hat,
-            'a': a_mean,
-            'a_std': a_sd,
-            'a_r_hat': a_r_hat,
             'rmse': rmse,
             'mae': mae,
             'bias': bias,

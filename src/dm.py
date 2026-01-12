@@ -21,7 +21,7 @@ from astropy import constants as const
 import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
-from vel_stellar import Stellar
+from stellar import Stellar
 
 H = 0.674  # assuming H0 = 67.4 km/s/Mpc
 G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
@@ -113,7 +113,10 @@ class DmNfw:
         r_max = np.nanmax(radius_valid)
 
         # stellar mass
-        Mstar, Re_star = self.stellar_util.fit_stellar_mass()
+        fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
+        Mstar = fit_stellar_mass_results['Mstar']
+        Re_star = fit_stellar_mass_results['Re']
+        Re_star_err = fit_stellar_mass_results['Re_err']
 
         z = self._get_z()
 

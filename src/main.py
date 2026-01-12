@@ -14,7 +14,7 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
-from vel_stellar import Stellar
+from stellar import Stellar
 from vel_rot import VelRot
 from dm import DmNfw
 

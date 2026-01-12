@@ -145,48 +145,26 @@ class PlotUtil:
         fig.tight_layout()
         plt.show()
 
-    # plot r-v curve
-    def plot_rv_curve(self, r1_map: np.ndarray, V1_map: np.ndarray, title: str="", r2_map: np.ndarray=None, V2_map: np.ndarray=None, title2: str="", residuals: np.ndarray=None):
-        r1_map = np.asarray(r1_map, dtype=float)
-        V1_map = np.asarray(V1_map, dtype=float)
-        r1_map = np.sign(V1_map) * np.abs(r1_map)
+    def plot_rv_curves(self, rv_data_list, plateifu: str=""):
+        fig, ax = plt.subplots(figsize=(10, 6))
 
-        # Broadcast + flatten to avoid shape-mismatch boolean indexing errors
-        r1, V1 = np.broadcast_arrays(r1_map, V1_map)
-        r1 = r1.ravel()
-        V1 = V1.ravel()
+        for rv_data in rv_data_list:
+            r_map = np.asarray(rv_data['r_map'], dtype=float)
+            V_map = np.asarray(rv_data['V_map'], dtype=float)
+            title = rv_data.get('title', '')
+            color = rv_data.get('color', None)
 
-        # Mask invalid values for gas rotation
-        valid_gas = np.isfinite(r1) & np.isfinite(V1)
+            r_map = np.sign(V_map) * np.abs(r_map)
 
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.scatter(r1[valid_gas], V1[valid_gas], s=2, color='red', alpha=0.2, label=f'{title} Velocity')
+            r, V = np.broadcast_arrays(r_map, V_map)
+            r = r.ravel()
+            V = V.ravel()
 
-        # Plot stellar velocity if provided
-        if r2_map is not None and V2_map is not None:
-            r2_map = np.asarray(r2_map, dtype=float)
-            V2_map = np.asarray(V2_map, dtype=float)
-            r2_map = np.sign(V2_map) * np.abs(r2_map)
+            valid = np.isfinite(r) & np.isfinite(V)
 
-            r2, V2 = np.broadcast_arrays(r2_map, V2_map)
-            r2 = r2.ravel()
-            V2 = V2.ravel()
+            ax.scatter(r[valid], V[valid], s=2, alpha=0.2, label=f'{title} Velocity', color=color)
 
-            # Mask invalid values for stellar velocity
-            valid_stellar = np.isfinite(r2) & np.isfinite(V2)
-            ax.scatter(r2[valid_stellar], V2[valid_stellar], s=2, color='blue', alpha=0.2, label=f'{title2} Velocity')
-
-            if residuals is not None:
-                residuals = np.asarray(residuals, dtype=float)
-                r2b, V2b, res = np.broadcast_arrays(r2_map, V2_map, residuals)
-                r2b = r2b.ravel()
-                res = res.ravel()
-
-                valid_residuals = np.isfinite(r2b) & np.isfinite(res)
-                ax.scatter(r2b[valid_residuals], res[valid_residuals], s=2, color='green', alpha=0.2, label='Residuals')
-                ax.axhline(0, color='black', linestyle='-')
-
-        ax.set_title(f"Galaxy Rotation Curve (R-V)")
+        ax.set_title(f"{plateifu} Galaxy Velocity Curves (R-V)")
         ax.set_xlabel("Radius R (kpc/h)")
         ax.set_ylabel("Velocity V (km/s)")
         ax.axhline(0, color='black', linestyle='-', linewidth=0.5)

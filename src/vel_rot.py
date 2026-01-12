@@ -477,6 +477,7 @@ class VelRot:
         stderr = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)
         STD_ERROR_RATIO = 3.0
         STD_ERROR_RATIO = RMSE / SIGMA_OBS_BAR if SIGMA_OBS_BAR > 0 else np.nan
+        print(f"SIGMA_OBS_BAR: {SIGMA_OBS_BAR:.3f} km/s, RMSE: {RMSE:.3f} km/s, STD_ERROR_RATIO: {STD_ERROR_RATIO:.3f}")
         clip_mask_1d = np.abs(residuals) <= STD_ERROR_RATIO * stderr
 
         # Map the 1D mask (for valid points) back to the original map shape
@@ -616,13 +617,10 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
 
     r_disp_map, V_disp_map, ivar_obs_map = vel_rot.get_vel_obs_disp(inc_rad_fit, V_sys_fit, phi_delta_fit)
 
-    # plot_util.plot_rv_curve(r_obs_raw, V_obs_raw, title=f"[{PLATE_IFU}] Obs Raw", r2_map=r_disp_map, V2_map=V_disp_map, title2=f"[{PLATE_IFU}] Obs Deprojected")
-
-    # V_obs Vs. V_rot fitted
-    # plot_util.plot_rv_curve(r_obs_map, V_obs_map, title=f"[{PLATE_IFU}] Obs Raw", r2_map=r_rot_fit, V2_map=V_rot_fit, title2=f"[{PLATE_IFU}] Obs Fit")
-
-    # V_disp Vs. V_rot fitted
-    plot_util.plot_rv_curve(r_disp_map, V_disp_map, title=f" [{PLATE_IFU}] Obs Deproject", r2_map=r_rot_fit, V2_map=V_rot_fit, title2=f" [{PLATE_IFU}] Obs Fit")
+    plot_util.plot_rv_curves([
+        {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'blue'},
+        {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'red'},
+    ], plateifu=PLATE_IFU)
 
     return
 
@@ -662,6 +660,8 @@ TEST_PLATE_IFUS = [
 def main(ifu: str=None):
     plate_ifu_list = []
     check = True
+    except_info = True
+
     if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
         except_info = False

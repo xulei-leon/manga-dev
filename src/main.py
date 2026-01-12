@@ -200,24 +200,12 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     ## plot velocity map
     ########################################################
     if  debug or plot_enable:
-        # plot galaxy image
-        # plot_util.plot_galaxy_image(PLATE_IFU)
-
-        # plot RC curves
-        # plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
-        #                         r2_map=r_rot_fit, V2_map=V_rot_fit, title2="Observed Fit")
-
-        # plot_util.plot_rv_curve(r1_map=r_disp_map, V1_map=V_disp_map, title="Observed Deproject",
-        #                         r2_map=r_inf, V2_map=V_rot_inf, title2="Fitted Total")
-
-        plot_util.plot_rv_curve(r1_map=r_rot_fit, V1_map=V_rot_fit, title="Observed Fit",
-                                r2_map=r_inf, V2_map=V_rot_inf, title2="Fitted Total")
-
-        # plot_util.plot_rv_curve(r1_map=r_inf, V1_map=V_rot_inf, title="Fit Total",
-        #                     r2_map=r_inf, V2_map=V_dm_inf, title2="Fit DM")
-
-        # plot_util.plot_rv_curve(r1_map=r_inf, V1_map=V_rot_inf, title="Fit Total",
-        #                         r2_map=r_inf, V2_map=V_star_inf, title2="Fit Star")
+        plot_util.plot_rv_curves([
+            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'blue'},
+            {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'red'},
+            {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'green'},
+            {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'gray'},
+        ], plateifu=PLATE_IFU)
 
     return
 

@@ -153,16 +153,24 @@ class PlotUtil:
             V_map = np.asarray(rv_data['V_map'], dtype=float)
             title = rv_data.get('title', '')
             color = rv_data.get('color', None)
+            linestyle = rv_data.get('linestyle', None)
 
             r_map = np.sign(V_map) * np.abs(r_map)
 
-            r, V = np.broadcast_arrays(r_map, V_map)
-            r = r.ravel()
-            V = V.ravel()
+            r = r_map.ravel()
+            V = V_map.ravel()
 
             valid = np.isfinite(r) & np.isfinite(V)
+            r_valid = r[valid]
+            V_valid = V[valid]
 
-            ax.scatter(r[valid], V[valid], s=2, alpha=0.2, label=f'{title} Velocity', color=color)
+            if linestyle:
+                sort_idx = np.argsort(r_valid)
+                r_valid = r_valid[sort_idx]
+                V_valid = V_valid[sort_idx]
+                ax.plot(r_valid, V_valid, alpha=0.7, label=f'{title} Velocity', color=color, linestyle=linestyle)
+            else:
+                ax.scatter(r_valid, V_valid, s=2, alpha=0.2, label=f'{title} Velocity', color=color)
 
         ax.set_title(f"{plateifu} Galaxy Velocity Curves (R-V)")
         ax.set_xlabel("Radius R (kpc/h)")

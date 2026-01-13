@@ -185,7 +185,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     V_rot_inf = inf_result['v_rot']
     V_dm_inf = inf_result['v_dm']
     V_star_inf = inf_result['v_star']
-
+    V_drift_inf = inf_result['v_drift']
 
     #--------------------------------------------------------
     # DM NFW fitting
@@ -194,17 +194,20 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
     print(f"V_total_fit shape: {V_rot_inf.shape}, range: [{np.nanmin(V_rot_inf):,.1f}, {np.nanmax(V_rot_inf):,.1f}] km/s")
     print(f"V_dm_fit shape: {V_dm_inf.shape}, range: [{np.nanmin(V_dm_inf):,.1f}, {np.nanmax(V_dm_inf):,.1f}] km/s")
-    print(f"V_stellar_fit shape: {V_star_inf.shape}, range: [{np.nanmin(V_star_inf):,.1f}, {np.nanmax(V_star_inf):,.1f}] km/s")
+    print(f"V_star_fit shape: {V_star_inf.shape}, range: [{np.nanmin(V_star_inf):,.1f}, {np.nanmax(V_star_inf):,.1f}] km/s")
+    print(f"V_drift_fit shape: {V_drift_inf.shape}, range: [{np.nanmin(V_drift_inf):,.1f}, {np.nanmax(V_drift_inf):,.1f}] km/s")
 
     ########################################################
     ## plot velocity map
     ########################################################
     if  debug or plot_enable:
         plot_util.plot_rv_curves([
-            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'blue'},
-            {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'red'},
-            {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'green'},
-            {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'gray'},
+            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None},
+            {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'black', 'linestyle': '-'},
+            {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'blue', 'linestyle': '-'},
+            {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},
+            {'r_map': r_inf, 'V_map': V_star_inf, 'title': "Inf Stellar", 'color': 'green', 'linestyle': '-'},
+            {'r_map': r_inf, 'V_map': V_drift_inf, 'title': "Inf Drift", 'color': 'red', 'linestyle': ':'},
         ], plateifu=PLATE_IFU)
 
     return

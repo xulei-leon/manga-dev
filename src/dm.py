@@ -114,6 +114,7 @@ class DmNfw:
 
         # Convert inverse-variance to 1-sigma error
         stderr_obs_valid = np.sqrt(1.0 / ivar_obs_valid + VEL_SYSTEM_ERROR**2)
+        print(f"vel_obs stderr: {np.nanmean(stderr_obs_valid):.2f} km/s")
 
         r_max = np.nanmax(radius_valid)
 
@@ -305,6 +306,9 @@ class DmNfw:
             a_mu = Re / 1.8
             a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.2*a_mu, lower=0.01, upper=10.0)
 
+            # sigma_scale prior: to scale the measurement errors
+            v_obs_sigma_scale_t = pm.LogNormal("v_obs_sigma_scale", mu=0.0, sigma=0.2)  # median ~ 1.0
+
             # ------------------------------------------
             # deterministic relations
             # ------------------------------------------
@@ -318,18 +322,21 @@ class DmNfw:
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t)))
+            v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
             # ------------------------------------------
             # likelihood: observed rotation velocities
             # ------------------------------------------
-            # model velocity: ensure non-negative argument to sqrt
-            v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
-            # Store the noise-free mean for posterior predictive diagnostics
-            v_obs_mu_t = pm.Deterministic("v_obs_mu", v_obs_model)
-            v_obs_sigma = stderr_obs_valid
+            # predicted observed velocities
+            v_obs_mu_t = pm.Deterministic("v_obs_mu", pt.as_tensor_variable(v_obs_model))
 
-            pm.StudentT("v_obs", nu=5, mu=v_obs_mu_t, sigma=v_obs_sigma, observed=vel_obs_valid)
+            # Measurement error model: start from ivar-derived sigma (plus floor),
+            # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
+            # This is often more realistic than treating ivar as perfectly calibrated.
+            v_obs_sigma_t = pm.Deterministic("v_obs_sigma", v_obs_sigma_scale_t * stderr_obs_valid)
+
+            pm.Normal("v_obs", mu=v_obs_mu_t, sigma=v_obs_sigma_t, observed=vel_obs_valid)
 
             # ------------------------------------------
             # potential
@@ -355,10 +362,10 @@ class DmNfw:
             # ------------------------------------------
             # sampling options & run
             # ------------------------------------------
-            draws=2000
-            tune=1000
-            chains=4
-            target_accept=0.95
+            draws = 2000
+            tune = 1000
+            chains = min(4, os.cpu_count())
+            target_accept = 0.95
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
             if self.inf_debug:
@@ -367,7 +374,7 @@ class DmNfw:
                 displaybar = False
 
             sampler = "nutpie" # 'nutpie' or 'numpyro'
-            trace = pm.sample(init="jitter+adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler=sampler, target_accept=target_accept, cores=min(chains, 4),
+            trace = pm.sample(init="jitter+adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler=sampler, target_accept=target_accept, cores=chains,
                               progressbar=displaybar,
                               return_inferencedata=True, compute_convergence_checks=True)
 
@@ -379,7 +386,7 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a'], round_to=3)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a', 'v_obs_sigma_scale'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
@@ -389,6 +396,8 @@ class DmNfw:
         phi_delta_mean = float(summary.loc["phi_delta", "mean"])
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
+        v_obs_sigma_scale_mean = float(summary.loc["v_obs_sigma_scale", "mean"])
+        v_obs_sigma_mean = v_obs_sigma_scale_mean * np.mean(stderr_obs_valid)
 
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
@@ -398,6 +407,8 @@ class DmNfw:
         phi_delta_sd = float(summary.loc["phi_delta", "sd"])
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
+        v_obs_sigma_scale_sd = float(summary.loc["v_obs_sigma_scale", "sd"])
+        v_obs_sigma_sd = v_obs_sigma_scale_sd * np.mean(stderr_obs_valid)
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
@@ -496,10 +507,23 @@ class DmNfw:
 
         # Summaries
         chi2_obs_mean = float(np.mean(chi2_obs_draws))
-        chi2_obs_med = float(np.median(chi2_obs_draws))
-        chi2_obs_hdi = az.hdi(chi2_obs_draws, hdi_prob=0.94)
-        chi2_obs_hdi_low = float(chi2_obs_hdi[0])
-        chi2_obs_hdi_high = float(chi2_obs_hdi[1])
+
+
+        # ------------------------------------------
+        # PPC discrepancy for Normal likelihood: deviance = -2 * log p(y|theta)
+        # ------------------------------------------
+        sigma_use = sigma[valid_cols]
+        const_n = -0.5 * np.log(2.0 * np.pi)
+
+        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use[None, :]
+        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use[None, :]
+
+        logp_obs = const_n - np.log(sigma_use[None, :]) - 0.5 * (z_obs**2)
+        logp_rep = const_n - np.log(sigma_use[None, :]) - 0.5 * (z_rep**2)
+
+        dev_obs_draws = -2.0 * np.sum(logp_obs, axis=1)
+        dev_rep_draws = -2.0 * np.sum(logp_rep, axis=1)
+        dev_ppc_p = float(np.mean(dev_rep_draws > dev_obs_draws))
 
         # For legacy residual metrics, keep a point estimate based on mu averaged across draws
         v_obs_mean = np.mean(v_obs_mu_use, axis=0)
@@ -515,11 +539,7 @@ class DmNfw:
         res_use = residual[mask]
         rmse = float(np.sqrt(np.mean(res_use**2)))
         nrmse = float(rmse / np.mean(np.abs(vel_obs_valid[mask])))
-        mae = float(np.mean(np.abs(res_use)))
-        bias = float(np.mean(res_use))
 
-        # chi^2 diagnostics (Method A summary)
-        chi2 = chi2_obs_mean
         # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a
         params_num = 9
         if not self.inf_drift:
@@ -548,6 +568,7 @@ class DmNfw:
             print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/phi_delta_mean:.2%})")
             print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/f_bulge_mean:.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
+            print(f" Infer v_obs_sigma  : {v_obs_sigma_mean:.3f} ± {v_obs_sigma_sd:.3f} ({v_obs_sigma_sd/v_obs_sigma_mean:.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")
@@ -557,12 +578,9 @@ class DmNfw:
             print(f" Stellar Mass       : {Mstar:.3e} Msun")
             print("--- diagnostics ---")
             print(f" Reduced Chi        : {redchi:.3f}")
-            print(f" Chi2 (post mean)   : {chi2_obs_mean:.3f} (median {chi2_obs_med:.3f}, 94% HDI [{chi2_obs_hdi_low:.3f}, {chi2_obs_hdi_high:.3f}])")
             print(f" Chi2 PPC p-value   : {chi2_ppc_p:.3f}")
-            print(f" RMSE               : {rmse:.3f} km/s")
+            print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
             print(f" NRMSE              : {nrmse:.3f}")
-            print(f" MAE                : {mae:.3f} km/s")
-            print(f" Bias               : {bias:.3f} km/s")
             print("------------------------------------------------------------\n")
 
         # ---------------------
@@ -649,14 +667,10 @@ class DmNfw:
             'c': c_mean,
             'c_std': c_sd,
             'c_r_hat': c_r_hat,
-            'rmse': rmse,
-            'mae': mae,
-            'bias': bias,
-            'chi2': chi2,
+            'nrmse': nrmse,
             'chi2_red': redchi,
-            'chi2_ppc_p': f"{chi2_ppc_p:.3f}",
-            'chi2_hdi_low': f"{chi2_obs_hdi_low:.3f}",
-            'chi2_hdi_high': f"{chi2_obs_hdi_high:.3f}",
+            'chi2_ppc_p': chi2_ppc_p,
+            'dev_ppc_p': dev_ppc_p,
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,
             'p_loo': p_loo,

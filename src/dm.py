@@ -31,7 +31,10 @@ class DmNfw:
     drpall_util: DrpallUtil
     PLATE_IFU: str
     plot_enable: bool
-    fit_debug: bool = False
+    inf_debug: bool = False
+    inf_drift: bool = True
+    inf_f_bulge: bool = True
+    inf_re_star: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -148,41 +151,55 @@ class DmNfw:
         # Mstar
         def v_star_sq_bulge_hernquist(r, MB, a):
             r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
-            v_sq = G * MB * r / (r + a)**2
+            v_sq = (G * MB * r) / (r + a)**2
             return v_sq
 
         # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-        # Calculate V_disk^2 using piecewise polynomial approximation
         def v_star_sq_disk_freeman(r, M_d, Rd):
             r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
-            x = r_safe / Rd
+            y = r_safe / (2.0 * Rd)
 
-            # inner
-            f1 = 0.5 * x**2 - 0.0625 * x**4
+            # PyMC does not expose bessel_i0/i1/k0/k1 in all versions.
+            # Use PyTensor's generic modified Bessel functions:
+            # I_n(y) = iv(n, y), K_n(y) = kv(n, y)
+            I0 = pt.iv(0, y)
+            I1 = pt.iv(1, y)
+            K0 = pt.kv(0, y)
+            K1 = pt.kv(1, y)
 
-            # mid
-            a1, a2, a3 = 0.1935, 0.0480, -0.0019
-            b1, b2, b3 = 0.8215, 0.1936, 0.0103
-
-            num = a1 * x**2 + a2 * x**3 + a3 * x**4
-            den = 1.0 + b1*x + b2*x**2 + b3*x**3
-            f2 = num / den
-
-            # outer
-            f3= (1.0/x) * (1.0 - 0.5/x + 0.375/x**2)
-
-            # Smooth transition between (f1, f2, f3) using sigmoid mixing
-            # k controls how sharp the transition is (larger -> closer to hard switch)
-            k1 = 8.0  # around x=1.5
-            k2 = 8.0  # around x=4.0
-
-            w12 = pt.sigmoid(k1 * (x - 1.5))  # 0 -> f1, 1 -> f2/f3
-            w23 = pt.sigmoid(k2 * (x - 4.0))  # 0 -> f2, 1 -> f3
-
-            f = (1.0 - w12) * f1 + w12 * ((1.0 - w23) * f2 + w23 * f3)
-            v_sq = (G * M_d / Rd) * f
+            v_sq = (2.0 * G * M_d / Rd) * (y**2) * (I0 * K0 - I1 * K1)
             return v_sq
 
+        # Calculate V_disk^2 using piecewise polynomial approximation
+        # def v_star_sq_disk_freeman_approx(r, M_d, Rd):
+        #     r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
+        #     x = r_safe / Rd
+
+        #     # inner
+        #     f1 = 0.5 * x**2 - 0.0625 * x**4
+
+        #     # mid
+        #     a1, a2, a3 = 0.1935, 0.0480, -0.0019
+        #     b1, b2, b3 = 0.8215, 0.1936, 0.0103
+
+        #     num = a1 * x**2 + a2 * x**3 + a3 * x**4
+        #     den = 1.0 + b1*x + b2*x**2 + b3*x**3
+        #     f2 = num / den
+
+        #     # outer
+        #     f3= (1.0/x) * (1.0 - 0.5/x + 0.375/x**2)
+
+        #     # Smooth transition between (f1, f2, f3) using sigmoid mixing
+        #     # k controls how sharp the transition is (larger -> closer to hard switch)
+        #     k1 = 8.0  # around x=1.5
+        #     k2 = 8.0  # around x=4.0
+
+        #     w12 = pt.sigmoid(k1 * (x - 1.5))  # 0 -> f1, 1 -> f2/f3
+        #     w23 = pt.sigmoid(k2 * (x - 4.0))  # 0 -> f2, 1 -> f3
+
+        #     f = (1.0 - w12) * f1 + w12 * ((1.0 - w23) * f2 + w23 * f3)
+        #     v_sq = (G * M_d / Rd) * f
+        #     return v_sq
 
         # M_star: total mass of star
         # Re: Half-mass radius
@@ -204,30 +221,30 @@ class DmNfw:
             return (G_kpc_kms_Msun * M200 / (100.0 * Hz ** 2)) ** (1.0 / 3.0)
 
         # normalized radius x = r / r200
-        def x_from_M200(r_arr, M200):
-            return r_arr / r200_from_M200(M200)
+        def x_from_M200(r, M200):
+            return r / r200_from_M200(M200)
 
         # numerator/denominator for NFW profile
-        def nfw_num_den(x_arr, c):
-            cx = c * x_arr
+        def nfw_num_den(x, c):
+            cx = c * x
             num = pt.log1p(cx) - (cx) / (1.0 + cx)
             den = pt.log1p(c) - c / (1.0 + c)
             return num, den
 
-        def v_dm_sq_profile(r_arr, M200, c, V200):
-            x = x_from_M200(r_arr, M200)
+        def v_dm_sq_profile(r, M200, c, V200):
+            x = x_from_M200(r, M200)
             num, den = nfw_num_den(x, c)
             x_safe = pt.maximum(x, 1e-6)
             den_safe = pt.maximum(den, 1e-6)
             return (V200**2 / x_safe) * (num / den_safe)
 
         # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
-        def v_drift_sq_profile(r_arr, sigma_0, R_d):
-            return 2.0 * (sigma_0 ** 2) * (r_arr / R_d)
+        def v_drift_sq_profile(r, sigma_0, R_d):
+            return 2.0 * (sigma_0 ** 2) * (r / R_d)
 
         # total v_rot^2 closure
-        def v_rot_sq_profile(v_dm_sq, v_star_sq, v_drift_sq):
-            return v_dm_sq + v_star_sq - v_drift_sq
+        def v_rot_sq_profile(v_dm, v_star, v_drift):
+            return v_dm**2 + v_star**2 - v_drift**2
 
         # Formula: v_obs = v_sys + v_rot * (sin(i) * cos(phi - phi_0))
         # Warning: The sign of the calculated velocity may be different from the observed velocity.
@@ -256,11 +273,13 @@ class DmNfw:
 
             # sigma_0 prior: half normal
             # sigma_0 > 0
-            sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
+            if self.inf_drift:
+                sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
+            else:
+                sigma_0_t = pm.Deterministic("sigma_0", pt.as_tensor_variable(0.0))
 
             # R_d prior
-            R_d_mu = Re_star / 1.678
-            R_d_t = pm.TruncatedNormal("R_d", mu=R_d_mu, sigma=0.2*R_d_mu, lower=1e-3*r_max, upper=1.0*r_max)
+            Rd_star = Re_star / 1.678
 
             # v_sys prior: normal prior around measured value
             v_sys_delta = 20.0
@@ -278,7 +297,10 @@ class DmNfw:
             # Re_star_t = pm.TruncatedNormal("Re_star", mu=Re_star_mu, sigma=0.2*Re_star_mu, lower=1e-3*r_max, upper=1.0*r_max)
 
             # f_bulge prior
-            f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
+            if self.inf_f_bulge:
+                f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
+            else:
+                f_bulge_t = pm.Deterministic("f_bulge", pt.as_tensor_variable(1e-3))
 
             # a prior
             # Tie a to Re_star to reduce strong degeneracy (a, Re_star, f_bulge) that hurts mixing.
@@ -294,18 +316,16 @@ class DmNfw:
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_star_sq_t = pm.Deterministic("v_star_sq", v_star_sq_profile(r, Mstar, Re_star, f_bulge_t, a_t))
-            v_dm_sq_t = pm.Deterministic("v_dm_sq", v_dm_sq_profile(r, M200_t, c_t, V200_t))
-            v_drift_sq_t = pm.Deterministic("v_drift_sq", v_drift_sq_profile(r, sigma_0_t, R_d_t))
-            v_rot_sq_t = pm.Deterministic("v_rot_sq", v_rot_sq_profile(v_dm_sq_t, v_star_sq_t, v_drift_sq_t))
+            v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar, Re_star, f_bulge_t, a_t)))
+            v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
+            v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Rd_star)))
+            v_rot_t = pm.Deterministic("v_rot", pt.sqrt(v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t)))
 
             # ---------------------
             # likelihood
             # ---------------------
             # model velocity: ensure non-negative argument to sqrt
-            v_rot_sq_pos = pt.maximum(v_rot_sq_t, 1e-6)
-            v_rot_model = pt.sqrt(v_rot_sq_pos)
-            v_obs_model =  v_obs_project_profile(v_rot_model, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
+            v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
             # likelihood: observed rotation velocities
             v_obs_sigma = stderr_obs_valid
@@ -343,7 +363,7 @@ class DmNfw:
             target_accept=0.95
 
             print("Starting PyMC sampling (NUTS)... this may take time.")
-            if self.fit_debug:
+            if self.inf_debug:
                 displaybar = True
             else:
                 displaybar = False
@@ -361,12 +381,11 @@ class DmNfw:
         # ---------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "R_d", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a'], round_to=3)
+        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a'], round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"])
-        R_d_mean = float(summary.loc["R_d", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"])
         phi_delta_mean = float(summary.loc["phi_delta", "mean"])
@@ -376,7 +395,6 @@ class DmNfw:
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
         sigma0_sd = float(summary.loc["sigma_0", "sd"])
-        R_d_sd = float(summary.loc["R_d", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"])
         phi_delta_sd = float(summary.loc["phi_delta", "sd"])
@@ -386,7 +404,6 @@ class DmNfw:
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
-        R_d_r_hat = float(summary.loc["R_d", "r_hat"])
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"])
         phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"])
@@ -395,18 +412,14 @@ class DmNfw:
 
         # extract posterior samples
         posterior = trace.posterior
-        v_dm_sq_samples = posterior["v_dm_sq"].stack(samples=("chain", "draw")).values
-        v_dm_sq_mean = np.mean(v_dm_sq_samples, axis=1)
-        v_dm_mean = np.sqrt(np.clip(v_dm_sq_mean, a_min=0.0, a_max=None))
-        v_star_sq_samples = posterior["v_star_sq"].stack(samples=("chain", "draw")).values
-        v_star_sq_mean = np.mean(v_star_sq_samples, axis=1)
-        v_star_mean = np.sqrt(np.clip(v_star_sq_mean, a_min=0.0, a_max=None))
-        v_drift_sq_samples = posterior["v_drift_sq"].stack(samples=("chain", "draw")).values
-        v_drift_sq_mean = np.mean(v_drift_sq_samples, axis=1)
-        v_drift_mean = np.sqrt(np.clip(v_drift_sq_mean, a_min=0.0, a_max=None))
-        v_rot_sq_samples = posterior["v_rot_sq"].stack(samples=("chain", "draw")).values
-        v_rot_sq_mean = np.mean(v_rot_sq_samples, axis=1)
-        v_rot_mean = np.sqrt(np.clip(v_rot_sq_mean, a_min=0.0, a_max=None))
+        v_dm_samples = posterior["v_dm"].stack(samples=("chain", "draw")).values
+        v_dm_mean = np.mean(v_dm_samples, axis=1)
+        v_star_samples = posterior["v_star"].stack(samples=("chain", "draw")).values
+        v_star_mean = np.mean(v_star_samples, axis=1)
+        v_drift_samples = posterior["v_drift"].stack(samples=("chain", "draw")).values
+        v_drift_mean = np.mean(v_drift_samples, axis=1)
+        v_rot_samples = posterior["v_rot"].stack(samples=("chain", "draw")).values
+        v_rot_mean = np.mean(v_rot_samples, axis=1)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -460,8 +473,10 @@ class DmNfw:
 
         # chi^2 diagnostics (approx.)
         chi2 = float(np.sum(residual_std[mask] ** 2))
-        # parameters in model: M200_log, c_log, sigma_0, R_d, v_sys, inc, f_bulge, Re_star, a = 9
-        params_num = 9
+        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, f_bulge, a
+        params_num = 8
+        if not self.inf_drift:
+            params_num -= 1
         dof = int(max(np.sum(mask) - params_num, 1))
         # Reduced Chi-squared
         redchi = float(chi2 / dof)
@@ -469,7 +484,7 @@ class DmNfw:
         # ---------------------
         # Inference summary info
         # ---------------------
-        if self.fit_debug:
+        if self.inf_debug:
             print("\n------------ Infer Dark Matter NFW (PyMC) ------------")
             print("--- Summary ---")
             print(summary)
@@ -479,7 +494,6 @@ class DmNfw:
             print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
             print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
             print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})")
-            print(f" Infer R_d          : {R_d_mean:.3f} ± {R_d_sd:.3f} kpc ({R_d_sd/R_d_mean:.2%})")
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
             print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/phi_delta_mean:.2%})")
@@ -598,8 +612,8 @@ class DmNfw:
         self.plot_enable = plot_enable
         return
 
-    def set_fit_debug(self, fit_debug: bool) -> None:
-        self.fit_debug = fit_debug
+    def set_inf_debug(self, inf_debug: bool) -> None:
+        self.inf_debug = inf_debug
         return
 
     def set_stellar_util(self, stellar_util: Stellar) -> None:

@@ -168,7 +168,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
     dm_nfw.set_plot_enable(plot_enable)
-    dm_nfw.set_fit_debug(debug)
+    dm_nfw.set_inf_debug(debug)
 
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,
                                                         vel_obs=V_obs_map,

@@ -37,6 +37,7 @@ class DmNfw:
     inf_debug: bool = False
     inf_drift: bool = True
     inf_Re: bool = False # Notice: Infer Re will take too much time
+    inf_inc: bool = False # Notice: Infer inc may be degenerate with c
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -129,6 +130,7 @@ class DmNfw:
         Mmin=1e9
         Mmax=1e15
         M200_log_mu = self._calc_M200_log_from_Mstar(Mstar, Mmin=Mmin, Mmax=Mmax)  # expected log10(M200) from Mstar
+        c_log_mu = np.log10(self._calc_c_from_M200(10**M200_log_mu, h=H))
 
         # precompute stellar contribution v_star^2 (numpy array)
         # Do not convert to tensor yet, do it inside the model
@@ -272,8 +274,9 @@ class DmNfw:
             # M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
-            log_c_mu = pt.log10(5.0)
-            c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.25, lower=logc_min, upper=logc_max)
+            # log_c_mu = pt.log10(5.0)
+            # c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.25, lower=logc_min, upper=logc_max)
+            c_log_t = pm.Normal("c_log", mu=c_log_mu, sigma=0.1)
 
             # sigma_0 prior: half normal
             # sigma_0 > 0
@@ -287,8 +290,11 @@ class DmNfw:
             v_sys_t = pm.TruncatedNormal("v_sys", mu=vel_sys, sigma=5.0, lower=vel_sys - v_sys_delta, upper=vel_sys + v_sys_delta)
 
             # inc prior: normal prior around measured value
-            inc_delta = pt.deg2rad(5.0)
-            inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
+            if self.inf_inc:
+                inc_delta = pt.deg2rad(5.0)
+                inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
+            else:
+                inc_t = pm.Deterministic("inc", pt.as_tensor_variable(inc_rad))
 
             # phi_delta prior
             phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
@@ -300,11 +306,12 @@ class DmNfw:
                 Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
 
             # f_bulge prior
-            f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
+            f_bulge_t = pm.Beta("f_bulge", alpha=1.2, beta=4.0)
+            # f_bulge_t = pm.Uniform("f_bulge", lower=0.0, upper=0.2)
 
             # a prior
-            a_mu = Re / 1.8
-            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.2*a_mu, lower=0.01, upper=10.0)
+            a_mu = Re / 5.0
+            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.3*a_mu, lower=0.01*Re, upper=0.5*Re)
 
             # sigma_scale prior: to scale the measurement errors
             v_obs_sigma_scale_t = pm.LogNormal("v_obs_sigma_scale", mu=0.0, sigma=0.2)  # median ~ 1.0
@@ -321,7 +328,7 @@ class DmNfw:
             v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar, Re_t, f_bulge_t, a_t)))
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
-            v_rot_t = pm.Deterministic("v_rot", pt.sqrt(v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t)))
+            v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
             v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
             # ------------------------------------------
@@ -392,7 +399,7 @@ class DmNfw:
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"])
         v_sys_mean = float(summary.loc["v_sys", "mean"])
-        inc_mean = float(summary.loc["inc", "mean"])
+        inc_mean = float(summary.loc["inc", "mean"]) if self.inf_inc else inc_rad
         phi_delta_mean = float(summary.loc["phi_delta", "mean"])
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
@@ -403,7 +410,7 @@ class DmNfw:
         c_sd = float(summary.loc["c", "sd"])
         sigma0_sd = float(summary.loc["sigma_0", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
-        inc_sd = float(summary.loc["inc", "sd"])
+        inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
         phi_delta_sd = float(summary.loc["phi_delta", "sd"])
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
@@ -412,9 +419,9 @@ class DmNfw:
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
-        sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"])
+        sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"]) if self.inf_drift else 1.0
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
-        inc_r_hat = float(summary.loc["inc", "r_hat"])
+        inc_r_hat = float(summary.loc["inc", "r_hat"]) if self.inf_inc else 1.0
         phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"])
         f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
@@ -442,7 +449,7 @@ class DmNfw:
 
         V200_calc = self._calc_V200_from_M200(M200_mean, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
-        c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
+        c_calc = self._calc_c_from_M200(M200_mean, h=H)
 
         # ------------------------------------------
         # residual diagnostics
@@ -587,56 +594,19 @@ class DmNfw:
         # plot
         # ---------------------
         if self.plot_enable:
-            axes_trace = az.plot_trace(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc"])
-            # set the units and credible interval
-            # axes_trace is usually (n_vars, 2) for trace plots (left: pdf, right: trace)
-            # Accessing rows for variables
-            if axes_trace.shape[0] >= 3:
-                axes_trace[0,0].set_xlabel("Msun")
-                axes_trace[2,0].set_xlabel("km/s")
-            plt.tight_layout()
-
-            # az.plot_posterior(trace, var_names=["M200", "c", "sigma_0"], hdi_prob=0.94)
-
-            az.plot_pair(ppc_idata, var_names=["M200", "c", "sigma_0", "v_sys", "inc"], kind='kde', marginals=True)
-            az.plot_ppc(ppc_idata, data_pairs={"v_obs": "v_obs"}, mean=True, kind='cumulative', num_pp_samples=200)
-            plt.tight_layout()
-            plt.show()
-
-            # v_obs fit plot
-            plt.figure(figsize=(8,6))
-            plt.errorbar(radius_valid, vel_obs_valid, yerr=stderr_obs_valid, fmt='o', label='Observed V_obs', alpha=0.5)
-            r_plot = np.linspace(0.0, np.nanmax(radius_valid), num=500)
-
-            # compute posterior predictive mean and credible intervals
-            v_obs_ppc_raw = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
-            n_points = len(radius_valid)
-            if v_obs_ppc_raw.ndim != 2:
-                raise ValueError(f"Unexpected v_obs_ppc shape: {v_obs_ppc_raw.shape}")
-            if v_obs_ppc_raw.shape[-1] == n_points:
-                v_obs_ppc = v_obs_ppc_raw
-            elif v_obs_ppc_raw.shape[0] == n_points:
-                v_obs_ppc = v_obs_ppc_raw.T
+            if self.inf_inc:
+                var_names = ["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a']
             else:
-                raise ValueError(
-                    f"Posterior predictive v_obs shape {v_obs_ppc_raw.shape} does not match n_points={n_points}."
-                )
+                var_names = ["M200", "c", "sigma_0", "v_sys", 'phi_delta', 'f_bulge', 'a']
 
-            # Interpolate each posterior predictive sample onto r_plot
-            v_obs_interp = np.array([
-                np.interp(r_plot, radius_valid, v_obs_ppc[s, :]) for s in range(v_obs_ppc.shape[0])
-            ])
-            v_obs_mean = np.mean(v_obs_interp, axis=0)
-            v_obs_hdi = az.hdi(v_obs_interp, hdi_prob=0.94)
-            plt.plot(r_plot, v_obs_mean, color='red', label='Posterior Predictive Mean V_obs')
-            plt.fill_between(r_plot, v_obs_hdi[:,0], v_obs_hdi[:,1], color='red', alpha=0.3, label='94% Credible Interval')
-            plt.xlabel('Radius (kpc)')
-            plt.ylabel('Rotation Velocity V_obs (km/s)')
-            plt.title(f'Fitted Rotation Curve for {self.PLATE_IFU}')
-            plt.legend()
+            # axes_trace = az.plot_trace(trace, var_names=var_names)
+            # if axes_trace.shape[0] >= 3:
+            #     axes_trace[0,0].set_xlabel("Msun")
+            #     axes_trace[2,0].set_xlabel("km/s")
 
+            # corner plot
             plt.tight_layout()
-            plt.show()
+            az.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
 
 
         if M200_r_hat < INFER_RHAT_THRESHOLD and \
@@ -649,6 +619,7 @@ class DmNfw:
             a_r_hat < INFER_RHAT_THRESHOLD:
             success = True
         else:
+            print("Inference did not converge (R-hat too high).")
             success = False
 
         inf_result = {

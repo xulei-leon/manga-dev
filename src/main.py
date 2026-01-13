@@ -245,7 +245,7 @@ def get_plate_list_from_fit():
     plate_ifu_list.sort()
     return plate_ifu_list
 
-def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = False, except_info: bool = False):
+def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = False, plot: bool = False):
     plate_ifu_list = []
 
     if ifu == "all":
@@ -262,11 +262,11 @@ def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = 
 
     def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
-        if except_info:
-            process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw, debug=debug)
+        if debug:
+            process_plate_ifu(plate_ifu, plot_enable=plot, process_nfw=run_nfw, debug=debug)
         else:
             try:
-                process_plate_ifu(plate_ifu, plot_enable=False, process_nfw=run_nfw, debug=debug)
+                process_plate_ifu(plate_ifu, plot_enable=plot, process_nfw=run_nfw, debug=debug)
             except Exception as e:
                 print(f"Error processing {plate_ifu}: {e}")
 
@@ -293,9 +293,10 @@ if __name__ == "__main__":
     parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
     parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode.')
-    parser.add_argument('--except', action='store_true', help='Enable except information.')
+    parser.add_argument('--plot', action='store_true', help='Enable plot mode.')
+
     args = parser.parse_args()
 
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
 
-    main(run_nfw=nfw_enable, workers=args.threads, ifu=args.ifu, debug=args.debug)
+    main(run_nfw=nfw_enable, workers=args.threads, ifu=args.ifu, debug=args.debug, plot=args.plot)

@@ -27,6 +27,7 @@ H = 0.674  # assuming H0 = 67.4 km/s/Mpc
 G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
 INFER_RHAT_THRESHOLD = 1.05
+VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 class DmNfw:
@@ -94,9 +95,9 @@ class DmNfw:
     # MCMC PyMC inference methods
     ################################################################################
     def _inf_dm_nfw_pymc(self, radius_obs: np.ndarray, vel_obs: np.ndarray, ivar_obs: np.ndarray, vel_sys: float, inc_rad: float, phi_map: np.ndarray):
-        # ---------------------
-        # 1) data selection / precompute
-        # ---------------------
+        # ------------------------------------------
+        # data selection / precompute
+        # ------------------------------------------
         valid_mask = (np.isfinite(vel_obs) & np.isfinite(radius_obs) & np.isfinite(ivar_obs) & np.isfinite(phi_map) &
                     (radius_obs > 0.01) & (radius_obs < 1.0 * np.nanmax(radius_obs)))
         radius_valid = radius_obs[valid_mask]
@@ -111,8 +112,8 @@ class DmNfw:
         print(f"NFW pymc radius valid: range=[{np.min(radius_valid):.2f}, {np.max(radius_valid):.2f}] kpc")
         print(f"NFW pymc vel obs valid {len(vel_obs_valid)}: range=[{np.min(vel_obs_valid):.2f}, {np.max(vel_obs_valid):.2f}] km/s")
 
-        # calculate stderr from ivar
-        stderr_obs_valid = 1.0 / np.sqrt(ivar_obs_valid)
+        # Convert inverse-variance to 1-sigma error
+        stderr_obs_valid = np.sqrt(1.0 / ivar_obs_valid + VEL_SYSTEM_ERROR**2)
 
         r_max = np.nanmax(radius_valid)
 
@@ -136,18 +137,18 @@ class DmNfw:
         Hz = self._calc_Hz_kpc(z)
         G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
-        # ---------------------
-        # 2) model bounds and parameterization
-        #    we sample log10(V200) and log10(c) to handle scales nicely
-        # ---------------------
+        # ------------------------------------------
+        # model bounds and parameterization
+        # we sample log10(V200) and log10(c) to handle scales nicely
+        # ------------------------------------------
         # use range_parameters defined above
         c_min, c_max = (1.0, 50.0)
         logc_min, logc_max = np.log10(c_min), np.log10(c_max)
 
-        # ---------------------
+        # ------------------------------------------
         # helper functions (closures)
         # Note: use pytensor operations instead of numpy/scipy inside the model
-        # ---------------------
+        # ------------------------------------------
 
         # Mstar
         def v_star_sq_bulge_hernquist(r, MB, a):
@@ -258,13 +259,11 @@ class DmNfw:
             v_obs = v_sys + v_rot * correction
             return v_obs
 
-        # ---------------------
-        # 3) PyMC model
-        # ---------------------
+        # PyMC model
         with pm.Model() as model:
-            # ---------------------
+            # ------------------------------------------
             # prior distributions
-            # ---------------------
+            # ------------------------------------------
             # M200 prior: from SHMR
             M200_log_sigma = 0.25
             M200_log_t = pm.TruncatedNormal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma, lower=pt.log10(Mmin), upper=pt.log10(Mmax))
@@ -306,9 +305,9 @@ class DmNfw:
             a_mu = Re / 1.8
             a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.2*a_mu, lower=0.01, upper=10.0)
 
-            # ---------------------
+            # ------------------------------------------
             # deterministic relations
-            # ---------------------
+            # ------------------------------------------
             # V200: derived from M200
             M200_t = pm.Deterministic("M200", 10 ** M200_log_t)
             c_t = pm.Deterministic("c", 10 ** c_log_t)
@@ -320,21 +319,21 @@ class DmNfw:
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t)))
 
-            # ---------------------
-            # likelihood
-            # ---------------------
+            # ------------------------------------------
+            # likelihood: observed rotation velocities
+            # ------------------------------------------
             # model velocity: ensure non-negative argument to sqrt
             v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
 
-            # likelihood: observed rotation velocities
+            # Store the noise-free mean for posterior predictive diagnostics
+            v_obs_mu_t = pm.Deterministic("v_obs_mu", v_obs_model)
             v_obs_sigma = stderr_obs_valid
 
-            # pm.Normal("v_obs", mu=v_obs_model, sigma=v_obs_sigma, observed=vel_obs_valid)
-            pm.StudentT("v_obs", nu=5, mu=v_obs_model, sigma=v_obs_sigma, observed=vel_obs_valid)
+            pm.StudentT("v_obs", nu=5, mu=v_obs_mu_t, sigma=v_obs_sigma, observed=vel_obs_valid)
 
-            # ---------------------
+            # ------------------------------------------
             # potential
-            # ---------------------
+            # ------------------------------------------
 
             # Add SHMR as a potential (log-prior)
             # Do not double count if using truncated normal prior above
@@ -353,9 +352,9 @@ class DmNfw:
             # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
             # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
 
-            # ---------------------
-            # 4) sampling options & run
-            # ---------------------
+            # ------------------------------------------
+            # sampling options & run
+            # ------------------------------------------
             draws=2000
             tune=1000
             chains=4
@@ -375,9 +374,9 @@ class DmNfw:
             pm.compute_log_likelihood(trace)
             ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)
 
-        # ---------------------
-        # 5) postprocess
-        # ---------------------
+        # ------------------------------------------
+        # postprocess
+        # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
         summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a'], round_to=3)
@@ -434,9 +433,9 @@ class DmNfw:
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = self._calc_c_from_M200(M200_mean, h=getattr(self, "H", 0.7))
 
-        # ---------------------
+        # ------------------------------------------
         # residual diagnostics
-        # ---------------------
+        # ------------------------------------------
         # posterior predictive v_obs
         v_obs_ppc_raw = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
 
@@ -453,12 +452,61 @@ class DmNfw:
                 f"Posterior predictive v_obs shape {v_obs_ppc_raw.shape} does not match n_points={n_points}."
             )
 
-        # Compute posterior predictive mean at the observed radius_valid points
-        v_obs_mean = np.mean(v_obs_ppc, axis=0)
+        # ------------------------------------------
+        # posterior predictive chi^2 diagnostics
+        # ------------------------------------------
+        # Extract noise-free posterior mean (mu) per draw
+        # Use the same InferenceData object as v_obs_ppc to keep draws aligned.
+        v_obs_mu_raw = ppc_idata.posterior["v_obs_mu"].stack(sample=("chain", "draw")).values
+        if v_obs_mu_raw.ndim != 2:
+            raise ValueError(f"Unexpected v_obs_mu shape: {v_obs_mu_raw.shape}")
+        if v_obs_mu_raw.shape[-1] == n_points:
+            v_obs_mu = v_obs_mu_raw
+        elif v_obs_mu_raw.shape[0] == n_points:
+            v_obs_mu = v_obs_mu_raw.T
+        else:
+            raise ValueError(
+                f"Posterior v_obs_mu shape {v_obs_mu_raw.shape} does not match n_points={n_points}."
+            )
 
-        # ---------------------
+        # Ensure we align sample counts between mu and posterior predictive draws
+        n_samp = int(min(v_obs_ppc.shape[0], v_obs_mu.shape[0]))
+        v_obs_ppc_use = v_obs_ppc[:n_samp, :]
+        v_obs_mu_use = v_obs_mu[:n_samp, :]
+
+        sigma = stderr_obs_valid
+        sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, np.nan)
+
+        # Discrepancy measures
+        # T_obs(theta) = sum(((y - mu_theta)/sigma)^2)
+        # T_rep(theta) = sum(((y_rep - mu_theta)/sigma)^2)
+        resid_obs = (vel_obs_valid[None, :] - v_obs_mu_use) / sigma[None, :]
+        resid_rep = (v_obs_ppc_use - v_obs_mu_use) / sigma[None, :]
+
+        # mask invalid points (if any) in sigma or data
+        valid_cols = np.isfinite(sigma) & np.isfinite(vel_obs_valid)
+        resid_obs = resid_obs[:, valid_cols]
+        resid_rep = resid_rep[:, valid_cols]
+
+        chi2_obs_draws = np.sum(resid_obs**2, axis=1)
+        chi2_rep_draws = np.sum(resid_rep**2, axis=1)
+
+        # Bayesian p-value: fraction of replicated discrepancies exceeding observed discrepancies
+        chi2_ppc_p = float(np.mean(chi2_rep_draws > chi2_obs_draws))
+
+        # Summaries
+        chi2_obs_mean = float(np.mean(chi2_obs_draws))
+        chi2_obs_med = float(np.median(chi2_obs_draws))
+        chi2_obs_hdi = az.hdi(chi2_obs_draws, hdi_prob=0.94)
+        chi2_obs_hdi_low = float(chi2_obs_hdi[0])
+        chi2_obs_hdi_high = float(chi2_obs_hdi[1])
+
+        # For legacy residual metrics, keep a point estimate based on mu averaged across draws
+        v_obs_mean = np.mean(v_obs_mu_use, axis=0)
+
+        # ------------------------------------------
         # residuals
-        # ---------------------
+        # ------------------------------------------
         mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean) & np.isfinite(stderr_obs_valid) & (stderr_obs_valid > 0)
         residual = vel_obs_valid - v_obs_mean
         residual_std = np.full_like(residual, np.nan, dtype=float)
@@ -470,8 +518,8 @@ class DmNfw:
         mae = float(np.mean(np.abs(res_use)))
         bias = float(np.mean(res_use))
 
-        # chi^2 diagnostics (approx.)
-        chi2 = float(np.sum(residual_std[mask] ** 2))
+        # chi^2 diagnostics (Method A summary)
+        chi2 = chi2_obs_mean
         # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a
         params_num = 9
         if not self.inf_drift:
@@ -479,8 +527,8 @@ class DmNfw:
         if not self.inf_Re:
             params_num -= 1
         dof = int(max(np.sum(mask) - params_num, 1))
-        # Reduced Chi-squared
-        redchi = float(chi2 / dof)
+        # Reduced Chi-squared (use posterior mean chi2)
+        redchi = float(chi2_obs_mean / dof)
 
         # ---------------------
         # Inference summary info
@@ -509,6 +557,8 @@ class DmNfw:
             print(f" Stellar Mass       : {Mstar:.3e} Msun")
             print("--- diagnostics ---")
             print(f" Reduced Chi        : {redchi:.3f}")
+            print(f" Chi2 (post mean)   : {chi2_obs_mean:.3f} (median {chi2_obs_med:.3f}, 94% HDI [{chi2_obs_hdi_low:.3f}, {chi2_obs_hdi_high:.3f}])")
+            print(f" Chi2 PPC p-value   : {chi2_ppc_p:.3f}")
             print(f" RMSE               : {rmse:.3f} km/s")
             print(f" NRMSE              : {nrmse:.3f}")
             print(f" MAE                : {mae:.3f} km/s")
@@ -604,6 +654,9 @@ class DmNfw:
             'bias': bias,
             'chi2': chi2,
             'chi2_red': redchi,
+            'chi2_ppc_p': f"{chi2_ppc_p:.3f}",
+            'chi2_hdi_low': f"{chi2_obs_hdi_low:.3f}",
+            'chi2_hdi_high': f"{chi2_obs_hdi_high:.3f}",
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,
             'p_loo': p_loo,

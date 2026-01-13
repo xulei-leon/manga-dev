@@ -26,6 +26,8 @@ from stellar import Stellar
 H = 0.674  # assuming H0 = 67.4 km/s/Mpc
 G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
+INFER_RHAT_THRESHOLD = 1.05
+
 
 class DmNfw:
     drpall_util: DrpallUtil
@@ -33,8 +35,7 @@ class DmNfw:
     plot_enable: bool
     inf_debug: bool = False
     inf_drift: bool = True
-    inf_f_bulge: bool = True
-    inf_re_star: bool = True
+    inf_Re: bool = False # Notice: Infer Re will take too much time
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -118,8 +119,8 @@ class DmNfw:
         # stellar mass
         fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
         Mstar = fit_stellar_mass_results['Mstar']
-        Re_star = fit_stellar_mass_results['Re']
-        Re_star_err = fit_stellar_mass_results['Re_err']
+        Re = fit_stellar_mass_results['Re']
+        Re_err = fit_stellar_mass_results['Re_err']
 
         z = self._get_z()
 
@@ -239,7 +240,10 @@ class DmNfw:
             return (V200**2 / x_safe) * (num / den_safe)
 
         # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
-        def v_drift_sq_profile(r, sigma_0, R_d):
+        # Re is equivalent to the half-mass radius
+        # Re = 1.68 * Rd.
+        def v_drift_sq_profile(r, sigma_0, Re):
+            R_d = Re / 1.678
             return 2.0 * (sigma_0 ** 2) * (r / R_d)
 
         # total v_rot^2 closure
@@ -278,9 +282,6 @@ class DmNfw:
             else:
                 sigma_0_t = pm.Deterministic("sigma_0", pt.as_tensor_variable(0.0))
 
-            # R_d prior
-            Rd_star = Re_star / 1.678
-
             # v_sys prior: normal prior around measured value
             v_sys_delta = 20.0
             v_sys_t = pm.TruncatedNormal("v_sys", mu=vel_sys, sigma=5.0, lower=vel_sys - v_sys_delta, upper=vel_sys + v_sys_delta)
@@ -293,18 +294,16 @@ class DmNfw:
             phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
 
             # Notice: Do not use vbecause it is strongly degenerate with other parameters.
-            # Re_star_mu = Re_star
-            # Re_star_t = pm.TruncatedNormal("Re_star", mu=Re_star_mu, sigma=0.2*Re_star_mu, lower=1e-3*r_max, upper=1.0*r_max)
+            if self.inf_Re:
+                Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=Re_err, lower=1e-3*r_max, upper=1.0*r_max)
+            else:
+                Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
 
             # f_bulge prior
-            if self.inf_f_bulge:
-                f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
-            else:
-                f_bulge_t = pm.Deterministic("f_bulge", pt.as_tensor_variable(1e-3))
+            f_bulge_t = pm.Beta("f_bulge", alpha=2.0, beta=5.0)
 
             # a prior
-            # Tie a to Re_star to reduce strong degeneracy (a, Re_star, f_bulge) that hurts mixing.
-            a_mu = Re_star / 1.8
+            a_mu = Re / 1.8
             a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.2*a_mu, lower=0.01, upper=10.0)
 
             # ---------------------
@@ -316,9 +315,9 @@ class DmNfw:
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar, Re_star, f_bulge_t, a_t)))
+            v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar, Re_t, f_bulge_t, a_t)))
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
-            v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Rd_star)))
+            v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t)))
 
             # ---------------------
@@ -473,9 +472,11 @@ class DmNfw:
 
         # chi^2 diagnostics (approx.)
         chi2 = float(np.sum(residual_std[mask] ** 2))
-        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, f_bulge, a
-        params_num = 8
+        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a
+        params_num = 9
         if not self.inf_drift:
+            params_num -= 1
+        if not self.inf_Re:
             params_num -= 1
         dof = int(max(np.sum(mask) - params_num, 1))
         # Reduced Chi-squared
@@ -569,7 +570,19 @@ class DmNfw:
             plt.tight_layout()
             plt.show()
 
-        success = True
+
+        if M200_r_hat < INFER_RHAT_THRESHOLD and \
+            c_r_hat < INFER_RHAT_THRESHOLD and \
+            sigma0_r_hat < INFER_RHAT_THRESHOLD and \
+            v_sys_r_hat < INFER_RHAT_THRESHOLD and \
+            inc_r_hat < INFER_RHAT_THRESHOLD and \
+            phi_delta_r_hat < INFER_RHAT_THRESHOLD and \
+            f_bulge_r_hat < INFER_RHAT_THRESHOLD and \
+            a_r_hat < INFER_RHAT_THRESHOLD:
+            success = True
+        else:
+            success = False
+
         inf_result = {
             'radius': radius_valid,
             'v_rot': v_rot_mean,
@@ -579,6 +592,7 @@ class DmNfw:
         }
 
         inf_params = {
+            'result': 'success' if success else 'failure',
             'M200': M200_mean,
             'M200_std': M200_sd,
             'M200_r_hat': M200_r_hat,

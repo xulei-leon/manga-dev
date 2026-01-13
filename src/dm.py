@@ -11,6 +11,7 @@ Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 import os
 from pathlib import Path
 from pickletools import read_stringnl_noescape
+from time import sleep
 
 import numpy as np
 from scipy.optimize import brentq
@@ -120,10 +121,14 @@ class DmNfw:
         r_max = np.nanmax(radius_valid)
 
         # stellar mass
-        fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
-        Mstar = fit_stellar_mass_results['Mstar']
-        Re = fit_stellar_mass_results['Re']
-        Re_err = fit_stellar_mass_results['Re_err']
+        if self.inf_Re:
+            Mstar = self.stellar_util.get_stellar_mass_total()
+        else:
+            fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
+            Mstar = fit_stellar_mass_results['Mstar']
+            Re = fit_stellar_mass_results['Re']
+            Re_err = fit_stellar_mass_results['Re_err']
+
 
         z = self._get_z()
 
@@ -257,7 +262,8 @@ class DmNfw:
         # Formula: v_obs = v_sys + v_rot * (sin(i) * cos(phi - phi_0))
         # Warning: The sign of the calculated velocity may be different from the observed velocity.
         def v_obs_project_profile(v_rot, v_sys, inc, phi_map):
-            phi_delta = (phi_map + pt.pi) % (2 * pt.pi)  # phi_map is (phi - phi_0)
+            # phi_delta = (phi_map + pt.pi) % (2 * pt.pi)  # phi_map is (phi - phi_0)
+            phi_delta = phi_map + pt.pi
             correction = pt.sin(inc) * pt.cos(phi_delta)
             v_obs = v_sys + v_rot * correction
             return v_obs
@@ -301,7 +307,8 @@ class DmNfw:
 
             # Notice: Do not use vbecause it is strongly degenerate with other parameters.
             if self.inf_Re:
-                Re_t = pm.TruncatedNormal("Re", mu=Re, sigma=Re_err, lower=1e-3*r_max, upper=1.0*r_max)
+                Re_mu = r_max * 0.25
+                Re_t = pm.TruncatedNormal('Re', mu=Re_mu, sigma=r_max* 0.1, lower=0.01*r_max, upper=0.5*r_max)
             else:
                 Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
 
@@ -310,8 +317,8 @@ class DmNfw:
             # f_bulge_t = pm.Uniform("f_bulge", lower=0.0, upper=0.2)
 
             # a prior
-            a_mu = Re / 5.0
-            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.3*a_mu, lower=0.01*Re, upper=0.5*Re)
+            a_mu = r_max * 0.1
+            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.3*a_mu, lower=0.01*r_max, upper=0.3*r_max)
 
             # sigma_scale prior: to scale the measurement errors
             v_obs_sigma_scale_t = pm.LogNormal("v_obs_sigma_scale", mu=0.0, sigma=0.2)  # median ~ 1.0
@@ -393,14 +400,23 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        summary = az.summary(trace, var_names=["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a', 'v_obs_sigma_scale'], round_to=3)
+        var_names = ["M200", "c", "v_sys", "phi_delta", "f_bulge", "a", "v_obs_sigma_scale"]
+        if self.inf_Re:
+            var_names.append("Re")
+        if self.inf_drift:
+            var_names.append("sigma_0")
+        if self.inf_inc:
+            var_names.append("inc")
+
+        summary = az.summary(trace, var_names=var_names, round_to=3)
 
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
-        sigma0_mean = float(summary.loc["sigma_0", "mean"])
+        sigma0_mean = float(summary.loc["sigma_0", "mean"]) if self.inf_drift else 0.0
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"]) if self.inf_inc else inc_rad
         phi_delta_mean = float(summary.loc["phi_delta", "mean"])
+        Re_mean = float(summary.loc["Re", "mean"]) if self.inf_Re else Re
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
         v_obs_sigma_scale_mean = float(summary.loc["v_obs_sigma_scale", "mean"])
@@ -408,10 +424,11 @@ class DmNfw:
 
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
-        sigma0_sd = float(summary.loc["sigma_0", "sd"])
+        sigma0_sd = float(summary.loc["sigma_0", "sd"]) if self.inf_drift else 0.0
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
         phi_delta_sd = float(summary.loc["phi_delta", "sd"])
+        Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
         v_obs_sigma_scale_sd = float(summary.loc["v_obs_sigma_scale", "sd"])
@@ -423,6 +440,7 @@ class DmNfw:
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"]) if self.inf_inc else 1.0
         phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"])
+        Re_r_hat = float(summary.loc["Re", "r_hat"]) if self.inf_Re else 1.0
         f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
 
@@ -569,12 +587,13 @@ class DmNfw:
             print(f"--- median estimates ---")
             print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
             print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})")
-            print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/v_sys_mean:.2%})")
-            print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/inc_mean:.2%})")
-            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/phi_delta_mean:.2%})")
-            print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/f_bulge_mean:.2%})")
-            print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/a_mean:.2%})")
+            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
+            print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
+            print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
+            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})")
+            print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
+            print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
+            print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
             print(f" Infer v_obs_sigma  : {v_obs_sigma_mean:.3f} ± {v_obs_sigma_sd:.3f} ({v_obs_sigma_sd/v_obs_sigma_mean:.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
@@ -594,11 +613,6 @@ class DmNfw:
         # plot
         # ---------------------
         if self.plot_enable:
-            if self.inf_inc:
-                var_names = ["M200", "c", "sigma_0", "v_sys", "inc", 'phi_delta', 'f_bulge', 'a']
-            else:
-                var_names = ["M200", "c", "sigma_0", "v_sys", 'phi_delta', 'f_bulge', 'a']
-
             # axes_trace = az.plot_trace(trace, var_names=var_names)
             # if axes_trace.shape[0] >= 3:
             #     axes_trace[0,0].set_xlabel("Msun")
@@ -615,6 +629,7 @@ class DmNfw:
             v_sys_r_hat < INFER_RHAT_THRESHOLD and \
             inc_r_hat < INFER_RHAT_THRESHOLD and \
             phi_delta_r_hat < INFER_RHAT_THRESHOLD and \
+            Re_r_hat < INFER_RHAT_THRESHOLD and \
             f_bulge_r_hat < INFER_RHAT_THRESHOLD and \
             a_r_hat < INFER_RHAT_THRESHOLD:
             success = True

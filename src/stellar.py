@@ -35,15 +35,14 @@ class Stellar:
     firefly_util = None
     maps_util = None
     PLATE_IFU = None
-    fit_debug = False
+    fit_debug = True
+    fit_bulge = False
 
 
     def __init__(self, drpall_util: DrpallUtil, firefly_util: FireflyUtil, maps_util: MapsUtil) -> None:
         self.drpall_util = drpall_util
         self.firefly_util = firefly_util
         self.maps_util = maps_util
-        self.fit_debug = False
-
 
     @staticmethod
     def calc_r_ratio_to_h_kpc(r_arcsec: np.ndarray, r_h_kpc: np.ndarray) -> float:
@@ -203,31 +202,54 @@ class Stellar:
         std_err_valid = std_err[valid_mask]
         mass_star_total = np.nanmax(mass_valid)
 
-        if radius_valid.size < 4:
-            print("Not enough valid data points for fitting stellar mass profile.")
-            return np.nan, np.nan, np.nan, np.nan
 
         ######################################
         # normal all fit parameters
         ######################################
-        params_range = {
-            'Re': (0.1, np.nanmax(radius_valid)),  # kpc
-        }
+        if self.fit_bulge:
+            params_range = {
+                'Re': (0.1, np.nanmax(radius_valid)),  # kpc
+                'f_bulge': (0.0, 0.5),  # bulge mass fraction
+                'a': (0.1, 5.0),  # kpc
+            }
+        else:
+            params_range = {
+                'Re': (0.1, np.nanmax(radius_valid)),  # kpc
+            }
 
         def _denormalize_params(params_norm):
-            _Re_n = params_norm
-            _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
-            return _Re
+            if self.fit_bulge:
+                _Re_n, _f_bulge_n, _a_n = params_norm
+                _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
+                _f_bulge = _f_bulge_n * (params_range['f_bulge'][1] - params_range['f_bulge'][0]) + params_range['f_bulge'][0]
+                _a = _a_n * (params_range['a'][1] - params_range['a'][0]) + params_range['a'][0]
+                return _Re, _f_bulge, _a
+            else:
+                _Re_n = params_norm[0]
+                _Re = _Re_n * (params_range['Re'][1] - params_range['Re'][0]) + params_range['Re'][0]
+                return _Re
 
         ######################################
         # Fitting process using curve_fit
         ######################################
-        def model_func(r, Re_n):
-            Re = _denormalize_params(Re_n)
-            return self._stellar_mass_profile(r, mass_star_total, Re)
+        if self.fit_bulge:
+            def model_func(r, Re_n, f_bulge_n, a_n):
+                params_norm = Re_n, f_bulge_n, a_n
+                Re, f_bulge, a = _denormalize_params(params_norm)
+                return self._stellar_mass_profile(r, mass_star_total, Re, f_bulge, a)
+        else:
+            def model_func(r, Re_n):
+                params_norm = Re_n,
+                Re = _denormalize_params(params_norm)
+                return self._stellar_mass_profile(r, mass_star_total, Re)
 
-        initial_guess = [0.5]  # normalized initial guess
-        bounds = ([0.0], [1.0])  # normalized bounds
+        if self.fit_bulge:
+            initial_guess = [0.5, 0.5, 0.5]  # normalized initial guess
+            bounds = ([0.0, 0.0, 0.0], [1.0, 1.0, 1.0])  # normalized bounds
+        else:
+            initial_guess = [0.5]  # normalized initial guess
+            bounds = ([0.0], [1.0])  # normalized bounds
+
         try:
             popt, pcov = curve_fit(
                 model_func,
@@ -243,7 +265,11 @@ class Stellar:
             print(f"Fitting failed: {e}")
             return np.nan, np.nan, np.nan, np.nan
 
-        Re_fit = _denormalize_params(popt)[0]
+        if self.fit_bulge:
+            Re_fit, f_bugle_fit, a_fit = _denormalize_params(popt)
+        else:
+            Re_fit = _denormalize_params(popt)
+
 
         ######################################
         # Error estimation
@@ -268,12 +294,14 @@ class Stellar:
         if self.fit_debug:
             print(f"\n------------ Fitted Stellar Mass Profile Parameters ------------")
             print(f" Fit Re                 : {Re_fit:.3f} ± {Re_err:.3f} kpc ({Re_err_pct:.2f} %)")
+            print(f" Fit f_bulge           : {f_bugle_fit:.3f} ") if self.fit_bulge else None
+            print(f" Fit a                 : {a_fit:.3f} kpc") if self.fit_bulge else None
             print("--------------------------")
             print(f" Fit M_star             : {M_star_fit:.3e} M solar")
             print(f" Calc M_star            : {mass_star_total:.3e} M solar")
             print("--------------------------")
             print(f" Reduced Chi-Squared    : {CHI_SQ_V:.3f}")
-            # print(f" Correlation Matrix     : \n{COR_MATRIX}")
+            print(f" Correlation Matrix     : \n{COR_MATRIX}")
             print("--------------------------------------------------------------------\n")
 
 
@@ -292,9 +320,10 @@ class Stellar:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    def get_stellar_mass(self):
-        radius_map, mass_map, std_err_map = self._get_stellar_mass(self.PLATE_IFU)
-        return radius_map, mass_map, std_err_map
+    def get_stellar_mass_total(self):
+        _, mass_map, _ = self._get_stellar_mass(self.PLATE_IFU)
+        mass_star_total = np.nanmax(mass_map)
+        return mass_star_total
 
     def fit_stellar_mass(self):
         radius_map, mass_map, std_err_map = self._get_stellar_mass(self.PLATE_IFU)

@@ -181,37 +181,6 @@ class DmNfw:
             v_sq = (2.0 * G * M_d / Rd) * (y**2) * (I0 * K0 - I1 * K1)
             return v_sq
 
-        # Calculate V_disk^2 using piecewise polynomial approximation
-        # def v_star_sq_disk_freeman_approx(r, M_d, Rd):
-        #     r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
-        #     x = r_safe / Rd
-
-        #     # inner
-        #     f1 = 0.5 * x**2 - 0.0625 * x**4
-
-        #     # mid
-        #     a1, a2, a3 = 0.1935, 0.0480, -0.0019
-        #     b1, b2, b3 = 0.8215, 0.1936, 0.0103
-
-        #     num = a1 * x**2 + a2 * x**3 + a3 * x**4
-        #     den = 1.0 + b1*x + b2*x**2 + b3*x**3
-        #     f2 = num / den
-
-        #     # outer
-        #     f3= (1.0/x) * (1.0 - 0.5/x + 0.375/x**2)
-
-        #     # Smooth transition between (f1, f2, f3) using sigmoid mixing
-        #     # k controls how sharp the transition is (larger -> closer to hard switch)
-        #     k1 = 8.0  # around x=1.5
-        #     k2 = 8.0  # around x=4.0
-
-        #     w12 = pt.sigmoid(k1 * (x - 1.5))  # 0 -> f1, 1 -> f2/f3
-        #     w23 = pt.sigmoid(k2 * (x - 4.0))  # 0 -> f2, 1 -> f3
-
-        #     f = (1.0 - w12) * f1 + w12 * ((1.0 - w23) * f2 + w23 * f3)
-        #     v_sq = (G * M_d / Rd) * f
-        #     return v_sq
-
         # M_star: total mass of star
         # Re: Half-mass radius
         # f_bulge: bulge mass fraction
@@ -285,10 +254,9 @@ class DmNfw:
             # c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.25, lower=logc_min, upper=logc_max)
             c_log_t = pm.Normal("c_log", mu=c_log_mu, sigma=0.1)
 
-            # sigma_0 prior: half normal
-            # sigma_0 > 0
+            # sigma_0 prior: log-normal (strictly positive scale)
             if self.inf_drift:
-                sigma_0_t = pm.HalfNormal("sigma_0", sigma=5.0)
+                sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.5)
             else:
                 sigma_0_t = pm.Deterministic("sigma_0", pt.as_tensor_variable(0.0))
 
@@ -312,7 +280,7 @@ class DmNfw:
             # Notice: Do not use vbecause it is strongly degenerate with other parameters.
             if self.inf_Re:
                 Re_mu = r_max * 0.25
-                Re_t = pm.TruncatedNormal('Re', mu=Re_mu, sigma=r_max* 0.1, lower=0.01*r_max, upper=0.5*r_max)
+                Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.4)
             else:
                 Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
 
@@ -322,11 +290,16 @@ class DmNfw:
 
             # a prior
             a_mu = r_max * 0.1
-            a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.3*a_mu, lower=0.01*r_max, upper=0.3*r_max)
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.5)
 
             # sigma_obs_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)
-            sigma_obs_scale_t = pm.Normal("sigma_obs_scale", mu=pt.sqrt(stderr_obs_valid_mean**2 + VEL_SYSTEM_ERROR**2), sigma=0.2 * max(stderr_obs_valid_mean, VEL_SYSTEM_ERROR))
+            sigma_obs_scale_mu = float(np.sqrt(stderr_obs_valid_mean**2 + VEL_SYSTEM_ERROR**2))
+            sigma_obs_scale_t = pm.LogNormal(
+                "sigma_obs_scale",
+                mu=pt.log(pt.as_tensor_variable(max(sigma_obs_scale_mu, 1e-6))),
+                sigma=0.3,
+            )
 
             # ------------------------------------------
             # deterministic relations
@@ -386,7 +359,7 @@ class DmNfw:
             chains = min(4, os.cpu_count())
             target_accept = 0.95
 
-            print("Starting PyMC sampling (NUTS)... this may take time.")
+            print(">>> Starting PyMC sampling (NUTS)... this may take time.\n")
             if self.inf_debug:
                 displaybar = True
             else:
@@ -396,6 +369,10 @@ class DmNfw:
             trace = pm.sample(init="jitter+adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler=sampler, target_accept=target_accept, cores=chains,
                               progressbar=displaybar,
                               return_inferencedata=True, compute_convergence_checks=True)
+
+            if self.inf_debug:
+                print("\n\n")
+                print(">>> Sampling completed.\n")
 
             pm.compute_log_likelihood(trace)
             ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)

@@ -19,7 +19,6 @@ import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
 from astropy import constants as const
-import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
 from stellar import Stellar
@@ -623,13 +622,11 @@ class DmNfw:
         # plot
         # ---------------------
         if self.plot_enable:
-            # axes_trace = az.plot_trace(trace, var_names=var_names)
-            # if axes_trace.shape[0] >= 3:
-            #     axes_trace[0,0].set_xlabel("Msun")
-            #     axes_trace[2,0].set_xlabel("km/s")
+            # trace plots
+            # az.plot_trace(trace, var_names=var_names)
 
             # corner plot
-            plt.tight_layout()
+            az.rcParams['plot.max_subplots'] = 50
             az.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
 
 

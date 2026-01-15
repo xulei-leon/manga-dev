@@ -177,13 +177,6 @@ class Stellar:
         mass_stellar_cell, mass_stellar_cell_err = self.firefly_util.get_stellar_mass_cell(PLATE_IFU)
         print(f"Stellar Mass shape: {mass_stellar_cell.shape}, Unit: M solar, total: {np.nansum(mass_stellar_cell):,.1f} M solar")
 
-        # This mass use h = 1
-        # total_stellar_mass_1, total_stellar_mass_2 = self.drpall_util.get_stellar_mass(PLATE_IFU)
-        # print("Verification with DRPALL stellar mass:")
-        # _mass_err2_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_2) / total_stellar_mass_2
-        # _mass_err1_percent = (np.nansum(mass_stellar_cell) - total_stellar_mass_1) / total_stellar_mass_1
-        # print(f"  Stellar Mass (DRPALL): (Sersic) {total_stellar_mass_1:,} M solar, (Elpetro) {total_stellar_mass_2:,} M solar")
-
         _radius_eff, azimuth = self.firefly_util.get_radius_eff(PLATE_IFU)
         radius_eff_map, mass_map, mass_err_map = self._calc_mass_of_radius(mass_stellar_cell, mass_stellar_cell_err, _radius_eff)
         radius_h_kpc_map = self._calc_radius_to_h_kpc(PLATE_IFU, radius_eff_map)

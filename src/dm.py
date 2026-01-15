@@ -23,7 +23,7 @@ from astropy import constants as const
 from util.drpall_util import DrpallUtil
 from stellar import Stellar
 
-H = 0.674  # assuming H0 = 67.4 km/s/Mpc
+H = 1 #0.674  # assuming H0 = 67.4 km/s/Mpc
 G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
 INFER_RHAT_THRESHOLD = 1.05
@@ -115,20 +115,21 @@ class DmNfw:
         print(f"NFW pymc vel obs valid {len(vel_obs_valid)}: range=[{np.min(vel_obs_valid):.2f}, {np.max(vel_obs_valid):.2f}] km/s")
 
         # Convert inverse-variance to 1-sigma error
-        stderr_obs_valid = np.sqrt(1.0 / ivar_obs_valid + VEL_SYSTEM_ERROR**2)
+        stderr_obs_valid = np.sqrt(1.0 / ivar_obs_valid)
         print(f"vel_obs stderr: {np.nanmean(stderr_obs_valid):.2f} km/s")
 
         r_max = np.nanmax(radius_valid)
 
         # stellar mass
         if self.inf_Re:
-            Mstar = self.stellar_util.get_stellar_mass_total()
+            _Mstar_total = self.stellar_util.get_stellar_mass_total()
+            _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
+            print (f"Stellar mass from DRPALL: Mstar_elpetro={_Mstar_elpetro:.2e} Msun, Mstar_sersic={_Mstar_sersic:.2e} Msun, Mstar_total={_Mstar_total:.2e} Msun")
+            Mstar = _Mstar_elpetro if _Mstar_elpetro is not None else _Mstar_sersic if _Mstar_sersic is not None else _Mstar_total
         else:
             fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
             Mstar = fit_stellar_mass_results['Mstar']
             Re = fit_stellar_mass_results['Re']
-            Re_err = fit_stellar_mass_results['Re_err']
-
 
         z = self._get_z()
 
@@ -323,8 +324,9 @@ class DmNfw:
             a_mu = r_max * 0.1
             a_t = pm.TruncatedNormal("a", mu=a_mu, sigma=0.3*a_mu, lower=0.01*r_max, upper=0.3*r_max)
 
-            # sigma_scale prior: to scale the measurement errors
-            v_obs_sigma_scale_t = pm.LogNormal("v_obs_sigma_scale", mu=0.0, sigma=0.2)  # median ~ 1.0
+            # sigma_obs_scale prior: to scale the measurement errors
+            stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)
+            sigma_obs_scale_t = pm.Normal("sigma_obs_scale", mu=pt.sqrt(stderr_obs_valid_mean**2 + VEL_SYSTEM_ERROR**2), sigma=0.2 * max(stderr_obs_valid_mean, VEL_SYSTEM_ERROR))
 
             # ------------------------------------------
             # deterministic relations
@@ -351,9 +353,9 @@ class DmNfw:
             # Measurement error model: start from ivar-derived sigma (plus floor),
             # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
             # This is often more realistic than treating ivar as perfectly calibrated.
-            v_obs_sigma_t = pm.Deterministic("v_obs_sigma", v_obs_sigma_scale_t * stderr_obs_valid)
+            sigma_obs_t = pm.Deterministic("sigma_obs", sigma_obs_scale_t * stderr_obs_valid)
 
-            pm.Normal("v_obs", mu=v_obs_mu_t, sigma=v_obs_sigma_t, observed=vel_obs_valid)
+            pm.Normal("v_obs", mu=v_obs_mu_t, sigma=sigma_obs_t, observed=vel_obs_valid)
 
             # ------------------------------------------
             # potential
@@ -403,7 +405,7 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "v_obs_sigma_scale"]
+        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "sigma_obs_scale"]
         if self.inf_Re:
             var_names.append("Re")
         if self.inf_drift:
@@ -424,8 +426,7 @@ class DmNfw:
         Re_mean = float(summary.loc["Re", "mean"]) if self.inf_Re else Re
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
-        v_obs_sigma_scale_mean = float(summary.loc["v_obs_sigma_scale", "mean"])
-        v_obs_sigma_mean = v_obs_sigma_scale_mean * np.mean(stderr_obs_valid)
+        sigma_obs_scale_mean = float(summary.loc["sigma_obs_scale", "mean"])
 
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
@@ -436,8 +437,7 @@ class DmNfw:
         Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
-        v_obs_sigma_scale_sd = float(summary.loc["v_obs_sigma_scale", "sd"])
-        v_obs_sigma_sd = v_obs_sigma_scale_sd * np.mean(stderr_obs_valid)
+        sigma_obs_scale_sd = float(summary.loc["sigma_obs_scale", "sd"])
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
@@ -448,6 +448,7 @@ class DmNfw:
         Re_r_hat = float(summary.loc["Re", "r_hat"]) if self.inf_Re else 1.0
         f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
+        sigma_obs_scale_r_hat = float(summary.loc["sigma_obs_scale", "r_hat"])
 
         # extract posterior samples
         posterior = trace.posterior
@@ -459,6 +460,8 @@ class DmNfw:
         v_drift_mean = np.mean(v_drift_samples, axis=1)
         v_rot_samples = posterior["v_rot"].stack(samples=("chain", "draw")).values
         v_rot_mean = np.mean(v_rot_samples, axis=1)
+        sigma_obs_samples = posterior["sigma_obs"].stack(samples=("chain", "draw")).values
+        sigma_obs_mean = np.mean(sigma_obs_samples, axis=1)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -515,7 +518,7 @@ class DmNfw:
         v_obs_ppc_use = v_obs_ppc[:n_samp, :]
         v_obs_mu_use = v_obs_mu[:n_samp, :]
 
-        sigma = stderr_obs_valid
+        sigma = sigma_obs_mean
         sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, np.nan)
 
         # Discrepancy measures
@@ -561,13 +564,13 @@ class DmNfw:
         # ------------------------------------------
         # residuals
         # ------------------------------------------
-        mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean) & np.isfinite(stderr_obs_valid) & (stderr_obs_valid > 0)
-        residual = vel_obs_valid - v_obs_mean
-        residual_std = np.full_like(residual, np.nan, dtype=float)
-        residual_std[mask] = residual[mask] / stderr_obs_valid[mask]
+        mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean)
+        res_obs = vel_obs_valid - v_obs_mean
+        res_norm = np.full_like(res_obs, np.nan, dtype=float)
+        res_norm[mask] = res_obs[mask] / sigma_obs_mean[mask]
 
-        res_use = residual[mask]
-        rmse = float(np.sqrt(np.mean(res_use**2)))
+        res_map = res_obs[mask]
+        rmse = float(np.sqrt(np.mean(res_map**2)))
         nrmse = float(rmse / np.mean(np.abs(vel_obs_valid[mask])))
 
         # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a
@@ -603,7 +606,7 @@ class DmNfw:
             print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
             print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
-            print(f" Infer v_obs_sigma  : {v_obs_sigma_mean:.3f} ± {v_obs_sigma_sd:.3f} ({v_obs_sigma_sd/v_obs_sigma_mean:.2%})")
+            print(f" Infer sigma_obs_scale : {sigma_obs_scale_mean:.3f} ± {sigma_obs_scale_sd:.3f} ({sigma_obs_scale_sd/sigma_obs_scale_mean:.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")
@@ -638,7 +641,8 @@ class DmNfw:
             phi_delta_r_hat < INFER_RHAT_THRESHOLD and \
             Re_r_hat < INFER_RHAT_THRESHOLD and \
             f_bulge_r_hat < INFER_RHAT_THRESHOLD and \
-            a_r_hat < INFER_RHAT_THRESHOLD:
+            a_r_hat < INFER_RHAT_THRESHOLD and \
+            sigma_obs_scale_r_hat < INFER_RHAT_THRESHOLD:
             success = True
         else:
             print("Inference did not converge (R-hat too high).")
@@ -650,6 +654,8 @@ class DmNfw:
             'v_dm': v_dm_mean,
             'v_star': v_star_mean,
             'v_drift': v_drift_mean,
+            'sigma_obs': sigma_obs_mean,
+            'res_obs': res_obs,
         }
 
         inf_params = {

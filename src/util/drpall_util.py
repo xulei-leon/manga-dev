@@ -171,9 +171,9 @@ class DrpallUtil:
     # NSA_ELPETRO_MASS	float64		Stellar mass from K-correction fit (use with caution) for elliptical Petrosian fluxes (Ωm=0.3, ΩΛ=0.7, h=1)
     def get_stellar_mass(self, plateifu: str) -> tuple[float | None, float | None]:
         """Return stellar mass for plateifu using available columns or None."""
-        sersic = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
-        elpetro = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
-        return sersic, elpetro
+        sersic_mass = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_MASS"])
+        elpetro_mass = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_MASS"])
+        return elpetro_mass, sersic_mass
 
     # NSA_ELPETRO_TH50_R
     # Elliptical Petrosian 50% light radius in SDSS r-band

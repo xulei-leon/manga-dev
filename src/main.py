@@ -186,6 +186,9 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     V_dm_inf = inf_result['v_dm']
     V_star_inf = inf_result['v_star']
     V_drift_inf = inf_result['v_drift']
+    sigma_obs_inf = inf_result['sigma_obs']
+    res_obs_inf = inf_result['res_obs']
+
 
     #--------------------------------------------------------
     # DM NFW fitting
@@ -202,7 +205,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     ########################################################
     if  debug or plot_enable:
         plot_util.plot_rv_curves([
-            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None},
+            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None, 'size': 5},
             {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'gray', 'linestyle': '-'},
             {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'black', 'linestyle': '-'},
             {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},

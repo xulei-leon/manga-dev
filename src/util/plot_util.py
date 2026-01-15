@@ -1,3 +1,4 @@
+from tkinter import N
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors
@@ -145,7 +146,7 @@ class PlotUtil:
         fig.tight_layout()
         plt.show()
 
-    def plot_rv_curves(self, rv_data_list, plateifu: str=""):
+    def plot_rv_curves(self, rv_data_list, plateifu: str="", savedir: str=None):
         fig, ax = plt.subplots(figsize=(10, 6))
 
         for rv_data in rv_data_list:
@@ -182,4 +183,11 @@ class PlotUtil:
         ax.axvline(0, color='black', linestyle='-', linewidth=0.5)
         ax.legend()
         fig.tight_layout()
-        plt.show()
+
+        if savedir is not None:
+            filename = f"{plateifu}_nfw_rv.png"
+            filepath = f"{savedir}/{filename}"
+            fig.savefig(filepath)
+            plt.close(fig)
+        else:
+            plt.show()

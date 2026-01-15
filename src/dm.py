@@ -19,6 +19,7 @@ import pymc as pm
 import arviz as az
 import pytensor.tensor as pt
 from astropy import constants as const
+import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
 from stellar import Stellar
@@ -613,6 +614,8 @@ class DmNfw:
             # corner plot
             az.rcParams['plot.max_subplots'] = 50
             az.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
+            plt.tight_layout()
+            plt.show()
 
 
         if M200_r_hat < INFER_RHAT_THRESHOLD and \

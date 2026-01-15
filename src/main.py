@@ -1,7 +1,5 @@
-from doctest import debug
 from pathlib import Path
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -20,6 +18,11 @@ from dm import DmNfw
 
 root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / "data"
+result_dir = data_dir / "results"
+data_dir.mkdir(parents=True, exist_ok=True)
+result_dir.mkdir(parents=True, exist_ok=True)
+
+
 fits_util = FitsUtil(data_dir)
 
 VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
@@ -39,7 +42,7 @@ csv_lock = Lock()
 
 # Store vel rot fit parameters as CSV file
 def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
-    output_file = data_dir / filename
+    output_file = result_dir / filename
 
     with csv_lock:
         if output_file.exists():
@@ -62,7 +65,7 @@ def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
     return
 
 def get_params_file(PLATE_IFU: str, filename:str):
-    output_file = data_dir / filename
+    output_file = result_dir / filename
 
     if not output_file.exists():
         return None
@@ -79,7 +82,7 @@ def get_params_file(PLATE_IFU: str, filename:str):
         return None
 
 
-def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True, debug: bool=False):
+def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME)
     if process_nfw and nfw_param is not None:
         print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
@@ -167,7 +170,7 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_stellar_util(stellar)
-    dm_nfw.set_plot_enable(plot_enable)
+    dm_nfw.set_plot_enable(debug)
     dm_nfw.set_inf_debug(debug)
 
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,
@@ -203,15 +206,14 @@ def process_plate_ifu(PLATE_IFU, plot_enable:bool=False, process_nfw: bool=True,
     ########################################################
     ## plot velocity map
     ########################################################
-    if  debug or plot_enable:
-        plot_util.plot_rv_curves([
-            {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None, 'size': 5},
-            {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'gray', 'linestyle': '-'},
-            {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'black', 'linestyle': '-'},
-            {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},
-            {'r_map': r_inf, 'V_map': V_star_inf, 'title': "Inf Stellar", 'color': 'blue', 'linestyle': '-'},
-            {'r_map': r_inf, 'V_map': V_drift_inf, 'title': "Inf Drift", 'color': 'red', 'linestyle': ':'},
-        ], plateifu=PLATE_IFU)
+    plot_util.plot_rv_curves([
+        {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None, 'size': 5},
+        {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'gray', 'linestyle': '-'},
+        {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'black', 'linestyle': '-'},
+        {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},
+        {'r_map': r_inf, 'V_map': V_star_inf, 'title': "Inf Stellar", 'color': 'blue', 'linestyle': '-'},
+        {'r_map': r_inf, 'V_map': V_drift_inf, 'title': "Inf Drift", 'color': 'red', 'linestyle': ':'},
+    ], plateifu=PLATE_IFU, savedir=result_dir if not debug else None)
 
     return
 
@@ -248,13 +250,11 @@ def get_plate_list_from_fit():
     plate_ifu_list.sort()
     return plate_ifu_list
 
-def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = False, plot: bool = False):
+def main(run_nfw: bool = True, ifu: str = None, debug: bool = False):
     plate_ifu_list = []
 
     if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
-    elif ifu == "fit":
-        plate_ifu_list = get_plate_list_from_fit()
     elif ifu == "test":
         plate_ifu_list = TEST_PLATE_IFUS
     else:
@@ -266,40 +266,33 @@ def main(run_nfw: bool = True, workers: int = 1, ifu: str = None, debug: bool = 
     def _process(plate_ifu):
         print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
         if debug:
-            process_plate_ifu(plate_ifu, plot_enable=plot, process_nfw=run_nfw, debug=debug)
+            process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug)
         else:
             try:
-                process_plate_ifu(plate_ifu, plot_enable=plot, process_nfw=run_nfw, debug=debug)
+                process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug)
             except Exception as e:
                 print(f"Error processing {plate_ifu}: {e}")
 
         # Clear pymc internal cache to free up memory
         gc.collect()
 
-    # plot do not work well with multithreading
-    if workers == 1 or debug:
-        for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
-            _process(plate_ifu)
-        return
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_process, plate_ifu): plate_ifu for plate_ifu in plate_ifu_list}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing galaxies", unit="galaxy"):
-            plate_ifu = futures[future]
-            future.result()
+    for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
+        _process(plate_ifu)
+    return
 
 import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
     parser.add_argument('--nfw', type=str, default="on", help='Run dark matter NFW fitting.')
-    parser.add_argument('--threads', type=int, default=1, help='Number of worker threads.')
     parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode.')
-    parser.add_argument('--plot', action='store_true', help='Enable plot mode.')
+    parser.add_argument('--result', type=str, default="results", help='Result directory name.')
 
     args = parser.parse_args()
 
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
+    result_dir = data_dir / args.result if args.result else root_dir / "results"
+    result_dir.mkdir(parents=True, exist_ok=True)
 
-    main(run_nfw=nfw_enable, workers=args.threads, ifu=args.ifu, debug=args.debug, plot=args.plot)
+    main(run_nfw=nfw_enable, ifu=args.ifu, debug=args.debug)

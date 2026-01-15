@@ -288,7 +288,7 @@ class DmNfw:
             # sigma_0 prior: half normal
             # sigma_0 > 0
             if self.inf_drift:
-                sigma_0_t = pm.HalfNormal("sigma_0", sigma=10.0)
+                sigma_0_t = pm.HalfNormal("sigma_0", sigma=5.0)
             else:
                 sigma_0_t = pm.Deterministic("sigma_0", pt.as_tensor_variable(0.0))
 
@@ -513,46 +513,65 @@ class DmNfw:
                 f"Posterior v_obs_mu shape {v_obs_mu_raw.shape} does not match n_points={n_points}."
             )
 
-        # Ensure we align sample counts between mu and posterior predictive draws
-        n_samp = int(min(v_obs_ppc.shape[0], v_obs_mu.shape[0]))
+        # Extract per-draw sigma and standardize to (n_samples, n_points)
+        if sigma_obs_samples.ndim != 2:
+            raise ValueError(f"Unexpected sigma_obs shape: {sigma_obs_samples.shape}")
+        if sigma_obs_samples.shape[-1] == n_points:
+            sigma_obs = sigma_obs_samples
+        elif sigma_obs_samples.shape[0] == n_points:
+            sigma_obs = sigma_obs_samples.T
+        else:
+            raise ValueError(
+                f"Posterior sigma_obs shape {sigma_obs_samples.shape} does not match n_points={n_points}."
+            )
+
+        # Ensure we align sample counts between mu/sigma and posterior predictive draws
+        n_samp = int(min(v_obs_ppc.shape[0], v_obs_mu.shape[0], sigma_obs.shape[0]))
         v_obs_ppc_use = v_obs_ppc[:n_samp, :]
         v_obs_mu_use = v_obs_mu[:n_samp, :]
+        sigma_obs_use = sigma_obs[:n_samp, :]
 
-        sigma = sigma_obs_mean
-        sigma = np.where(np.isfinite(sigma) & (sigma > 0), sigma, np.nan)
+        sigma = np.where(np.isfinite(sigma_obs_use) & (sigma_obs_use > 0), sigma_obs_use, np.nan)
 
         # Discrepancy measures
         # T_obs(theta) = sum(((y - mu_theta)/sigma)^2)
         # T_rep(theta) = sum(((y_rep - mu_theta)/sigma)^2)
-        resid_obs = (vel_obs_valid[None, :] - v_obs_mu_use) / sigma[None, :]
-        resid_rep = (v_obs_ppc_use - v_obs_mu_use) / sigma[None, :]
+        resid_obs = (vel_obs_valid[None, :] - v_obs_mu_use) / sigma
 
         # mask invalid points (if any) in sigma or data
-        valid_cols = np.isfinite(sigma) & np.isfinite(vel_obs_valid)
+        valid_cols = np.isfinite(vel_obs_valid) & np.all(np.isfinite(sigma), axis=0)
         resid_obs = resid_obs[:, valid_cols]
-        resid_rep = resid_rep[:, valid_cols]
 
         chi2_obs_draws = np.sum(resid_obs**2, axis=1)
-        chi2_rep_draws = np.sum(resid_rep**2, axis=1)
-
-        # Bayesian p-value: fraction of replicated discrepancies exceeding observed discrepancies
-        chi2_ppc_p = float(np.mean(chi2_rep_draws > chi2_obs_draws))
 
         # Summaries
         chi2_obs_mean = float(np.mean(chi2_obs_draws))
 
+        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
+        params_num = 10
+        if not self.inf_drift:
+            params_num -= 1
+        if not self.inf_Re:
+            params_num -= 1
+        if not self.inf_inc:
+            params_num -= 1
+        if not self.inf_phi_delta:
+            params_num -= 1
+        dof = int(max(np.sum(valid_cols) - params_num, 1))
+        # Reduced Chi-squared (use posterior mean chi2)
+        redchi = float(chi2_obs_mean / dof)
 
         # ------------------------------------------
         # PPC discrepancy for Normal likelihood: deviance = -2 * log p(y|theta)
         # ------------------------------------------
-        sigma_use = sigma[valid_cols]
+        sigma_use = sigma[:, valid_cols]
         const_n = -0.5 * np.log(2.0 * np.pi)
 
-        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use[None, :]
-        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use[None, :]
+        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use
+        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use
 
-        logp_obs = const_n - np.log(sigma_use[None, :]) - 0.5 * (z_obs**2)
-        logp_rep = const_n - np.log(sigma_use[None, :]) - 0.5 * (z_rep**2)
+        logp_obs = const_n - np.log(sigma_use) - 0.5 * (z_obs**2)
+        logp_rep = const_n - np.log(sigma_use) - 0.5 * (z_rep**2)
 
         dev_obs_draws = -2.0 * np.sum(logp_obs, axis=1)
         dev_rep_draws = -2.0 * np.sum(logp_rep, axis=1)
@@ -567,25 +586,12 @@ class DmNfw:
         mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean)
         res_obs = vel_obs_valid - v_obs_mean
         res_norm = np.full_like(res_obs, np.nan, dtype=float)
-        res_norm[mask] = res_obs[mask] / sigma_obs_mean[mask]
+        sigma_obs_use = np.nanmean(sigma_obs_use, axis=0)
+        res_norm[mask] = res_obs[mask] / sigma_obs_use[mask]
 
         res_map = res_obs[mask]
         rmse = float(np.sqrt(np.mean(res_map**2)))
         nrmse = float(rmse / np.mean(np.abs(vel_obs_valid[mask])))
-
-        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a
-        params_num = 9
-        if not self.inf_drift:
-            params_num -= 1
-        if not self.inf_Re:
-            params_num -= 1
-        if not self.inf_inc:
-            params_num -= 1
-        if not self.inf_phi_delta:
-            params_num -= 1
-        dof = int(max(np.sum(mask) - params_num, 1))
-        # Reduced Chi-squared (use posterior mean chi2)
-        redchi = float(chi2_obs_mean / dof)
 
         # ---------------------
         # Inference summary info
@@ -616,7 +622,6 @@ class DmNfw:
             print(f" Stellar Mass       : {Mstar:.3e} Msun")
             print("--- diagnostics ---")
             print(f" Reduced Chi        : {redchi:.3f}")
-            print(f" Chi2 PPC p-value   : {chi2_ppc_p:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
             print(f" NRMSE              : {nrmse:.3f}")
             print("------------------------------------------------------------\n")
@@ -668,7 +673,6 @@ class DmNfw:
             'c_r_hat': c_r_hat,
             'nrmse': nrmse,
             'chi2_red': redchi,
-            'chi2_ppc_p': chi2_ppc_p,
             'dev_ppc_p': dev_ppc_p,
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,

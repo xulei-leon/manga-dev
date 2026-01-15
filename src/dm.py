@@ -37,8 +37,9 @@ class DmNfw:
     plot_enable: bool
     inf_debug: bool = False
     inf_drift: bool = True
-    inf_Re: bool = False # Notice: Infer Re will take too much time
+    inf_Re: bool = True # Notice: Infer Re will take too much time
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
+    inf_phi_delta: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -303,7 +304,10 @@ class DmNfw:
                 inc_t = pm.Deterministic("inc", pt.as_tensor_variable(inc_rad))
 
             # phi_delta prior
-            phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
+            if self.inf_phi_delta:
+                phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
+            else:
+                phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Notice: Do not use vbecause it is strongly degenerate with other parameters.
             if self.inf_Re:
@@ -376,8 +380,8 @@ class DmNfw:
             # ------------------------------------------
             # sampling options & run
             # ------------------------------------------
-            draws = 2000
-            tune = 1000
+            draws = 1000
+            tune = 500
             chains = min(4, os.cpu_count())
             target_accept = 0.95
 
@@ -400,13 +404,15 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "phi_delta", "f_bulge", "a", "v_obs_sigma_scale"]
+        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "v_obs_sigma_scale"]
         if self.inf_Re:
             var_names.append("Re")
         if self.inf_drift:
             var_names.append("sigma_0")
         if self.inf_inc:
             var_names.append("inc")
+        if self.inf_phi_delta:
+            var_names.append("phi_delta")
 
         summary = az.summary(trace, var_names=var_names, round_to=3)
 
@@ -415,7 +421,7 @@ class DmNfw:
         sigma0_mean = float(summary.loc["sigma_0", "mean"]) if self.inf_drift else 0.0
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"]) if self.inf_inc else inc_rad
-        phi_delta_mean = float(summary.loc["phi_delta", "mean"])
+        phi_delta_mean = float(summary.loc["phi_delta", "mean"]) if self.inf_phi_delta else 0.0
         Re_mean = float(summary.loc["Re", "mean"]) if self.inf_Re else Re
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
@@ -427,7 +433,7 @@ class DmNfw:
         sigma0_sd = float(summary.loc["sigma_0", "sd"]) if self.inf_drift else 0.0
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
-        phi_delta_sd = float(summary.loc["phi_delta", "sd"])
+        phi_delta_sd = float(summary.loc["phi_delta", "sd"]) if self.inf_phi_delta else 0.0
         Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
@@ -439,7 +445,7 @@ class DmNfw:
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"]) if self.inf_drift else 1.0
         v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
         inc_r_hat = float(summary.loc["inc", "r_hat"]) if self.inf_inc else 1.0
-        phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"])
+        phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"]) if self.inf_phi_delta else 1.0
         Re_r_hat = float(summary.loc["Re", "r_hat"]) if self.inf_Re else 1.0
         f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
         a_r_hat = float(summary.loc["a", "r_hat"])
@@ -571,6 +577,10 @@ class DmNfw:
             params_num -= 1
         if not self.inf_Re:
             params_num -= 1
+        if not self.inf_inc:
+            params_num -= 1
+        if not self.inf_phi_delta:
+            params_num -= 1
         dof = int(max(np.sum(mask) - params_num, 1))
         # Reduced Chi-squared (use posterior mean chi2)
         redchi = float(chi2_obs_mean / dof)
@@ -590,7 +600,7 @@ class DmNfw:
             print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
-            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})")
+            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
             print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
             print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
             print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")

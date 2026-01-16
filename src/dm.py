@@ -307,21 +307,18 @@ class DmNfw:
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
-            v_obs_model =  v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
+            v_obs_model_t = pm.Deterministic("v_obs_model", v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t))
 
             # ------------------------------------------
             # likelihood: observed rotation velocities
             # ------------------------------------------
-
-            # predicted observed velocities
-            v_obs_mu_t = pm.Deterministic("v_obs_mu", pt.as_tensor_variable(v_obs_model))
 
             # Measurement error model: start from ivar-derived sigma (plus floor),
             # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
             # This is often more realistic than treating ivar as perfectly calibrated.
             sigma_obs_t = pm.Deterministic("sigma_obs", sigma_obs_scale_t * stderr_obs_valid)
 
-            pm.Normal("v_obs", mu=v_obs_mu_t, sigma=sigma_obs_t, observed=vel_obs_valid)
+            pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
 
             # ------------------------------------------
             # potential
@@ -432,35 +429,49 @@ class DmNfw:
         a_sd = float(summary.loc["a", "sd"])
         sigma_obs_scale_sd = float(summary.loc["sigma_obs_scale", "sd"])
 
-        Mstar_r_hat = float(summary.loc["Mstar", "r_hat"]) if self.inf_Mstar else 1.0
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
-        sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"]) if self.inf_drift else 1.0
-        v_sys_r_hat = float(summary.loc["v_sys", "r_hat"])
-        inc_r_hat = float(summary.loc["inc", "r_hat"]) if self.inf_inc else 1.0
-        phi_delta_r_hat = float(summary.loc["phi_delta", "r_hat"]) if self.inf_phi_delta else 1.0
-        Re_r_hat = float(summary.loc["Re", "r_hat"]) if self.inf_Re else 1.0
-        f_bulge_r_hat = float(summary.loc["f_bulge", "r_hat"])
-        a_r_hat = float(summary.loc["a", "r_hat"])
-        sigma_obs_scale_r_hat = float(summary.loc["sigma_obs_scale", "r_hat"])
+
+        success = True
+        for var in var_names:
+            r_hat = float(summary.loc[var, "r_hat"])
+            if r_hat > INFER_RHAT_THRESHOLD:
+                print(f"Warning: R-hat for variable {var} is {r_hat:.3f} > {INFER_RHAT_THRESHOLD}, indicating potential non-convergence.")
+                success = False
+
 
         # extract posterior samples
         posterior = trace.posterior
-        v_dm_samples = posterior["v_dm"].stack(samples=("chain", "draw")).values
-        v_dm_mean = np.mean(v_dm_samples, axis=1)
-        v_star_samples = posterior["v_star"].stack(samples=("chain", "draw")).values
-        v_star_mean = np.mean(v_star_samples, axis=1)
-        v_drift_samples = posterior["v_drift"].stack(samples=("chain", "draw")).values
-        v_drift_mean = np.mean(v_drift_samples, axis=1)
-        v_rot_samples = posterior["v_rot"].stack(samples=("chain", "draw")).values
-        v_rot_mean = np.mean(v_rot_samples, axis=1)
-        sigma_obs_samples = posterior["sigma_obs"].stack(samples=("chain", "draw")).values
-        sigma_obs_mean = np.mean(sigma_obs_samples, axis=1)
+        flat_trace = posterior.stack(sample=("chain", "draw"))
+        v_dm_samples = flat_trace["v_dm"].values
+        v_star_samples = flat_trace["v_star"].values
+        v_drift_samples = flat_trace["v_drift"].values
+        v_rot_samples = flat_trace["v_rot"].values
+        sigma_obs_samples = flat_trace["sigma_obs"].values
+        Mstar_samples = flat_trace["Mstar"].values
+        M200_samples = flat_trace["M200"].values
+        c_samples = flat_trace["c"].values
 
-        M200_samples = posterior["M200"].stack(samples=("chain", "draw")).values
-        M200_post_mean = np.mean(M200_samples)
-        c_samples = posterior["c"].stack(samples=("chain", "draw")).values
-        c_post_mean = np.mean(c_samples)
+        # Representative Samples
+        v_rot_median = np.median(v_rot_samples, axis=1)
+        # Calculate distance of each sample from the median profile
+        v_rot_distance = np.linalg.norm(v_rot_samples - v_rot_median[:, None], axis=0)
+        best_idx = np.argmin(v_rot_distance)
+
+        # Select the sample profile that is closest to median
+        v_rot_best = v_rot_samples[:, best_idx]
+        v_star_best = v_star_samples[:, best_idx]
+        v_dm_best = v_dm_samples[:, best_idx]
+        v_drift_best = v_drift_samples[:, best_idx]
+        sigma_obs_best = sigma_obs_samples[:, best_idx]
+
+        Mstar_best = Mstar_samples[best_idx] if self.inf_Mstar else Mstar_expect
+        M200_best = M200_samples[best_idx]
+        c_best = c_samples[best_idx]
+
+        V200_calc = self._calc_V200_from_M200(M200_best, z)
+        r200_calc = self._calc_r200_from_V200(V200_calc, z)
+        c_calc = self._calc_c_from_M200(c_best, h=H)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -471,10 +482,6 @@ class DmNfw:
         max_k = float(model_loo.pareto_k.max().values)
         mean_k = float(model_loo.pareto_k.mean().values)
         good_k_fraction = float(np.sum(model_loo.pareto_k.values < 0.7) / len(model_loo.pareto_k.values))
-
-        V200_calc = self._calc_V200_from_M200(M200_mean, z)
-        r200_calc = self._calc_r200_from_V200(V200_calc, z)
-        c_calc = self._calc_c_from_M200(M200_mean, h=H)
 
         # ------------------------------------------
         # residual diagnostics
@@ -500,16 +507,16 @@ class DmNfw:
         # ------------------------------------------
         # Extract noise-free posterior mean (mu) per draw
         # Use the same InferenceData object as v_obs_ppc to keep draws aligned.
-        v_obs_mu_raw = ppc_idata.posterior["v_obs_mu"].stack(sample=("chain", "draw")).values
-        if v_obs_mu_raw.ndim != 2:
-            raise ValueError(f"Unexpected v_obs_mu shape: {v_obs_mu_raw.shape}")
-        if v_obs_mu_raw.shape[-1] == n_points:
-            v_obs_mu = v_obs_mu_raw
-        elif v_obs_mu_raw.shape[0] == n_points:
-            v_obs_mu = v_obs_mu_raw.T
+        v_obs_model_raw = ppc_idata.posterior["v_obs_model"].stack(sample=("chain", "draw")).values
+        if v_obs_model_raw.ndim != 2:
+            raise ValueError(f"Unexpected v_obs_model shape: {v_obs_model_raw.shape}")
+        if v_obs_model_raw.shape[-1] == n_points:
+            v_obs_model = v_obs_model_raw
+        elif v_obs_model_raw.shape[0] == n_points:
+            v_obs_model = v_obs_model_raw.T
         else:
             raise ValueError(
-                f"Posterior v_obs_mu shape {v_obs_mu_raw.shape} does not match n_points={n_points}."
+                f"Posterior v_obs_model shape {v_obs_model_raw.shape} does not match n_points={n_points}."
             )
 
         # Extract per-draw sigma and standardize to (n_samples, n_points)
@@ -525,9 +532,9 @@ class DmNfw:
             )
 
         # Ensure we align sample counts between mu/sigma and posterior predictive draws
-        n_samp = int(min(v_obs_ppc.shape[0], v_obs_mu.shape[0], sigma_obs.shape[0]))
+        n_samp = int(min(v_obs_ppc.shape[0], v_obs_model.shape[0], sigma_obs.shape[0]))
         v_obs_ppc_use = v_obs_ppc[:n_samp, :]
-        v_obs_mu_use = v_obs_mu[:n_samp, :]
+        v_obs_model_use = v_obs_model[:n_samp, :]
         sigma_obs_use = sigma_obs[:n_samp, :]
 
         sigma = np.where(np.isfinite(sigma_obs_use) & (sigma_obs_use > 0), sigma_obs_use, np.nan)
@@ -535,7 +542,7 @@ class DmNfw:
         # Discrepancy measures
         # T_obs(theta) = sum(((y - mu_theta)/sigma)^2)
         # T_rep(theta) = sum(((y_rep - mu_theta)/sigma)^2)
-        resid_obs = (vel_obs_valid[None, :] - v_obs_mu_use) / sigma
+        resid_obs = (vel_obs_valid[None, :] - v_obs_model_use) / sigma
 
         # mask invalid points (if any) in sigma or data
         valid_cols = np.isfinite(vel_obs_valid) & np.all(np.isfinite(sigma), axis=0)
@@ -568,8 +575,8 @@ class DmNfw:
         sigma_use = sigma[:, valid_cols]
         const_n = -0.5 * np.log(2.0 * np.pi)
 
-        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use
-        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_mu_use[:, valid_cols]) / sigma_use
+        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_model_use[:, valid_cols]) / sigma_use
+        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_model_use[:, valid_cols]) / sigma_use
 
         logp_obs = const_n - np.log(sigma_use) - 0.5 * (z_obs**2)
         logp_rep = const_n - np.log(sigma_use) - 0.5 * (z_rep**2)
@@ -579,7 +586,7 @@ class DmNfw:
         dev_ppc_p = float(np.mean(dev_rep_draws > dev_obs_draws))
 
         # For legacy residual metrics, keep a point estimate based on mu averaged across draws
-        v_obs_mean = np.mean(v_obs_mu_use, axis=0)
+        v_obs_mean = np.mean(v_obs_model_use, axis=0)
 
         # ------------------------------------------
         # residuals
@@ -603,20 +610,30 @@ class DmNfw:
             print(summary)
             print("--- LOO ---")
             print(f"{model_loo}")
-            print(f"--- median estimates ---")
-            print(f" Infer Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
-            print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
-            print(f" Post M200          : {M200_post_mean:.3e} Msun")
-            print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-            print(f" Post c             : {c_post_mean:.3f}")
-            print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
-            print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
-            print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
-            print(f" Infer phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
-            print(f" Infer Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
-            print(f" Infer f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
-            print(f" Infer a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
-            print(f" Infer sigma_obs_scale : {sigma_obs_scale_mean:.3f} ± {sigma_obs_scale_sd:.3f} ({sigma_obs_scale_sd/sigma_obs_scale_mean:.2%})")
+            print(f"--- mean estimates ---")
+            print(f" Mean Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
+            print(f" Mean M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+            print(f" Mean c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+            print(f" Mean sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
+            print(f" Mean v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
+            print(f" Mean inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
+            print(f" Mean phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
+            print(f" Mean Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
+            print(f" Mean f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
+            print(f" Mean a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
+            print(f" Mean sigma_obs_scale : {sigma_obs_scale_mean:.3f} ± {sigma_obs_scale_sd:.3f} ({sigma_obs_scale_sd/sigma_obs_scale_mean:.2%})")
+            print(f"--- Best ---")
+            print(f" Best Mstar       : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
+            print(f" Best M200        : {M200_best:.3e} Msun")
+            print(f" Best c           : {c_best:.3f}")
+            print(f" Best sigma_0     : {sigma0_mean:.3f} km/s") if self.inf_drift else None
+            print(f" Best v_sys       : {v_sys_mean:.3f} km/s")
+            print(f" Best inc         : {np.degrees(inc_mean):.3f} deg") if self.inf_inc else None
+            print(f" Best phi_delta   : {np.degrees(phi_delta_mean):.3f} deg") if self.inf_phi_delta else None
+            print(f" Best Re          : {Re_mean:.3f} kpc") if self.inf_Re else None
+            print(f" Best f_bulge     : {f_bulge_mean:.3f}")
+            print(f" Best a           : {a_mean:.3f} kpc")
+            print(f" Best sigma_obs_scale : {sigma_obs_scale_mean:.3f}")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")
@@ -644,37 +661,22 @@ class DmNfw:
             plt.show()
 
 
-        if M200_r_hat < INFER_RHAT_THRESHOLD and \
-            c_r_hat < INFER_RHAT_THRESHOLD and \
-            sigma0_r_hat < INFER_RHAT_THRESHOLD and \
-            v_sys_r_hat < INFER_RHAT_THRESHOLD and \
-            inc_r_hat < INFER_RHAT_THRESHOLD and \
-            phi_delta_r_hat < INFER_RHAT_THRESHOLD and \
-            Re_r_hat < INFER_RHAT_THRESHOLD and \
-            f_bulge_r_hat < INFER_RHAT_THRESHOLD and \
-            a_r_hat < INFER_RHAT_THRESHOLD and \
-            sigma_obs_scale_r_hat < INFER_RHAT_THRESHOLD:
-            success = True
-        else:
-            print("Inference did not converge (R-hat too high).")
-            success = False
-
         inf_result = {
             'radius': radius_valid,
-            'v_rot': v_rot_mean,
-            'v_dm': v_dm_mean,
-            'v_star': v_star_mean,
-            'v_drift': v_drift_mean,
-            'sigma_obs': sigma_obs_mean,
+            'v_rot': v_rot_best,
+            'v_dm': v_dm_best,
+            'v_star': v_star_best,
+            'v_drift': v_drift_best,
+            'sigma_obs': sigma_obs_best,
             'res_obs': res_obs,
         }
 
         inf_params = {
             'result': 'success' if success else 'failure',
-            'M200': M200_mean,
+            'M200': M200_best,
             'M200_std': M200_sd,
             'M200_r_hat': M200_r_hat,
-            'c': c_mean,
+            'c': c_best,
             'c_std': c_sd,
             'c_r_hat': c_r_hat,
             'nrmse': nrmse,

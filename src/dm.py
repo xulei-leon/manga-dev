@@ -36,10 +36,11 @@ class DmNfw:
     PLATE_IFU: str
     plot_enable: bool
     inf_debug: bool = False
+    inf_Mstar: bool = True
     inf_drift: bool = True
     inf_Re: bool = True # Notice: Infer Re will take too much time
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
-    inf_phi_delta: bool = True
+    inf_phi_delta: bool = False
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -123,20 +124,18 @@ class DmNfw:
             _Mstar_total = self.stellar_util.get_stellar_mass_total()
             _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
             print (f"Stellar mass from DRPALL: Mstar_elpetro={_Mstar_elpetro:.2e} Msun, Mstar_sersic={_Mstar_sersic:.2e} Msun, Mstar_total={_Mstar_total:.2e} Msun")
-            Mstar = _Mstar_elpetro if _Mstar_elpetro is not None else _Mstar_sersic if _Mstar_sersic is not None else _Mstar_total
+            Mstar_expect = _Mstar_elpetro if _Mstar_elpetro is not None else _Mstar_sersic if _Mstar_sersic is not None else _Mstar_total
         else:
             fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
-            Mstar = fit_stellar_mass_results['Mstar']
+            Mstar_expect = fit_stellar_mass_results['Mstar']
             Re = fit_stellar_mass_results['Re']
 
         z = self._get_z()
 
         Mmin=1e9
         Mmax=1e15
-        M200_expect = self._calc_M200_from_Mstar(Mstar, Mmin=Mmin, Mmax=Mmax)  # expected M200 from Mstar
-        print(f"M200_mu: {M200_expect:.2e}")
+        M200_expect = self._calc_M200_from_Mstar(Mstar_expect, Mmin=Mmin, Mmax=Mmax)  # expected M200 from Mstar
         c_expect = self._calc_c_from_M200(M200_expect, h=H)
-        print(f"c_expect: {c_expect:.2f}")
 
         # precompute stellar contribution v_star^2 (numpy array)
         # Do not convert to tensor yet, do it inside the model
@@ -234,14 +233,22 @@ class DmNfw:
             # ------------------------------------------
             # prior distributions
             # ------------------------------------------
+            if self.inf_Mstar:
+                Mstar_log_mu = pt.log(Mstar_expect)
+                Mstar_log_sigma = 0.1
+                Mstar_t = pm.LogNormal("Mstar", mu=Mstar_log_mu, sigma=Mstar_log_sigma)
+            else:
+                Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(Mstar_expect))
+
             # M200 prior: from SHMR
-            M200_log_sigma = 0.25
             M200_log_mu = pt.log(M200_expect)
+            M200_log_sigma = 0.6
             M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
             c_log_mu = pt.log(c_expect)
-            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=0.25)
+            c_log_sigma = 0.3
+            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=c_log_sigma)
 
             # sigma_0 prior: log-normal (strictly positive scale)
             if self.inf_drift:
@@ -255,8 +262,7 @@ class DmNfw:
 
             # inc prior: normal prior around measured value
             if self.inf_inc:
-                inc_delta = pt.deg2rad(5.0)
-                inc_t = pm.TruncatedNormal("inc", mu=inc_rad, sigma=0.1, lower=pt.maximum(0.0, inc_rad - inc_delta), upper=pt.minimum(pt.pi/2, inc_rad + inc_delta))
+                inc_t = pm.Normal("inc", mu=inc_rad, sigma=pt.deg2rad(2.0))
             else:
                 inc_t = pm.Deterministic("inc", pt.as_tensor_variable(inc_rad))
 
@@ -266,7 +272,7 @@ class DmNfw:
             else:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
-            # Notice: Do not use vbecause it is strongly degenerate with other parameters.
+
             if self.inf_Re:
                 Re_mu = r_max * 0.25
                 Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.4)
@@ -297,7 +303,7 @@ class DmNfw:
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
-            v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar, Re_t, f_bulge_t, a_t)))
+            v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar_t, Re_t, f_bulge_t, a_t)))
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
@@ -342,9 +348,14 @@ class DmNfw:
             # MAP estimate (optional diagnostic)
             map_estimate = pm.find_MAP()
             if self.inf_debug:
+                print("\n--- Expectation ---")
+                print(f"Mstar Expect    : {Mstar_expect:.3e} Msun")
+                print(f"M200 Expect     : {M200_expect:.3e} Msun")
+                print(f"c Expect        : {c_expect:.3f}")
                 print("--- MAP estimate ---")
-                print(f"M200    : {map_estimate['M200']:.3e} Msun")
-                print(f"c       : {map_estimate['c']:.3f}")
+                print(f"Mstar Estimate  : {map_estimate['Mstar']:.3e} Msun") if self.inf_Mstar else None
+                print(f"M200 Estimate   : {map_estimate['M200']:.3e} Msun")
+                print(f"c Estimate      : {map_estimate['c']:.3f}")
                 print("--------------------\n")
 
             # ------------------------------------------
@@ -384,6 +395,8 @@ class DmNfw:
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
         var_names = ["M200", "c", "v_sys", "f_bulge", "a", "sigma_obs_scale"]
+        if self.inf_Mstar:
+            var_names.append("Mstar")
         if self.inf_Re:
             var_names.append("Re")
         if self.inf_drift:
@@ -395,6 +408,7 @@ class DmNfw:
 
         summary = az.summary(trace, var_names=var_names, round_to=3)
 
+        Mstar_mean = float(summary.loc["Mstar", "mean"]) if self.inf_Mstar else Mstar_expect
         M200_mean = float(summary.loc["M200", "mean"])
         c_mean = float(summary.loc["c", "mean"])
         sigma0_mean = float(summary.loc["sigma_0", "mean"]) if self.inf_drift else 0.0
@@ -406,6 +420,7 @@ class DmNfw:
         a_mean = float(summary.loc["a", "mean"])
         sigma_obs_scale_mean = float(summary.loc["sigma_obs_scale", "mean"])
 
+        Mstar_sd = float(summary.loc["Mstar", "sd"]) if self.inf_Mstar else 0.0
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
         sigma0_sd = float(summary.loc["sigma_0", "sd"]) if self.inf_drift else 0.0
@@ -417,6 +432,7 @@ class DmNfw:
         a_sd = float(summary.loc["a", "sd"])
         sigma_obs_scale_sd = float(summary.loc["sigma_obs_scale", "sd"])
 
+        Mstar_r_hat = float(summary.loc["Mstar", "r_hat"]) if self.inf_Mstar else 1.0
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
         sigma0_r_hat = float(summary.loc["sigma_0", "r_hat"]) if self.inf_drift else 1.0
@@ -440,6 +456,11 @@ class DmNfw:
         v_rot_mean = np.mean(v_rot_samples, axis=1)
         sigma_obs_samples = posterior["sigma_obs"].stack(samples=("chain", "draw")).values
         sigma_obs_mean = np.mean(sigma_obs_samples, axis=1)
+
+        M200_samples = posterior["M200"].stack(samples=("chain", "draw")).values
+        M200_post_mean = np.mean(M200_samples)
+        c_samples = posterior["c"].stack(samples=("chain", "draw")).values
+        c_post_mean = np.mean(c_samples)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -527,6 +548,8 @@ class DmNfw:
 
         # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
         params_num = 10
+        if not self.inf_Mstar:
+            params_num -= 1
         if not self.inf_drift:
             params_num -= 1
         if not self.inf_Re:
@@ -581,8 +604,11 @@ class DmNfw:
             print("--- LOO ---")
             print(f"{model_loo}")
             print(f"--- median estimates ---")
+            print(f" Infer Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
             print(f" Infer M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+            print(f" Post M200          : {M200_post_mean:.3e} Msun")
             print(f" Infer c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+            print(f" Post c             : {c_post_mean:.3f}")
             print(f" Infer sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
             print(f" Infer v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
             print(f" Infer inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
@@ -597,7 +623,7 @@ class DmNfw:
             print(f" Calc: c            : {c_calc:.3f}")
             print(f" Calc: v_sys        : {vel_sys:.3f} km/s")
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
-            print(f" Stellar Mass       : {Mstar:.3e} Msun")
+            print(f" Stellar Mass       : {Mstar_expect:.3e} Msun")
             print("--- diagnostics ---")
             print(f" Reduced Chi        : {redchi:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
@@ -612,7 +638,7 @@ class DmNfw:
             # az.plot_trace(trace, var_names=var_names)
 
             # corner plot
-            az.rcParams['plot.max_subplots'] = 50
+            az.rcParams['plot.max_subplots'] = 100
             az.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
             plt.tight_layout()
             plt.show()

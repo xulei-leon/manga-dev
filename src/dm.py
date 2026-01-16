@@ -443,6 +443,7 @@ class DmNfw:
         # extract posterior samples
         posterior = trace.posterior
         flat_trace = posterior.stack(sample=("chain", "draw"))
+        v_obs_samples = flat_trace["v_obs_model"].values
         v_dm_samples = flat_trace["v_dm"].values
         v_star_samples = flat_trace["v_star"].values
         v_drift_samples = flat_trace["v_drift"].values
@@ -459,6 +460,7 @@ class DmNfw:
         best_idx = np.argmin(v_rot_distance)
 
         # Select the sample profile that is closest to median
+        v_obs_best = v_obs_samples[:, best_idx]
         v_rot_best = v_rot_samples[:, best_idx]
         v_star_best = v_star_samples[:, best_idx]
         v_dm_best = v_dm_samples[:, best_idx]
@@ -585,21 +587,20 @@ class DmNfw:
         dev_rep_draws = -2.0 * np.sum(logp_rep, axis=1)
         dev_ppc_p = float(np.mean(dev_rep_draws > dev_obs_draws))
 
-        # For legacy residual metrics, keep a point estimate based on mu averaged across draws
-        v_obs_mean = np.mean(v_obs_model_use, axis=0)
 
         # ------------------------------------------
         # residuals
         # ------------------------------------------
-        mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_mean)
-        res_obs = vel_obs_valid - v_obs_mean
-        res_norm = np.full_like(res_obs, np.nan, dtype=float)
-        sigma_obs_use = np.nanmean(sigma_obs_use, axis=0)
-        res_norm[mask] = res_obs[mask] / sigma_obs_use[mask]
+        mask = np.isfinite(vel_obs_valid) & np.isfinite(v_obs_best)
+        res_obs_best = vel_obs_valid - v_obs_best
+        res_norm_best = np.full_like(res_obs_best, np.nan, dtype=float)
 
-        res_map = res_obs[mask]
-        rmse = float(np.sqrt(np.mean(res_map**2)))
-        nrmse = float(rmse / np.mean(np.abs(vel_obs_valid[mask])))
+        # Use the sigma corresponding to the best fit
+        res_norm_best[mask] = res_obs_best[mask] / sigma_obs_best[mask]
+
+        res_map_best = res_obs_best[mask]
+        rmse_best = float(np.sqrt(np.mean(res_map_best**2)))
+        nrmse_best = float(rmse_best / np.mean(np.abs(vel_obs_valid[mask])))
 
         # ---------------------
         # Inference summary info
@@ -644,7 +645,7 @@ class DmNfw:
             print("--- diagnostics ---")
             print(f" Reduced Chi        : {redchi:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
-            print(f" NRMSE              : {nrmse:.3f}")
+            print(f" NRMSE              : {nrmse_best:.3f}")
             print("------------------------------------------------------------\n")
 
         # ---------------------
@@ -668,7 +669,7 @@ class DmNfw:
             'v_star': v_star_best,
             'v_drift': v_drift_best,
             'sigma_obs': sigma_obs_best,
-            'res_obs': res_obs,
+            'res_obs': res_obs_best,
         }
 
         inf_params = {
@@ -679,7 +680,7 @@ class DmNfw:
             'c': c_best,
             'c_std': c_sd,
             'c_r_hat': c_r_hat,
-            'nrmse': nrmse,
+            'nrmse': nrmse_best,
             'chi2_red': redchi,
             'dev_ppc_p': dev_ppc_p,
             'elpd_loo_est': elpd_loo_est,

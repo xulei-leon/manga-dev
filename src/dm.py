@@ -662,6 +662,7 @@ class DmNfw:
             # corner plot
             az.rcParams['plot.max_subplots'] = 100
             az_api.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
+            plt.gcf().set_size_inches(12, 10)
             plt.tight_layout()
             plt.show()
 

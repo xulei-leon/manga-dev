@@ -31,6 +31,48 @@ INFER_RHAT_THRESHOLD = 1.05
 VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
+def _get_arviz_api():
+    if hasattr(az, "preview"):
+        preview = az.preview
+        if hasattr(preview, "summary"):
+            return preview
+    return az
+
+
+def _set_arviz_ci_defaults():
+    try:
+        if "stats.ci_prob" in az.rcParams:
+            az.rcParams["stats.ci_prob"] = 0.94
+        if "stats.ci_kind" in az.rcParams:
+            az.rcParams["stats.ci_kind"] = "hdi"
+    except Exception:
+        pass
+
+
+def _get_posterior_dataset(idata):
+    if hasattr(idata, "posterior"):
+        return idata.posterior
+    try:
+        posterior = idata["posterior"]
+        if hasattr(posterior, "dataset"):
+            posterior = posterior.dataset
+        return posterior
+    except Exception as exc:
+        raise AttributeError("posterior group not found on inference data") from exc
+
+
+def _get_ppc_dataset(idata):
+    if hasattr(idata, "posterior_predictive"):
+        return idata.posterior_predictive
+    try:
+        ppc = idata["posterior_predictive"]
+        if hasattr(ppc, "dataset"):
+            ppc = ppc.dataset
+        return ppc
+    except Exception as exc:
+        raise AttributeError("posterior_predictive group not found on inference data") from exc
+
+
 class DmNfw:
     drpall_util: DrpallUtil
     PLATE_IFU: str
@@ -373,7 +415,11 @@ class DmNfw:
                 print("\n\n")
                 print(">>> Sampling completed.\n")
 
-            pm.compute_log_likelihood(trace)
+            try:
+                pm.compute_log_likelihood(trace)
+            except Exception as exc:
+                print(f"Warning: compute_log_likelihood failed: {exc}")
+
             ppc_idata = pm.sample_posterior_predictive(trace, random_seed=random_seed, extend_inferencedata=True)
 
         # ------------------------------------------
@@ -393,7 +439,10 @@ class DmNfw:
         if self.inf_phi_delta:
             var_names.append("phi_delta")
 
-        summary = az.summary(trace, var_names=var_names, round_to=3)
+        az_api = _get_arviz_api()
+        _set_arviz_ci_defaults()
+
+        summary = az_api.summary(trace, var_names=var_names, round_to=3)
 
         Mstar_mean = float(summary.loc["Mstar", "mean"]) if self.inf_Mstar else Mstar_expect
         M200_mean = float(summary.loc["M200", "mean"])
@@ -431,7 +480,7 @@ class DmNfw:
 
 
         # extract posterior samples
-        posterior = trace.posterior
+        posterior = _get_posterior_dataset(trace)
         flat_trace = posterior.stack(sample=("chain", "draw"))
         v_obs_samples = flat_trace["v_obs_model"].values
         v_dm_samples = flat_trace["v_dm"].values
@@ -467,7 +516,7 @@ class DmNfw:
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
-        model_loo = az.loo(trace, pointwise=True)
+        model_loo = az_api.loo(trace, pointwise=True)
         elpd_loo_est = float(model_loo.elpd_loo)
         elpd_loo_se = float(model_loo.se)
         p_loo = float(model_loo.p_loo)
@@ -479,7 +528,8 @@ class DmNfw:
         # ------------------------------------------
         # posterior predictive checks (dev_ppc_p)
         # ------------------------------------------
-        v_obs_ppc = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
+        ppc = _get_ppc_dataset(ppc_idata)
+        v_obs_ppc = ppc["v_obs"].stack(sample=("chain", "draw")).values
         n_points = len(radius_valid)
 
         # Standardize to (n_samples, n_points)
@@ -611,7 +661,7 @@ class DmNfw:
 
             # corner plot
             az.rcParams['plot.max_subplots'] = 100
-            az.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
+            az_api.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
             plt.tight_layout()
             plt.show()
 

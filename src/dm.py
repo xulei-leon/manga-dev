@@ -475,108 +475,44 @@ class DmNfw:
         mean_k = float(model_loo.pareto_k.mean().values)
         good_k_fraction = float(np.sum(model_loo.pareto_k.values < 0.7) / len(model_loo.pareto_k.values))
 
-        # ------------------------------------------
-        # residual diagnostics
-        # ------------------------------------------
-        # posterior predictive v_obs
-        v_obs_ppc_raw = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
 
-        # Standardize to shape (n_samples, n_points) to avoid axis-order surprises
+        # ------------------------------------------
+        # posterior predictive checks (dev_ppc_p)
+        # ------------------------------------------
+        v_obs_ppc = ppc_idata.posterior_predictive["v_obs"].stack(sample=("chain", "draw")).values
         n_points = len(radius_valid)
-        if v_obs_ppc_raw.ndim != 2:
-            raise ValueError(f"Unexpected v_obs_ppc shape: {v_obs_ppc_raw.shape}")
-        if v_obs_ppc_raw.shape[-1] == n_points:
-            v_obs_ppc = v_obs_ppc_raw
-        elif v_obs_ppc_raw.shape[0] == n_points:
-            v_obs_ppc = v_obs_ppc_raw.T
-        else:
-            raise ValueError(
-                f"Posterior predictive v_obs shape {v_obs_ppc_raw.shape} does not match n_points={n_points}."
-            )
 
-        # ------------------------------------------
-        # posterior predictive chi^2 diagnostics
-        # ------------------------------------------
-        # Extract noise-free posterior mean (mu) per draw
-        # Use the same InferenceData object as v_obs_ppc to keep draws aligned.
-        v_obs_model_raw = ppc_idata.posterior["v_obs_model"].stack(sample=("chain", "draw")).values
-        if v_obs_model_raw.ndim != 2:
-            raise ValueError(f"Unexpected v_obs_model shape: {v_obs_model_raw.shape}")
-        if v_obs_model_raw.shape[-1] == n_points:
-            v_obs_model = v_obs_model_raw
-        elif v_obs_model_raw.shape[0] == n_points:
-            v_obs_model = v_obs_model_raw.T
-        else:
-            raise ValueError(
-                f"Posterior v_obs_model shape {v_obs_model_raw.shape} does not match n_points={n_points}."
-            )
+        # Standardize to (n_samples, n_points)
+        if v_obs_ppc.shape[-1] != n_points and v_obs_ppc.shape[0] == n_points:
+            v_obs_ppc = v_obs_ppc.T
 
-        # Extract per-draw sigma and standardize to (n_samples, n_points)
-        if sigma_obs_samples.ndim != 2:
-            raise ValueError(f"Unexpected sigma_obs shape: {sigma_obs_samples.shape}")
-        if sigma_obs_samples.shape[-1] == n_points:
-            sigma_obs = sigma_obs_samples
-        elif sigma_obs_samples.shape[0] == n_points:
-            sigma_obs = sigma_obs_samples.T
-        else:
-            raise ValueError(
-                f"Posterior sigma_obs shape {sigma_obs_samples.shape} does not match n_points={n_points}."
-            )
+        # Prepare model samples (n_samples, n_points)
+        v_obs_model = v_obs_samples.T
+        sigma_obs = sigma_obs_samples.T
 
-        # Ensure we align sample counts between mu/sigma and posterior predictive draws
-        n_samp = int(min(v_obs_ppc.shape[0], v_obs_model.shape[0], sigma_obs.shape[0]))
-        v_obs_ppc_use = v_obs_ppc[:n_samp, :]
-        v_obs_model_use = v_obs_model[:n_samp, :]
-        sigma_obs_use = sigma_obs[:n_samp, :]
+        # Align samples
+        n_samp = min(v_obs_ppc.shape[0], v_obs_model.shape[0], sigma_obs.shape[0])
+        y_rep = v_obs_ppc[:n_samp, :]
+        mu = v_obs_model[:n_samp, :]
+        sigma = sigma_obs[:n_samp, :]
 
-        sigma = np.where(np.isfinite(sigma_obs_use) & (sigma_obs_use > 0), sigma_obs_use, np.nan)
+        # Mask invalid points
+        valid_cols = np.isfinite(vel_obs_valid) & np.all(np.isfinite(sigma) & (sigma > 0), axis=0)
 
-        # Discrepancy measures
-        # T_obs(theta) = sum(((y - mu_theta)/sigma)^2)
-        # T_rep(theta) = sum(((y_rep - mu_theta)/sigma)^2)
-        resid_obs = (vel_obs_valid[None, :] - v_obs_model_use) / sigma
+        # Calculate Deviance = -2 * logp
+        # We only use valid columns for the sum
+        y_obs_valid = vel_obs_valid[valid_cols]
+        y_rep_valid = y_rep[:, valid_cols]
+        mu_valid = mu[:, valid_cols]
+        sigma_valid = sigma[:, valid_cols]
 
-        # mask invalid points (if any) in sigma or data
-        valid_cols = np.isfinite(vel_obs_valid) & np.all(np.isfinite(sigma), axis=0)
-        resid_obs = resid_obs[:, valid_cols]
+        const_term = -0.5 * np.log(2.0 * np.pi) - np.log(sigma_valid)
+        logp_obs = const_term - 0.5 * ((y_obs_valid - mu_valid) / sigma_valid)**2
+        logp_rep = const_term - 0.5 * ((y_rep_valid - mu_valid) / sigma_valid)**2
 
-        chi2_obs_draws = np.sum(resid_obs**2, axis=1)
-
-        # Summaries
-        chi2_obs_mean = float(np.mean(chi2_obs_draws))
-
-        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
-        params_num = 10
-        if not self.inf_Mstar:
-            params_num -= 1
-        if not self.inf_drift:
-            params_num -= 1
-        if not self.inf_Re:
-            params_num -= 1
-        if not self.inf_inc:
-            params_num -= 1
-        if not self.inf_phi_delta:
-            params_num -= 1
-        dof = int(max(np.sum(valid_cols) - params_num, 1))
-        # Reduced Chi-squared (use posterior mean chi2)
-        redchi = float(chi2_obs_mean / dof)
-
-        # ------------------------------------------
-        # PPC discrepancy for Normal likelihood: deviance = -2 * log p(y|theta)
-        # ------------------------------------------
-        sigma_use = sigma[:, valid_cols]
-        const_n = -0.5 * np.log(2.0 * np.pi)
-
-        z_obs = (vel_obs_valid[None, valid_cols] - v_obs_model_use[:, valid_cols]) / sigma_use
-        z_rep = (v_obs_ppc_use[:, valid_cols] - v_obs_model_use[:, valid_cols]) / sigma_use
-
-        logp_obs = const_n - np.log(sigma_use) - 0.5 * (z_obs**2)
-        logp_rep = const_n - np.log(sigma_use) - 0.5 * (z_rep**2)
-
-        dev_obs_draws = -2.0 * np.sum(logp_obs, axis=1)
-        dev_rep_draws = -2.0 * np.sum(logp_rep, axis=1)
-        dev_ppc_p = float(np.mean(dev_rep_draws > dev_obs_draws))
-
+        dev_obs = -2.0 * np.sum(logp_obs, axis=1)
+        dev_rep = -2.0 * np.sum(logp_rep, axis=1)
+        dev_ppc_p = float(np.mean(dev_rep > dev_obs))
 
         # ------------------------------------------
         # residuals
@@ -591,6 +527,26 @@ class DmNfw:
         res_map_best = res_obs_best[mask]
         rmse_best = float(np.sqrt(np.mean(res_map_best**2)))
         nrmse_best = float(rmse_best / np.mean(np.abs(vel_obs_valid[mask])))
+
+        # ------------------------------------------
+        # Recalculate Reduced Chi2 for the best fit
+        # ------------------------------------------
+        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
+        params_num = 10
+        if not self.inf_Mstar:
+            params_num -= 1
+        if not self.inf_drift:
+            params_num -= 1
+        if not self.inf_Re:
+            params_num -= 1
+        if not self.inf_inc:
+            params_num -= 1
+        if not self.inf_phi_delta:
+            params_num -= 1
+        dof = int(max(np.sum(valid_cols) - params_num, 1))
+
+        chi2_best = np.sum(res_norm_best[mask]**2)
+        redchi_best = float(chi2_best / dof)
 
         # ---------------------
         # Inference summary info
@@ -641,9 +597,9 @@ class DmNfw:
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
             print(f" Stellar Mass       : {Mstar_expect:.3e} Msun")
             print("--- diagnostics ---")
-            print(f" Reduced Chi        : {redchi:.3f}")
+            print(f" Reduced Chi (Best) : {redchi_best:.3f}")
+            print(f" NRMSE (Best)       : {nrmse_best:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
-            print(f" NRMSE              : {nrmse_best:.3f}")
             print("------------------------------------------------------------\n")
 
         # ---------------------
@@ -679,7 +635,7 @@ class DmNfw:
             'c_std': c_sd,
             'c_r_hat': c_r_hat,
             'nrmse': nrmse_best,
-            'chi2_red': redchi,
+            'chi2_red': redchi_best,
             'dev_ppc_p': dev_ppc_p,
             'elpd_loo_est': elpd_loo_est,
             'elpd_loo_se': elpd_loo_se,

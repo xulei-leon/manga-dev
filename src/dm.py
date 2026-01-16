@@ -25,7 +25,7 @@ from util.drpall_util import DrpallUtil
 from stellar import Stellar
 
 H = 1 #0.674  # assuming H0 = 67.4 km/s/Mpc
-G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
 INFER_RHAT_THRESHOLD = 1.05
 VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
@@ -76,8 +76,7 @@ class DmNfw:
     # formula: V200^3 = 10 * G * H(z) * M200
     def _calc_V200_from_M200(self, M200: float, z: float) -> float:
         Hz = self._calc_Hz_kpc(z)  # in km/s/kpc
-        G = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
-        V200 = (10 * G * Hz * M200)**(1/3)  # in km/s
+        V200 = (10 * G_kpc_kms_Msun * Hz * M200)**(1/3)  # in km/s
         return V200
 
     # Moster-like SHMR
@@ -86,13 +85,11 @@ class DmNfw:
         f = 2.0 * N / (x**(-beta) + x**(gamma))
         return f * Mhalo
 
-    # invert (in log10 space)
-    def _calc_M200_log_from_Mstar(self, Mstar: float, Mmin=1e9, Mmax=1e15):
-        def f(logM):
-            M = 10**logM
+    def _calc_M200_from_Mstar(self, Mstar: float, Mmin=1e9, Mmax=1e15):
+        def f(M):
             return self._calc_Mstar_from_Mhalo(M) - Mstar
 
-        return brentq(f, float(np.log10(Mmin)), float(np.log10(Mmax)))
+        return brentq(f, Mmin, Mmax)
 
     ################################################################################
     # MCMC PyMC inference methods
@@ -136,8 +133,10 @@ class DmNfw:
 
         Mmin=1e9
         Mmax=1e15
-        M200_log_mu = self._calc_M200_log_from_Mstar(Mstar, Mmin=Mmin, Mmax=Mmax)  # expected log10(M200) from Mstar
-        c_log_mu = np.log10(self._calc_c_from_M200(10**M200_log_mu, h=H))
+        M200_expect = self._calc_M200_from_Mstar(Mstar, Mmin=Mmin, Mmax=Mmax)  # expected M200 from Mstar
+        print(f"M200_mu: {M200_expect:.2e}")
+        c_expect = self._calc_c_from_M200(M200_expect, h=H)
+        print(f"c_expect: {c_expect:.2f}")
 
         # precompute stellar contribution v_star^2 (numpy array)
         # Do not convert to tensor yet, do it inside the model
@@ -145,15 +144,6 @@ class DmNfw:
 
         # get H(z) in km/s/kpc
         Hz = self._calc_Hz_kpc(z)
-        G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
-
-        # ------------------------------------------
-        # model bounds and parameterization
-        # we sample log10(V200) and log10(c) to handle scales nicely
-        # ------------------------------------------
-        # use range_parameters defined above
-        c_min, c_max = (1.0, 50.0)
-        logc_min, logc_max = np.log10(c_min), np.log10(c_max)
 
         # ------------------------------------------
         # helper functions (closures)
@@ -163,7 +153,7 @@ class DmNfw:
         # Mstar
         def v_star_sq_bulge_hernquist(r, MB, a):
             r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
-            v_sq = (G * MB * r) / (r + a)**2
+            v_sq = (G_kpc_kms_Msun * MB * r) / (r + a)**2
             return v_sq
 
         # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
@@ -179,7 +169,7 @@ class DmNfw:
             K0 = pt.kv(0, y)
             K1 = pt.kv(1, y)
 
-            v_sq = (2.0 * G * M_d / Rd) * (y**2) * (I0 * K0 - I1 * K1)
+            v_sq = (2.0 * G_kpc_kms_Msun * M_d / Rd) * (y**2) * (I0 * K0 - I1 * K1)
             return v_sq
 
         # M_star: total mass of star
@@ -246,14 +236,12 @@ class DmNfw:
             # ------------------------------------------
             # M200 prior: from SHMR
             M200_log_sigma = 0.25
-            M200_log_t = pm.TruncatedNormal("M200_log", mu=M200_log_mu, sigma=M200_log_sigma, lower=pt.log10(Mmin), upper=pt.log10(Mmax))
-            # student-t prior for robustness
-            # M200_log_t = pm.StudentT("M200_log", nu=3, mu=M200_log_mu, sigma=M200_log_sigma)
+            M200_log_mu = pt.log(M200_expect)
+            M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=M200_log_sigma)
 
             # c prior: log-normal prior
-            # log_c_mu = pt.log10(5.0)
-            # c_log_t = pm.TruncatedNormal("c_log", mu=log_c_mu, sigma=0.25, lower=logc_min, upper=logc_max)
-            c_log_t = pm.Normal("c_log", mu=c_log_mu, sigma=0.1)
+            c_log_mu = pt.log(c_expect)
+            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=0.25)
 
             # sigma_0 prior: log-normal (strictly positive scale)
             if self.inf_drift:
@@ -306,8 +294,6 @@ class DmNfw:
             # deterministic relations
             # ------------------------------------------
             # V200: derived from M200
-            M200_t = pm.Deterministic("M200", 10 ** M200_log_t)
-            c_t = pm.Deterministic("c", 10 ** c_log_t)
             V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
 
             r = radius_valid  # numpy array
@@ -352,23 +338,37 @@ class DmNfw:
             # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
             # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
 
+
+            # MAP estimate (optional diagnostic)
+            map_estimate = pm.find_MAP()
+            if self.inf_debug:
+                print("--- MAP estimate ---")
+                print(f"M200    : {map_estimate['M200']:.3e} Msun")
+                print(f"c       : {map_estimate['c']:.3f}")
+                print("--------------------\n")
+
             # ------------------------------------------
             # sampling options & run
             # ------------------------------------------
+            print(">>> Starting PyMC sampling (NUTS)... this may take time.\n")
+
             draws = 1000
             tune = 500
             chains = min(4, os.cpu_count())
             target_accept = 0.95
 
-            print(">>> Starting PyMC sampling (NUTS)... this may take time.\n")
             if self.inf_debug:
                 displaybar = True
             else:
                 displaybar = False
 
-            sampler = "nutpie" # 'nutpie' or 'numpyro'
-            trace = pm.sample(init="jitter+adapt_diag", draws=draws, tune=tune, chains=chains, nuts_sampler=sampler, target_accept=target_accept, cores=chains,
+            sampler = "nutpie" # 'nutpie', 'numpyro'
+            init = "jitter+adapt_full" # 'jitter+adapt_diag', 'jitter+adapt_full'
+            random_seed = 42
+            trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
+                              nuts_sampler=sampler, target_accept=target_accept,
                               progressbar=displaybar,
+                              random_seed=random_seed,
                               return_inferencedata=True, compute_convergence_checks=True)
 
             if self.inf_debug:
@@ -376,7 +376,7 @@ class DmNfw:
                 print(">>> Sampling completed.\n")
 
             pm.compute_log_likelihood(trace)
-            ppc_idata = pm.sample_posterior_predictive(trace, random_seed=42, extend_inferencedata=True)
+            ppc_idata = pm.sample_posterior_predictive(trace, random_seed=random_seed, extend_inferencedata=True)
 
         # ------------------------------------------
         # postprocess

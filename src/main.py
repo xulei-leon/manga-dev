@@ -84,7 +84,7 @@ def get_params_file(PLATE_IFU: str, filename:str):
 
 def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME)
-    if process_nfw and nfw_param is not None:
+    if debug is None and process_nfw and nfw_param is not None:
         print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
         return
 

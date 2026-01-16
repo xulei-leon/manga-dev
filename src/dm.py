@@ -287,12 +287,12 @@ class DmNfw:
             a_mu = r_max * 0.1
             a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.5)
 
-            # sigma_obs_scale prior: to scale the measurement errors
+            # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)
-            sigma_obs_scale_mu = float(np.sqrt(stderr_obs_valid_mean**2 + VEL_SYSTEM_ERROR**2))
-            sigma_obs_scale_t = pm.LogNormal(
-                "sigma_obs_scale",
-                mu=pt.log(pt.as_tensor_variable(max(sigma_obs_scale_mu, 1e-6))),
+            sigma_scale_mu = float(np.sqrt(stderr_obs_valid_mean**2 + VEL_SYSTEM_ERROR**2))
+            sigma_scale_t = pm.LogNormal(
+                "sigma_scale",
+                mu=pt.log(pt.as_tensor_variable(max(sigma_scale_mu, 1e-6))),
                 sigma=0.3,
             )
 
@@ -316,7 +316,7 @@ class DmNfw:
             # Measurement error model: start from ivar-derived sigma (plus floor),
             # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
             # This is often more realistic than treating ivar as perfectly calibrated.
-            sigma_obs_t = pm.Deterministic("sigma_obs", sigma_obs_scale_t * stderr_obs_valid)
+            sigma_obs_t = pm.Deterministic("sigma_obs", sigma_scale_t * stderr_obs_valid)
 
             pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
 
@@ -344,16 +344,6 @@ class DmNfw:
 
             # MAP estimate (optional diagnostic)
             map_estimate = pm.find_MAP()
-            if self.inf_debug:
-                print("\n--- Expectation ---")
-                print(f"Mstar Expect    : {Mstar_expect:.3e} Msun")
-                print(f"M200 Expect     : {M200_expect:.3e} Msun")
-                print(f"c Expect        : {c_expect:.3f}")
-                print("--- MAP estimate ---")
-                print(f"Mstar Estimate  : {map_estimate['Mstar']:.3e} Msun") if self.inf_Mstar else None
-                print(f"M200 Estimate   : {map_estimate['M200']:.3e} Msun")
-                print(f"c Estimate      : {map_estimate['c']:.3f}")
-                print("--------------------\n")
 
             # ------------------------------------------
             # sampling options & run
@@ -391,7 +381,7 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "sigma_obs_scale"]
+        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "sigma_scale"]
         if self.inf_Mstar:
             var_names.append("Mstar")
         if self.inf_Re:
@@ -415,7 +405,7 @@ class DmNfw:
         Re_mean = float(summary.loc["Re", "mean"]) if self.inf_Re else Re
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
-        sigma_obs_scale_mean = float(summary.loc["sigma_obs_scale", "mean"])
+        sigma_scale_mean = float(summary.loc["sigma_scale", "mean"])
 
         Mstar_sd = float(summary.loc["Mstar", "sd"]) if self.inf_Mstar else 0.0
         M200_sd = float(summary.loc["M200", "sd"])
@@ -427,7 +417,7 @@ class DmNfw:
         Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
-        sigma_obs_scale_sd = float(summary.loc["sigma_obs_scale", "sd"])
+        sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
 
         M200_r_hat = float(summary.loc["M200", "r_hat"])
         c_r_hat = float(summary.loc["c", "r_hat"])
@@ -473,7 +463,7 @@ class DmNfw:
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
-        c_calc = self._calc_c_from_M200(c_best, h=H)
+        c_calc = self._calc_c_from_M200(M200_best, h=H)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -611,30 +601,38 @@ class DmNfw:
             print(summary)
             print("--- LOO ---")
             print(f"{model_loo}")
-            print(f"--- mean estimates ---")
-            print(f" Mean Mstar        : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
-            print(f" Mean M200         : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
-            print(f" Mean c            : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-            print(f" Mean sigma_0      : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
-            print(f" Mean v_sys        : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
-            print(f" Mean inc          : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
-            print(f" Mean phi_delta    : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
-            print(f" Mean Re           : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
-            print(f" Mean f_bulge      : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
-            print(f" Mean a            : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
-            print(f" Mean sigma_obs_scale : {sigma_obs_scale_mean:.3f} ± {sigma_obs_scale_sd:.3f} ({sigma_obs_scale_sd/sigma_obs_scale_mean:.2%})")
+            print("--- Expectation ---")
+            print(f"Mstar Expect        : {Mstar_expect:.3e} Msun")
+            print(f"M200 Expect         : {M200_expect:.3e} Msun")
+            print(f"c Expect            : {c_expect:.3f}")
+            print("--- MAP estimate ---")
+            print(f"Mstar Estimate      : {map_estimate['Mstar']:.3e} Msun") if self.inf_Mstar else None
+            print(f"M200 Estimate       : {map_estimate['M200']:.3e} Msun")
+            print(f"c Estimate          : {map_estimate['c']:.3f}")
             print(f"--- Best ---")
-            print(f" Best Mstar       : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
-            print(f" Best M200        : {M200_best:.3e} Msun")
-            print(f" Best c           : {c_best:.3f}")
-            print(f" Best sigma_0     : {sigma0_mean:.3f} km/s") if self.inf_drift else None
-            print(f" Best v_sys       : {v_sys_mean:.3f} km/s")
-            print(f" Best inc         : {np.degrees(inc_mean):.3f} deg") if self.inf_inc else None
-            print(f" Best phi_delta   : {np.degrees(phi_delta_mean):.3f} deg") if self.inf_phi_delta else None
-            print(f" Best Re          : {Re_mean:.3f} kpc") if self.inf_Re else None
-            print(f" Best f_bulge     : {f_bulge_mean:.3f}")
-            print(f" Best a           : {a_mean:.3f} kpc")
-            print(f" Best sigma_obs_scale : {sigma_obs_scale_mean:.3f}")
+            print(f" Best Mstar         : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
+            print(f" Best M200          : {M200_best:.3e} Msun")
+            print(f" Best c             : {c_best:.3f}")
+            print(f" Best sigma_0       : {sigma0_mean:.3f} km/s") if self.inf_drift else None
+            print(f" Best v_sys         : {v_sys_mean:.3f} km/s")
+            print(f" Best inc           : {np.degrees(inc_mean):.3f} deg") if self.inf_inc else None
+            print(f" Best phi_delta     : {np.degrees(phi_delta_mean):.3f} deg") if self.inf_phi_delta else None
+            print(f" Best Re            : {Re_mean:.3f} kpc") if self.inf_Re else None
+            print(f" Best f_bulge       : {f_bulge_mean:.3f}")
+            print(f" Best a             : {a_mean:.3f} kpc")
+            print(f" Best sigma_scale   : {sigma_scale_mean:.3f}")
+            print(f"--- mean estimates ---")
+            print(f" Mean Mstar         : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
+            print(f" Mean M200          : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
+            print(f" Mean c             : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
+            print(f" Mean sigma_0       : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
+            print(f" Mean v_sys         : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
+            print(f" Mean inc           : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
+            print(f" Mean phi_delta     : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
+            print(f" Mean Re            : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
+            print(f" Mean f_bulge       : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
+            print(f" Mean a             : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
+            print(f" Mean sigma_scale   : {sigma_scale_mean:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/sigma_scale_mean:.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")

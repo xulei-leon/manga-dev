@@ -76,11 +76,8 @@ class DmNfw:
     PLATE_IFU: str
     plot_enable: bool
     inf_debug: bool = False
-    inf_Mstar: bool = True
-    inf_drift: bool = True
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
     inf_phi_delta: bool = False
-    inf_c: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -272,38 +269,28 @@ class DmNfw:
             # ------------------------------------------
             # prior distributions
             # ------------------------------------------
-            if self.inf_Mstar:
-                Mstar_log_mu = pt.log10(Mstar_expect)
-                Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=0.1)
-                Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
-            else:
-                Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(Mstar_expect))
+            Mstar_log_mu = pt.log10(Mstar_expect)
+            Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=0.1)
+            Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
             # M200 prior:
             # M200 mu from SHMR relation
             M200_log_mu = pt.log10(M200_expect)
-            M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=0.5)  # 0.3 dex scatter in SHMR
+            M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=0.3)  # 0.3 dex scatter in SHMR
             M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
             # soft constraint on c from M200-c relation
-            if self.inf_c:
-                # log10(c) ~ N(a + b * (log10(M200) - 12), sigma_dex)
-                intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
-                slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
-                sigma_c = pm.HalfNormal("sigma_c", sigma=0.15)
-                c_log_mu = intercept + slop * (M200_log_t - 12.0)
-                c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=sigma_c)
-                c_t = pm.Deterministic("c", 10**c_log_t)
-            else:
-                c_expect = c_from_M200(M200_t, h=H)
-                c_t = pm.Deterministic("c", c_expect)
+            # log10(c) ~ N(a + b * (log10(M200) - 12), sigma_dex)
+            intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
+            slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
+            sigma_c = pm.HalfNormal("sigma_c", sigma=0.15)
+            c_log_mu = intercept + slop * (M200_log_t - 12.0)
+            c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=sigma_c)
+            c_t = pm.Deterministic("c", 10**c_log_t)
 
             # sigma_0 prior: log-normal (strictly positive scale)
-            if self.inf_drift:
-                sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.5)
-            else:
-                sigma_0_t = pm.Deterministic("sigma_0", pt.as_tensor_variable(0.0))
+            sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.5)
 
             # v_sys prior: normal prior around measured value
             v_sys_delta = 20.0
@@ -423,11 +410,7 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale"]
-        if self.inf_Mstar:
-            var_names.append("Mstar")
-        if self.inf_drift:
-            var_names.append("sigma_0")
+        var_names = ["M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale", "Mstar", "sigma_0"]
         if self.inf_inc:
             var_names.append("inc")
         if self.inf_phi_delta:
@@ -438,10 +421,10 @@ class DmNfw:
 
         summary = az_api.summary(trace, var_names=var_names, round_to=3, stat_funcs={"median": np.median})
 
-        Mstar_median = float(summary.loc["Mstar", "median"]) if self.inf_Mstar else Mstar_expect
+        Mstar_median = float(summary.loc["Mstar", "median"])
         M200_median = float(summary.loc["M200", "median"])
         c_median = float(summary.loc["c", "median"])
-        sigma0_median = float(summary.loc["sigma_0", "median"]) if self.inf_drift else 0.0
+        sigma0_median = float(summary.loc["sigma_0", "median"])
         v_sys_median = float(summary.loc["v_sys", "median"])
         inc_median = float(summary.loc["inc", "median"]) if self.inf_inc else inc_rad
         phi_delta_median = float(summary.loc["phi_delta", "median"]) if self.inf_phi_delta else 0.0
@@ -450,10 +433,10 @@ class DmNfw:
         a_median = float(summary.loc["a", "median"])
         sigma_scale_median = float(summary.loc["sigma_scale", "median"])
 
-        Mstar_sd = float(summary.loc["Mstar", "sd"]) if self.inf_Mstar else 0.0
+        Mstar_sd = float(summary.loc["Mstar", "sd"])
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
-        sigma0_sd = float(summary.loc["sigma_0", "sd"]) if self.inf_drift else 0.0
+        sigma0_sd = float(summary.loc["sigma_0", "sd"])
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
         phi_delta_sd = float(summary.loc["phi_delta", "sd"]) if self.inf_phi_delta else 0.0
@@ -489,7 +472,7 @@ class DmNfw:
         sigma_scale_samples = flat_trace["sigma_scale"].values
         inc_samples = flat_trace["inc"].values if self.inf_inc else None
         phi_delta_samples = flat_trace["phi_delta"].values if self.inf_phi_delta else None
-        sigma0_samples = flat_trace["sigma_0"].values if self.inf_drift else None
+        sigma0_samples = flat_trace["sigma_0"].values
 
 
         # ------------------------------------------
@@ -513,7 +496,7 @@ class DmNfw:
         v_drift_best = v_drift_samples[:, best_idx]
         sigma_obs_best = sigma_obs_samples[:, best_idx]
 
-        Mstar_best = Mstar_samples[best_idx] if self.inf_Mstar else Mstar_expect
+        Mstar_best = Mstar_samples[best_idx]
         M200_best = M200_samples[best_idx]
         c_best = c_samples[best_idx]
         v_sys_best = v_sys_samples[best_idx]
@@ -523,7 +506,7 @@ class DmNfw:
         sigma_scale_best = sigma_scale_samples[best_idx]
         inc_best = inc_samples[best_idx] if self.inf_inc else inc_rad
         phi_delta_best = phi_delta_samples[best_idx] if self.inf_phi_delta else 0.0
-        sigma0_best = sigma0_samples[best_idx] if self.inf_drift else 0.0
+        sigma0_best = sigma0_samples[best_idx]
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
@@ -598,10 +581,6 @@ class DmNfw:
         # ------------------------------------------
         # parameters in model: M200, c, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
         params_num = 10
-        if not self.inf_Mstar:
-            params_num -= 1
-        if not self.inf_drift:
-            params_num -= 1
         if not self.inf_inc:
             params_num -= 1
         if not self.inf_phi_delta:
@@ -624,14 +603,14 @@ class DmNfw:
             print(f"Mstar Expect        : {Mstar_expect:.3e} Msun")
             print(f"M200 Expect         : {M200_expect:.3e} Msun")
             print("--- MAP estimate ---")
-            print(f"Mstar Estimate      : {map_estimate['Mstar']:.3e} Msun") if self.inf_Mstar else None
+            print(f"Mstar Estimate      : {map_estimate['Mstar']:.3e} Msun")
             print(f"M200 Estimate       : {map_estimate['M200']:.3e} Msun")
-            print(f"c Estimate          : {map_estimate['c']:.3f}") if self.inf_c else None
+            print(f"c Estimate          : {map_estimate['c']:.3f}")
             print(f"--- Best ---")
-            print(f" Best Mstar         : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
+            print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")
             print(f" Best c             : {c_best:.3f}")
-            print(f" Best sigma_0       : {sigma0_best:.3f} km/s") if self.inf_drift else None
+            print(f" Best sigma_0       : {sigma0_best:.3f} km/s")
             print(f" Best v_sys         : {v_sys_best:.3f} km/s")
             print(f" Best inc           : {np.degrees(inc_best):.3f} deg") if self.inf_inc else None
             print(f" Best phi_delta     : {np.degrees(phi_delta_best):.3f} deg") if self.inf_phi_delta else None
@@ -640,10 +619,10 @@ class DmNfw:
             print(f" Best a             : {a_best:.3f} kpc")
             print(f" Best sigma_scale   : {sigma_scale_best:.3f}")
             print(f"--- median estimates ---")
-            print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})") if self.inf_Mstar else None
+            print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})")
             print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
             print(f" Median c           : {c_median:.3f} ± {c_sd:.3f} ({c_sd/max(c_median, 1e-12):.2%})")
-            print(f" Median sigma_0     : {sigma0_median:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_median, 1e-12):.2%})") if self.inf_drift else None
+            print(f" Median sigma_0     : {sigma0_median:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_median, 1e-12):.2%})")
             print(f" Median v_sys       : {v_sys_median:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_median, 1e-12):.2%})")
             print(f" Median inc         : {np.degrees(inc_median):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_median, 1e-12):.2%})") if self.inf_inc else None
             print(f" Median phi_delta   : {np.degrees(phi_delta_median):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_median, 1e-12):.2%})") if self.inf_phi_delta else None

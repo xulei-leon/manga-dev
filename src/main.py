@@ -166,7 +166,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     #--------------------------------------------------------
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    dm_nfw.set_plot_enable(debug)
+    dm_nfw.set_plot_enable(False)
     dm_nfw.set_inf_debug(debug)
 
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,

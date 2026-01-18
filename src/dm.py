@@ -273,22 +273,28 @@ class DmNfw:
             # prior distributions
             # ------------------------------------------
             if self.inf_Mstar:
-                Mstar_log_mu = pt.log(Mstar_expect)
-                Mstar_t = pm.LogNormal("Mstar", mu=Mstar_log_mu, sigma=0.04*np.log(10))
+                Mstar_log_mu = pt.log10(Mstar_expect)
+                Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=0.1)
+                Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
             else:
                 Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(Mstar_expect))
 
             # M200 prior:
             # M200 mu from SHMR relation
-            M200_log_mu = pt.log(M200_expect)
-            M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=0.3*np.log(10))  # 0.3 dex scatter in SHMR
+            M200_log_mu = pt.log10(M200_expect)
+            M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=0.5)  # 0.3 dex scatter in SHMR
+            M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
             # soft constraint on c from M200-c relation
             if self.inf_c:
-                c_expect = c_from_M200(M200_t, h=H)
-                c_log_mu = pt.log(c_expect)
-                c_t = pm.LogNormal("c", mu=c_log_mu, sigma=0.1*np.log(10))
+                # log10(c) ~ N(a + b * (log10(M200) - 12), sigma_dex)
+                intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
+                slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
+                sigma_c = pm.HalfNormal("sigma_c", sigma=0.15)
+                c_log_mu = intercept + slop * (M200_log_t - 12.0)
+                c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=sigma_c)
+                c_t = pm.Deterministic("c", 10**c_log_t)
             else:
                 c_expect = c_from_M200(M200_t, h=H)
                 c_t = pm.Deterministic("c", c_expect)
@@ -430,19 +436,19 @@ class DmNfw:
         az_api = _get_arviz_api()
         _set_arviz_ci_defaults()
 
-        summary = az_api.summary(trace, var_names=var_names, round_to=3)
+        summary = az_api.summary(trace, var_names=var_names, round_to=3, stat_funcs={"median": np.median})
 
-        Mstar_mean = float(summary.loc["Mstar", "mean"]) if self.inf_Mstar else Mstar_expect
-        M200_mean = float(summary.loc["M200", "mean"])
-        c_mean = float(summary.loc["c", "mean"])
-        sigma0_mean = float(summary.loc["sigma_0", "mean"]) if self.inf_drift else 0.0
-        v_sys_mean = float(summary.loc["v_sys", "mean"])
-        inc_mean = float(summary.loc["inc", "mean"]) if self.inf_inc else inc_rad
-        phi_delta_mean = float(summary.loc["phi_delta", "mean"]) if self.inf_phi_delta else 0.0
-        Re_mean = float(summary.loc["Re", "mean"])
-        f_bulge_mean = float(summary.loc["f_bulge", "mean"])
-        a_mean = float(summary.loc["a", "mean"])
-        sigma_scale_mean = float(summary.loc["sigma_scale", "mean"])
+        Mstar_median = float(summary.loc["Mstar", "median"]) if self.inf_Mstar else Mstar_expect
+        M200_median = float(summary.loc["M200", "median"])
+        c_median = float(summary.loc["c", "median"])
+        sigma0_median = float(summary.loc["sigma_0", "median"]) if self.inf_drift else 0.0
+        v_sys_median = float(summary.loc["v_sys", "median"])
+        inc_median = float(summary.loc["inc", "median"]) if self.inf_inc else inc_rad
+        phi_delta_median = float(summary.loc["phi_delta", "median"]) if self.inf_phi_delta else 0.0
+        Re_median = float(summary.loc["Re", "median"])
+        f_bulge_median = float(summary.loc["f_bulge", "median"])
+        a_median = float(summary.loc["a", "median"])
+        sigma_scale_median = float(summary.loc["sigma_scale", "median"])
 
         Mstar_sd = float(summary.loc["Mstar", "sd"]) if self.inf_Mstar else 0.0
         M200_sd = float(summary.loc["M200", "sd"])
@@ -476,11 +482,28 @@ class DmNfw:
         Mstar_samples = flat_trace["Mstar"].values
         M200_samples = flat_trace["M200"].values
         c_samples = flat_trace["c"].values
+        v_sys_samples = flat_trace["v_sys"].values
+        Re_samples = flat_trace["Re"].values
+        f_bulge_samples = flat_trace["f_bulge"].values
+        a_samples = flat_trace["a"].values
+        sigma_scale_samples = flat_trace["sigma_scale"].values
+        inc_samples = flat_trace["inc"].values if self.inf_inc else None
+        phi_delta_samples = flat_trace["phi_delta"].values if self.inf_phi_delta else None
+        sigma0_samples = flat_trace["sigma_0"].values if self.inf_drift else None
+
+
+        # ------------------------------------------
         # Representative Samples
-        v_rot_median = np.median(v_rot_samples, axis=1)
-        # Calculate distance of each sample from the median profile
-        v_rot_distance = np.linalg.norm(v_rot_samples - v_rot_median[:, None], axis=0)
-        best_idx = np.argmin(v_rot_distance)
+        # ------------------------------------------
+        # Method 1: Closest to median profile
+        # v_rot_median = np.median(v_rot_samples, axis=1)
+        # # Calculate distance of each sample from the median profile
+        # v_rot_distance = np.linalg.norm(v_rot_samples - v_rot_median[:, None], axis=0)
+        # best_idx = np.argmin(v_rot_distance)
+
+        # Method 2: Maximum A Posteriori
+        lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
+        best_idx = int(lp_stacked.argmax("sample").values)
 
         # Select the sample profile that is closest to median
         v_obs_best = v_obs_samples[:, best_idx]
@@ -493,6 +516,14 @@ class DmNfw:
         Mstar_best = Mstar_samples[best_idx] if self.inf_Mstar else Mstar_expect
         M200_best = M200_samples[best_idx]
         c_best = c_samples[best_idx]
+        v_sys_best = v_sys_samples[best_idx]
+        Re_best = Re_samples[best_idx]
+        f_bulge_best = f_bulge_samples[best_idx]
+        a_best = a_samples[best_idx]
+        sigma_scale_best = sigma_scale_samples[best_idx]
+        inc_best = inc_samples[best_idx] if self.inf_inc else inc_rad
+        phi_delta_best = phi_delta_samples[best_idx] if self.inf_phi_delta else 0.0
+        sigma0_best = sigma0_samples[best_idx] if self.inf_drift else 0.0
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
@@ -600,26 +631,26 @@ class DmNfw:
             print(f" Best Mstar         : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
             print(f" Best M200          : {M200_best:.3e} Msun")
             print(f" Best c             : {c_best:.3f}")
-            print(f" Best sigma_0       : {sigma0_mean:.3f} km/s") if self.inf_drift else None
-            print(f" Best v_sys         : {v_sys_mean:.3f} km/s")
-            print(f" Best inc           : {np.degrees(inc_mean):.3f} deg") if self.inf_inc else None
-            print(f" Best phi_delta     : {np.degrees(phi_delta_mean):.3f} deg") if self.inf_phi_delta else None
-            print(f" Best Re            : {Re_mean:.3f} kpc")
-            print(f" Best f_bulge       : {f_bulge_mean:.3f}")
-            print(f" Best a             : {a_mean:.3f} kpc")
-            print(f" Best sigma_scale   : {sigma_scale_mean:.3f}")
-            print(f"--- mean estimates ---")
-            print(f" Mean Mstar         : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/Mstar_mean:.2%})") if self.inf_Mstar else None
-            print(f" Mean M200          : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/M200_mean:.2%})")
-            print(f" Mean c             : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/c_mean:.2%})")
-            print(f" Mean sigma_0       : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/sigma0_mean:.2%})") if self.inf_drift else None
-            print(f" Mean v_sys         : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
-            print(f" Mean inc           : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
-            print(f" Mean phi_delta     : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
-            print(f" Mean Re            : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})")
-            print(f" Mean f_bulge       : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
-            print(f" Mean a             : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
-            print(f" Mean sigma_scale   : {sigma_scale_mean:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/sigma_scale_mean:.2%})")
+            print(f" Best sigma_0       : {sigma0_best:.3f} km/s") if self.inf_drift else None
+            print(f" Best v_sys         : {v_sys_best:.3f} km/s")
+            print(f" Best inc           : {np.degrees(inc_best):.3f} deg") if self.inf_inc else None
+            print(f" Best phi_delta     : {np.degrees(phi_delta_best):.3f} deg") if self.inf_phi_delta else None
+            print(f" Best Re            : {Re_best:.3f} kpc")
+            print(f" Best f_bulge       : {f_bulge_best:.3f}")
+            print(f" Best a             : {a_best:.3f} kpc")
+            print(f" Best sigma_scale   : {sigma_scale_best:.3f}")
+            print(f"--- median estimates ---")
+            print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})") if self.inf_Mstar else None
+            print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
+            print(f" Median c           : {c_median:.3f} ± {c_sd:.3f} ({c_sd/max(c_median, 1e-12):.2%})")
+            print(f" Median sigma_0     : {sigma0_median:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_median, 1e-12):.2%})") if self.inf_drift else None
+            print(f" Median v_sys       : {v_sys_median:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_median, 1e-12):.2%})")
+            print(f" Median inc         : {np.degrees(inc_median):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_median, 1e-12):.2%})") if self.inf_inc else None
+            print(f" Median phi_delta   : {np.degrees(phi_delta_median):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_median, 1e-12):.2%})") if self.inf_phi_delta else None
+            print(f" Median Re          : {Re_median:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_median, 1e-12):.2%})")
+            print(f" Median f_bulge     : {f_bulge_median:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_median, 1e-12):.2%})")
+            print(f" Median a           : {a_median:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_median, 1e-12):.2%})")
+            print(f" Median sigma_scale : {sigma_scale_median:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/max(sigma_scale_median, 1e-12):.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")

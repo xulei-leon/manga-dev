@@ -8,6 +8,7 @@ Vstar^2(r)  = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) 
 Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 '''
 
+from calendar import c
 import os
 from pathlib import Path
 from pickletools import read_stringnl_noescape
@@ -83,6 +84,7 @@ class DmNfw:
     inf_Re: bool = True # Notice: Infer Re will take too much time
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
     inf_phi_delta: bool = False
+    inf_c: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -123,10 +125,10 @@ class DmNfw:
         return V200
 
     # Moster-like SHMR
-    def _calc_Mstar_from_Mhalo(self, Mhalo: float, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
-        x = Mhalo / M1
+    def _calc_Mstar_from_Mhalo(self, M200: float, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+        x = M200 / M1
         f = 2.0 * N / (x**(-beta) + x**(gamma))
-        return f * Mhalo
+        return f * M200
 
     def _calc_M200_from_Mstar(self, Mstar: float, Mmin=1e9, Mmax=1e15):
         def f(M):
@@ -177,7 +179,6 @@ class DmNfw:
         Mmin=1e9
         Mmax=1e15
         M200_expect = self._calc_M200_from_Mstar(Mstar_expect, Mmin=Mmin, Mmax=Mmax)  # expected M200 from Mstar
-        c_expect = self._calc_c_from_M200(M200_expect, h=H)
 
         # precompute stellar contribution v_star^2 (numpy array)
         # Do not convert to tensor yet, do it inside the model
@@ -236,6 +237,12 @@ class DmNfw:
         def x_from_M200(r, M200):
             return r / r200_from_M200(M200)
 
+        # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
+        def c_from_M200(M200, h):
+            M_pivot_h_inv = 2e12 # in Msun/h
+            mass_ratio = M200 / (M_pivot_h_inv / h)
+            return 5.74 * (mass_ratio)**(-0.097)
+
         # numerator/denominator for NFW profile
         def nfw_num_den(x, c):
             cx = c * x
@@ -277,20 +284,24 @@ class DmNfw:
             # ------------------------------------------
             if self.inf_Mstar:
                 Mstar_log_mu = pt.log(Mstar_expect)
-                Mstar_log_sigma = 0.1
-                Mstar_t = pm.LogNormal("Mstar", mu=Mstar_log_mu, sigma=Mstar_log_sigma)
+                Mstar_t = pm.LogNormal("Mstar", mu=Mstar_log_mu, sigma=0.04*np.log(10))
             else:
                 Mstar_t = pm.Deterministic("Mstar", pt.as_tensor_variable(Mstar_expect))
 
-            # M200 prior: from SHMR
+            # M200 prior:
+            # M200 mu from SHMR relation
             M200_log_mu = pt.log(M200_expect)
-            M200_log_sigma = 0.6
-            M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=M200_log_sigma)
+            M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=0.3*np.log(10))  # 0.3 dex scatter in SHMR
 
             # c prior: log-normal prior
-            c_log_mu = pt.log(c_expect)
-            c_log_sigma = 0.3
-            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=c_log_sigma)
+            # soft constraint on c from M200-c relation
+            if self.inf_c:
+                c_expect = c_from_M200(M200_t, h=H)
+                c_log_mu = pt.log(c_expect)
+                c_t = pm.LogNormal("c", mu=c_log_mu, sigma=0.1*np.log(10))
+            else:
+                c_expect = c_from_M200(M200_t, h=H)
+                c_t = pm.Deterministic("c", c_expect)
 
             # sigma_0 prior: log-normal (strictly positive scale)
             if self.inf_drift:
@@ -365,16 +376,6 @@ class DmNfw:
             # ------------------------------------------
             # potential
             # ------------------------------------------
-
-            # Add SHMR as a potential (log-prior)
-            # Do not double count if using truncated normal prior above
-            # pm.Potential("shmr_penalty", -0.5 * ((M200_log_t - M200_log_mu) / M200_log_sigma) ** 2)
-
-            # Optionally add a c-M prior (cosmological relation) if desired:
-            # Add c-M prior (cosmological relation) as a potential (log-prior)
-            # c_expected = 10.0 * (M200_t / 1e12)**(-0.1)
-            # sigma_logc = 0.2  # dex
-            # pm.Potential("c_M200_penalty", -0.5 * ((pt.log10(c_t) - pt.log10(c_expected)) / sigma_logc)**2)
 
             # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
             #
@@ -468,9 +469,6 @@ class DmNfw:
         a_sd = float(summary.loc["a", "sd"])
         sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
 
-        M200_r_hat = float(summary.loc["M200", "r_hat"])
-        c_r_hat = float(summary.loc["c", "r_hat"])
-
         success = True
         for var in var_names:
             r_hat = float(summary.loc[var, "r_hat"])
@@ -491,7 +489,6 @@ class DmNfw:
         Mstar_samples = flat_trace["Mstar"].values
         M200_samples = flat_trace["M200"].values
         c_samples = flat_trace["c"].values
-
         # Representative Samples
         v_rot_median = np.median(v_rot_samples, axis=1)
         # Calculate distance of each sample from the median profile
@@ -512,7 +509,7 @@ class DmNfw:
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
-        c_calc = self._calc_c_from_M200(M200_best, h=H)
+        c_calc = c_from_M200(M200_best, h=H)
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -610,11 +607,10 @@ class DmNfw:
             print("--- Expectation ---")
             print(f"Mstar Expect        : {Mstar_expect:.3e} Msun")
             print(f"M200 Expect         : {M200_expect:.3e} Msun")
-            print(f"c Expect            : {c_expect:.3f}")
             print("--- MAP estimate ---")
             print(f"Mstar Estimate      : {map_estimate['Mstar']:.3e} Msun") if self.inf_Mstar else None
             print(f"M200 Estimate       : {map_estimate['M200']:.3e} Msun")
-            print(f"c Estimate          : {map_estimate['c']:.3f}")
+            print(f"c Estimate          : {map_estimate['c']:.3f}") if self.inf_c else None
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun") if self.inf_Mstar else None
             print(f" Best M200          : {M200_best:.3e} Msun")
@@ -679,12 +675,12 @@ class DmNfw:
 
         inf_params = {
             'result': 'success' if success else 'failure',
+            'Mstar': Mstar_best,
+            'Mstar_std': Mstar_sd,
             'M200': M200_best,
             'M200_std': M200_sd,
-            'M200_r_hat': M200_r_hat,
             'c': c_best,
             'c_std': c_sd,
-            'c_r_hat': c_r_hat,
             'nrmse': nrmse_best,
             'chi2_red': redchi_best,
             'dev_ppc_p': dev_ppc_p,

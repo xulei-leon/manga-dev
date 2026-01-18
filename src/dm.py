@@ -270,13 +270,15 @@ class DmNfw:
             # prior distributions
             # ------------------------------------------
             Mstar_log_mu = pt.log10(Mstar_expect)
-            Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=0.1)
+            Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.1)
+            Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=Mstar_log_sigma_t)
             Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
             # M200 prior:
             # M200 mu from SHMR relation
             M200_log_mu = pt.log10(M200_expect)
-            M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=0.3)  # 0.3 dex scatter in SHMR
+            M200_log_sigma_t = pm.HalfNormal("M200_log_sigma", sigma=0.1)
+            M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=M200_log_sigma_t)
             M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
@@ -284,35 +286,32 @@ class DmNfw:
             # log10(c) ~ N(a + b * (log10(M200) - 12), sigma_dex)
             intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
             slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
-            sigma_c = pm.HalfNormal("sigma_c", sigma=0.15)
             c_log_mu = intercept + slop * (M200_log_t - 12.0)
-            c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=sigma_c)
+            c_sigma_t = pm.HalfNormal("sigma_c", sigma=0.1)
+            c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=c_sigma_t)
             c_t = pm.Deterministic("c", 10**c_log_t)
 
             # sigma_0 prior: log-normal (strictly positive scale)
-            sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.5)
+            sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))  # 0.3 dex scatter in sigma_0
 
             # v_sys prior: normal prior around measured value
-            v_sys_delta = 20.0
-            v_sys_t = pm.TruncatedNormal("v_sys", mu=vel_sys, sigma=5.0, lower=vel_sys - v_sys_delta, upper=vel_sys + v_sys_delta)
+            v_sys_t = pm.Normal("v_sys", mu=vel_sys, sigma=0.25*pt.abs(vel_sys))
 
             # inc prior: normal prior around measured value
             if self.inf_inc:
-                inc_t = pm.Normal("inc", mu=inc_rad, sigma=pt.deg2rad(2.0))
+                inc_t = pm.Normal("inc", mu=inc_rad, sigma=0.1*pt.abs(inc_rad))
             else:
                 inc_t = pm.Deterministic("inc", pt.as_tensor_variable(inc_rad))
 
             # phi_delta prior
             if self.inf_phi_delta:
-                phi_delta_t = pm.TruncatedNormal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0), lower=-pt.deg2rad(10.0), upper=pt.deg2rad(10.0))
+                phi_delta_t = pm.Normal("phi_delta", mu=0.0, sigma=pt.deg2rad(5.0))
             else:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
-
             # Perior for Re: log-normal prior
             Re_mu = r_max * 0.25
-            Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*log(10)) # 0.3 dex scatter in Re
-
+            Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*pt.log(10)) # 0.3 dex scatter in Re
 
             # f_bulge prior
             f_bulge_t = pm.Beta("f_bulge", alpha=1.2, beta=4.0)
@@ -320,7 +319,7 @@ class DmNfw:
 
             # a prior
             a_mu = r_max * 0.1
-            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.5)
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.3*pt.log(10))  # 0.3 dex scatter in a
 
             # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)
@@ -328,7 +327,7 @@ class DmNfw:
             sigma_scale_t = pm.LogNormal(
                 "sigma_scale",
                 mu=pt.log(pt.as_tensor_variable(max(sigma_scale_mu, 1e-6))),
-                sigma=0.3,
+                sigma=0.15*pt.log(10),
             )
 
             # ------------------------------------------
@@ -366,10 +365,6 @@ class DmNfw:
             # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
             # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
 
-
-            # MAP estimate (optional diagnostic)
-            map_estimate = pm.find_MAP()
-
             # ------------------------------------------
             # sampling options & run
             # ------------------------------------------
@@ -386,7 +381,7 @@ class DmNfw:
                 displaybar = False
 
             sampler = "nutpie" # 'nutpie', 'numpyro'
-            init = "jitter+adapt_full" # 'jitter+adapt_diag', 'jitter+adapt_full'
+            init = "jitter+adapt_full" # jitter+adapt_diag, jitter+adapt_full
             random_seed = 42
             trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
                               nuts_sampler=sampler, target_accept=target_accept,
@@ -410,7 +405,7 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale", "Mstar", "sigma_0"]
+        var_names = ["Mstar", "M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale", "sigma_0"]
         if self.inf_inc:
             var_names.append("inc")
         if self.inf_phi_delta:
@@ -602,10 +597,6 @@ class DmNfw:
             print("--- Expectation ---")
             print(f"Mstar Expect        : {Mstar_expect:.3e} Msun")
             print(f"M200 Expect         : {M200_expect:.3e} Msun")
-            print("--- MAP estimate ---")
-            print(f"Mstar Estimate      : {map_estimate['Mstar']:.3e} Msun")
-            print(f"M200 Estimate       : {map_estimate['M200']:.3e} Msun")
-            print(f"c Estimate          : {map_estimate['c']:.3f}")
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")

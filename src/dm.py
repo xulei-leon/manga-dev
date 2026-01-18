@@ -8,11 +8,9 @@ Vstar^2(r)  = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) 
 Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 '''
 
-from calendar import c
+from math import log
 import os
 from pathlib import Path
-from pickletools import read_stringnl_noescape
-from time import sleep
 
 import numpy as np
 from scipy.optimize import brentq
@@ -23,7 +21,6 @@ from astropy import constants as const
 import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
-from stellar import Stellar
 
 H = 1 #0.674  # assuming H0 = 67.4 km/s/Mpc
 G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
@@ -81,7 +78,6 @@ class DmNfw:
     inf_debug: bool = False
     inf_Mstar: bool = True
     inf_drift: bool = True
-    inf_Re: bool = True # Notice: Infer Re will take too much time
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
     inf_phi_delta: bool = False
     inf_c: bool = True
@@ -164,15 +160,9 @@ class DmNfw:
         r_max = np.nanmax(radius_valid)
 
         # stellar mass
-        if self.inf_Re:
-            _Mstar_total = self.stellar_util.get_stellar_mass_total()
-            _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
-            print (f"Stellar mass from DRPALL: Mstar_elpetro={_Mstar_elpetro:.2e} Msun, Mstar_sersic={_Mstar_sersic:.2e} Msun, Mstar_total={_Mstar_total:.2e} Msun")
-            Mstar_expect = _Mstar_elpetro if _Mstar_elpetro is not None else _Mstar_sersic if _Mstar_sersic is not None else _Mstar_total
-        else:
-            fit_stellar_mass_results = self.stellar_util.fit_stellar_mass()
-            Mstar_expect = fit_stellar_mass_results['Mstar']
-            Re = fit_stellar_mass_results['Re']
+        _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
+        print (f"Stellar mass from DRPALL: Mstar_elpetro={_Mstar_elpetro:.2e} Msun, Mstar_sersic={_Mstar_sersic:.2e} Msun")
+        Mstar_expect = _Mstar_elpetro if _Mstar_elpetro is not None else _Mstar_sersic
 
         z = self._get_z()
 
@@ -326,11 +316,10 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
 
-            if self.inf_Re:
-                Re_mu = r_max * 0.25
-                Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.4)
-            else:
-                Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
+            # Perior for Re: log-normal prior
+            Re_mu = r_max * 0.25
+            Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*log(10)) # 0.3 dex scatter in Re
+
 
             # f_bulge prior
             f_bulge_t = pm.Beta("f_bulge", alpha=1.2, beta=4.0)
@@ -428,11 +417,9 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["M200", "c", "v_sys", "f_bulge", "a", "sigma_scale"]
+        var_names = ["M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale"]
         if self.inf_Mstar:
             var_names.append("Mstar")
-        if self.inf_Re:
-            var_names.append("Re")
         if self.inf_drift:
             var_names.append("sigma_0")
         if self.inf_inc:
@@ -452,7 +439,7 @@ class DmNfw:
         v_sys_mean = float(summary.loc["v_sys", "mean"])
         inc_mean = float(summary.loc["inc", "mean"]) if self.inf_inc else inc_rad
         phi_delta_mean = float(summary.loc["phi_delta", "mean"]) if self.inf_phi_delta else 0.0
-        Re_mean = float(summary.loc["Re", "mean"]) if self.inf_Re else Re
+        Re_mean = float(summary.loc["Re", "mean"])
         f_bulge_mean = float(summary.loc["f_bulge", "mean"])
         a_mean = float(summary.loc["a", "mean"])
         sigma_scale_mean = float(summary.loc["sigma_scale", "mean"])
@@ -464,7 +451,7 @@ class DmNfw:
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
         phi_delta_sd = float(summary.loc["phi_delta", "sd"]) if self.inf_phi_delta else 0.0
-        Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
+        Re_sd = float(summary.loc["Re", "sd"])
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
         sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
@@ -578,13 +565,11 @@ class DmNfw:
         # ------------------------------------------
         # Recalculate Reduced Chi2 for the best fit
         # ------------------------------------------
-        # parameters in model: M200_log, c_log, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
+        # parameters in model: M200, c, sigma_0, v_sys, inc, phi_delta, Re, f_bulge, a, sigma_obs
         params_num = 10
         if not self.inf_Mstar:
             params_num -= 1
         if not self.inf_drift:
-            params_num -= 1
-        if not self.inf_Re:
             params_num -= 1
         if not self.inf_inc:
             params_num -= 1
@@ -619,7 +604,7 @@ class DmNfw:
             print(f" Best v_sys         : {v_sys_mean:.3f} km/s")
             print(f" Best inc           : {np.degrees(inc_mean):.3f} deg") if self.inf_inc else None
             print(f" Best phi_delta     : {np.degrees(phi_delta_mean):.3f} deg") if self.inf_phi_delta else None
-            print(f" Best Re            : {Re_mean:.3f} kpc") if self.inf_Re else None
+            print(f" Best Re            : {Re_mean:.3f} kpc")
             print(f" Best f_bulge       : {f_bulge_mean:.3f}")
             print(f" Best a             : {a_mean:.3f} kpc")
             print(f" Best sigma_scale   : {sigma_scale_mean:.3f}")
@@ -631,7 +616,7 @@ class DmNfw:
             print(f" Mean v_sys         : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_mean, 1e-3):.2%})")
             print(f" Mean inc           : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_mean, 1e-3):.2%})") if self.inf_inc else None
             print(f" Mean phi_delta     : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_mean, 1e-3):.2%})") if self.inf_phi_delta else None
-            print(f" Mean Re            : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})") if self.inf_Re else None
+            print(f" Mean Re            : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-3):.2%})")
             print(f" Mean f_bulge       : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-3):.2%})")
             print(f" Mean a             : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-3):.2%})")
             print(f" Mean sigma_scale   : {sigma_scale_mean:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/sigma_scale_mean:.2%})")
@@ -708,10 +693,6 @@ class DmNfw:
 
     def set_inf_debug(self, inf_debug: bool) -> None:
         self.inf_debug = inf_debug
-        return
-
-    def set_stellar_util(self, stellar_util: Stellar) -> None:
-        self.stellar_util = stellar_util
         return
 
     def inf_dm_nfw(self, radius_obs: np.ndarray, vel_obs: np.ndarray, ivar_obs: np.ndarray, vel_sys: float, inc_rad: float, phi_map: np.ndarray):

@@ -12,7 +12,6 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
-from stellar import Stellar
 from vel_rot import VelRot
 from dm import DmNfw
 
@@ -161,15 +160,12 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
 
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
 
-    stellar = Stellar(drpall_util, firefly_util, maps_util)
-    stellar.set_PLATE_IFU(PLATE_IFU)
 
     #--------------------------------------------------------
     # DM NFW fitting
     #--------------------------------------------------------
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    dm_nfw.set_stellar_util(stellar)
     dm_nfw.set_plot_enable(debug)
     dm_nfw.set_inf_debug(debug)
 

@@ -12,7 +12,7 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
-from vel_rot import VelRot
+from rc import RotCurve
 from dm import DmNfw
 
 root_dir = Path(__file__).resolve().parent.parent
@@ -109,7 +109,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
+    vel_rot = RotCurve(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()

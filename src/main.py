@@ -29,13 +29,10 @@ VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
 DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD1 = 0.07  # threshold for first fitting
-NRMSE_THRESHOLD2 = 0.05  # tighter threshold for second fitting
-CHI_SQ_V_THRESHOLD1 = 5.0  # looser threshold for first fitting
-CHI_SQ_V_THRESHOLD2 = 3.0  # threshold for reduced chi-squared to filter weak fitting
-VEL_OBS_COUNT_THRESHOLD1 = 150  # minimum number of valid velocity data points
-VEL_OBS_COUNT_THRESHOLD2 = 100  # minimum number of valid velocity data points
-RMAX_RT_FACTOR = 2.5  # factor to determine maximum radius for fitting
+NRMSE_THRESHOLD = 0.1
+CHI_SQ_V_THRESHOLD = 10.0
+VEL_OBS_COUNT_THRESHOLD = 150
+RMAX_RT_FACTOR = 2  # factor to determine maximum radius for fitting
 
 csv_lock = Lock()
 
@@ -145,9 +142,9 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     data_count = np.sum(np.isfinite(V_obs_map))
     NRMSE = float(fit_params['NRMSE'])
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    if data_count < VEL_OBS_COUNT_THRESHOLD1 or \
-        (NRMSE > NRMSE_THRESHOLD1) or \
-        (CHI_SQ_V > CHI_SQ_V_THRESHOLD1) or \
+    if data_count < VEL_OBS_COUNT_THRESHOLD or \
+        (NRMSE > NRMSE_THRESHOLD) or \
+        (CHI_SQ_V > CHI_SQ_V_THRESHOLD) or \
         (Rmax < Rt * RMAX_RT_FACTOR):
         print(f"First fitting results failure for {PLATE_IFU}, data amount: {data_count}, "
               f"NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, "

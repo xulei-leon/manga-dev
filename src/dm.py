@@ -270,14 +270,14 @@ class DmNfw:
             # prior distributions
             # ------------------------------------------
             Mstar_log_mu = pt.log10(Mstar_expect)
-            Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.1)
+            Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.3)
             Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=Mstar_log_sigma_t)
             Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
             # M200 prior:
             # M200 mu from SHMR relation
             M200_log_mu = pt.log10(M200_expect)
-            M200_log_sigma_t = pm.HalfNormal("M200_log_sigma", sigma=0.1)
+            M200_log_sigma_t = pm.HalfNormal("M200_log_sigma", sigma=0.6)
             M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=M200_log_sigma_t)
             M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
@@ -287,7 +287,7 @@ class DmNfw:
             intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
             slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
             c_log_mu = intercept + slop * (M200_log_t - 12.0)
-            c_sigma_t = pm.HalfNormal("sigma_c", sigma=0.1)
+            c_sigma_t = pm.HalfNormal("sigma_c", sigma=0.3)
             c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=c_sigma_t)
             c_t = pm.Deterministic("c", 10**c_log_t)
 
@@ -614,9 +614,9 @@ class DmNfw:
             print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
             print(f" Median c           : {c_median:.3f} ± {c_sd:.3f} ({c_sd/max(c_median, 1e-12):.2%})")
             print(f" Median sigma_0     : {sigma0_median:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_median, 1e-12):.2%})")
-            print(f" Median v_sys       : {v_sys_median:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(v_sys_median, 1e-12):.2%})")
-            print(f" Median inc         : {np.degrees(inc_median):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(inc_median, 1e-12):.2%})") if self.inf_inc else None
-            print(f" Median phi_delta   : {np.degrees(phi_delta_median):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(phi_delta_median, 1e-12):.2%})") if self.inf_phi_delta else None
+            print(f" Median v_sys       : {v_sys_median:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(np.abs(v_sys_median), 1e-12):.2%})")
+            print(f" Median inc         : {np.degrees(inc_median):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(np.abs(inc_median), 1e-12):.2%})") if self.inf_inc else None
+            print(f" Median phi_delta   : {np.degrees(phi_delta_median):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(np.abs(phi_delta_median), 1e-12):.2%})") if self.inf_phi_delta else None
             print(f" Median Re          : {Re_median:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_median, 1e-12):.2%})")
             print(f" Median f_bulge     : {f_bulge_median:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_median, 1e-12):.2%})")
             print(f" Median a           : {a_median:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_median, 1e-12):.2%})")
@@ -668,13 +668,8 @@ class DmNfw:
             'c': c_best,
             'c_std': c_sd,
             'nrmse': nrmse_best,
-            'chi2_red': redchi_best,
+            'redchi': redchi_best,
             'dev_ppc_p': dev_ppc_p,
-            'elpd_loo_est': elpd_loo_est,
-            'elpd_loo_se': elpd_loo_se,
-            'p_loo': p_loo,
-            'max_k': max_k,
-            'mean_k': mean_k,
             'good_k_fraction': f"{good_k_fraction:.2f}",
         }
 

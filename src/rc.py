@@ -30,11 +30,11 @@ PHI_DEG_THRESHOLD = 45.0
 IVAR_RATIO_THRESHOLD = 0.10  # drop the worst 10% of ivar values
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD = 0.08  # threshold for first fitting
-CHI_SQ_V_THRESHOLD = 5.0  # looser threshold for first fitting
+NRMSE_THRESHOLD = 0.10
+CHI_SQ_V_THRESHOLD = 10.0
 VEL_OBS_COUNT_THRESHOLD = 150  # minimum number of valid velocity data points
 
-RADIUS_MIN_KPC = 0.1  # kpc/h
+RADIUS_MIN_KPC = 0.01  # kpc/h
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
 

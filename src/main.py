@@ -14,6 +14,7 @@ from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
 from rc import RotCurve
 from dm import DmNfw
+from star import Star
 
 root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / "data"
@@ -161,6 +162,10 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     #--------------------------------------------------------
     # DM NFW fitting
     #--------------------------------------------------------
+    star = Star(drpall_util, firefly_util, maps_util)
+    star.set_PLATE_IFU(PLATE_IFU)
+    star_mass_map = star.get_star_mass_map()
+
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_plot_enable(False)
@@ -171,7 +176,8 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
                                                         ivar_obs=ivar_obs_map,
                                                         vel_sys=vel_sys_fit,
                                                         inc_rad=inc_rad_fit,
-                                                        phi_map=phi_map)
+                                                        phi_map=phi_map,
+                                                        star_mass_map=star_mass_map)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")

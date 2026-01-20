@@ -9,6 +9,7 @@ Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 '''
 
 from math import log
+from typing import Optional, Tuple
 import os
 from pathlib import Path
 
@@ -78,6 +79,7 @@ class DmNfw:
     inf_debug: bool = False
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
     inf_phi_delta: bool = False
+    inf_mstar: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -132,7 +134,16 @@ class DmNfw:
     ################################################################################
     # MCMC PyMC inference methods
     ################################################################################
-    def _inf_dm_nfw_pymc(self, radius_obs: np.ndarray, vel_obs: np.ndarray, ivar_obs: np.ndarray, vel_sys: float, inc_rad: float, phi_map: np.ndarray):
+    def _inf_dm_nfw_pymc(
+        self,
+        radius_obs: np.ndarray,
+        vel_obs: np.ndarray,
+        ivar_obs: np.ndarray,
+        vel_sys: float,
+        inc_rad: float,
+        phi_map: np.ndarray,
+        star_mass_map: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+    ):
         # ------------------------------------------
         # data selection / precompute
         # ------------------------------------------
@@ -155,6 +166,32 @@ class DmNfw:
         print(f"vel_obs stderr: {np.nanmean(stderr_obs_valid):.2f} km/s")
 
         r_max = np.nanmax(radius_valid)
+
+        # star mass map
+        if self.inf_mstar:
+            star_radius, star_mass, star_mass_err = star_mass_map
+            star_radius = np.asarray(star_radius)
+            star_mass = np.asarray(star_mass)
+            star_mass_err = np.asarray(star_mass_err)
+            star_mask = (
+                np.isfinite(star_radius)
+                & np.isfinite(star_mass)
+                & np.isfinite(star_mass_err)
+                & (star_radius >= 0)
+                & (star_mass >= 0)
+                & (star_mass_err > 0)
+            )
+            if np.any(star_mask):
+                star_radius_valid = star_radius[star_mask]
+                star_mass_valid = star_mass[star_mask]
+                star_mass_err_valid = star_mass_err[star_mask]
+                print(
+                    f"Star mass map valid {len(star_mass_valid)}: "
+                    f"radius=[{np.min(star_radius_valid):.2f}, {np.max(star_radius_valid):.2f}] kpc, "
+                    f"mass=[{np.min(star_mass_valid):.2e}, {np.max(star_mass_valid):.2e}] Msun"
+                )
+            else:
+                print("Star mass map provided but no valid points; skipping star mass likelihood.")
 
         # stellar mass
         _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
@@ -215,6 +252,15 @@ class DmNfw:
             v_disk_sq = v_star_sq_disk_freeman(r, MD, Rd)
             v_baryon_sq = v_bulge_sq + v_disk_sq
             return v_baryon_sq
+
+        def m_star_profile(r, Mstar, Re, f_bulge, a):
+            r_safe = pt.maximum(r, 0.0)
+            Rd = Re / 1.678
+            MB = f_bulge * Mstar
+            MD = (1 - f_bulge) * Mstar
+            bulge_mass = MB * (r_safe**2) / (r_safe + a) ** 2
+            disk_mass = MD * (1.0 - (1.0 + r_safe / Rd) * pt.exp(-r_safe / Rd))
+            return bulge_mass + disk_mass
 
         # r200 closure (kpc) from M200 and Hz
         def r200_from_M200(M200):
@@ -330,6 +376,10 @@ class DmNfw:
                 sigma=0.15*pt.log(10),
             )
 
+            # if self.inf_mstar:
+                # stellar mass profile error scale
+                # sigma_mstar_scale_t = pm.LogNormal("sigma_mstar_scale", mu=pt.log(sigma_scale_t), sigma=0.3*pt.log(10))
+
             # ------------------------------------------
             # deterministic relations
             # ------------------------------------------
@@ -343,16 +393,25 @@ class DmNfw:
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
             v_obs_model_t = pm.Deterministic("v_obs_model", v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t))
 
+            if self.inf_mstar:
+                r_star = star_radius_valid
+                m_star_model_t = pm.Deterministic("m_star_model", m_star_profile(r_star, Mstar_t, Re_t, f_bulge_t, a_t))
+
             # ------------------------------------------
             # likelihood: observed rotation velocities
             # ------------------------------------------
-
             # Measurement error model: start from ivar-derived sigma (plus floor),
             # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
             # This is often more realistic than treating ivar as perfectly calibrated.
             sigma_obs_t = pm.Deterministic("sigma_obs", sigma_scale_t * stderr_obs_valid)
-
             pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
+
+            # ------------------------------------------
+            # likelihood: stellar mass profile (optional)
+            # ------------------------------------------
+            if self.inf_mstar:
+                sigma_mstar_t = pm.Deterministic( "sigma_mstar", sigma_scale_t * star_mass_err_valid)
+                pm.Normal("m_star_obs", mu=m_star_model_t, sigma=sigma_mstar_t, observed=star_mass_valid)
 
             # ------------------------------------------
             # potential
@@ -377,8 +436,10 @@ class DmNfw:
 
             if self.inf_debug:
                 displaybar = True
+                checks = True
             else:
                 displaybar = False
+                checks = False
 
             sampler = "nutpie" # 'nutpie', 'numpyro'
             init = "jitter+adapt_full" # jitter+adapt_diag, jitter+adapt_full
@@ -387,7 +448,7 @@ class DmNfw:
                               nuts_sampler=sampler, target_accept=target_accept,
                               progressbar=displaybar,
                               random_seed=random_seed,
-                              return_inferencedata=True, compute_convergence_checks=True)
+                              return_inferencedata=True, compute_convergence_checks=checks)
 
             if self.inf_debug:
                 print("\n\n")
@@ -410,6 +471,8 @@ class DmNfw:
             var_names.append("inc")
         if self.inf_phi_delta:
             var_names.append("phi_delta")
+        # if self.inf_mstar:
+        #     var_names.append("sigma_mstar_scale")
 
         az_api = _get_arviz_api()
         _set_arviz_ci_defaults()
@@ -427,6 +490,9 @@ class DmNfw:
         f_bulge_median = float(summary.loc["f_bulge", "median"])
         a_median = float(summary.loc["a", "median"])
         sigma_scale_median = float(summary.loc["sigma_scale", "median"])
+        sigma_mstar_scale_median = float(summary.loc["sigma_mstar_scale", "median"]) if "sigma_mstar_scale" in summary.index else None
+
+         # standard deviation
 
         Mstar_sd = float(summary.loc["Mstar", "sd"])
         M200_sd = float(summary.loc["M200", "sd"])
@@ -439,7 +505,7 @@ class DmNfw:
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
         sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
-
+        sigma_mstar_scale_sd = float(summary.loc["sigma_mstar_scale", "sd"]) if "sigma_mstar_scale" in summary.index else None
         success = True
         for var in var_names:
             r_hat = float(summary.loc[var, "r_hat"])
@@ -468,7 +534,7 @@ class DmNfw:
         inc_samples = flat_trace["inc"].values if self.inf_inc else None
         phi_delta_samples = flat_trace["phi_delta"].values if self.inf_phi_delta else None
         sigma0_samples = flat_trace["sigma_0"].values
-
+        sigma_mstar_scale_samples = flat_trace["sigma_mstar_scale"].values if "sigma_mstar_scale" in var_names else None
 
         # ------------------------------------------
         # Representative Samples
@@ -502,6 +568,7 @@ class DmNfw:
         inc_best = inc_samples[best_idx] if self.inf_inc else inc_rad
         phi_delta_best = phi_delta_samples[best_idx] if self.inf_phi_delta else 0.0
         sigma0_best = sigma0_samples[best_idx]
+        sigma_mstar_scale_best = sigma_mstar_scale_samples[best_idx] if "sigma_mstar_scale" in var_names else None
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
@@ -509,7 +576,8 @@ class DmNfw:
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
-        model_loo = az_api.loo(trace, pointwise=True)
+        # If multiple likelihoods exist, specify the target explicitly.
+        model_loo = az_api.loo(trace, pointwise=True, var_name="v_obs")
         elpd_loo_est = float(model_loo.elpd_loo)
         elpd_loo_se = float(model_loo.se)
         p_loo = float(model_loo.p_loo)
@@ -609,6 +677,7 @@ class DmNfw:
             print(f" Best f_bulge       : {f_bulge_best:.3f}")
             print(f" Best a             : {a_best:.3f} kpc")
             print(f" Best sigma_scale   : {sigma_scale_best:.3f}")
+            print(f" Best sigma_mstar_scale : {sigma_mstar_scale_best:.3f}") if "sigma_mstar_scale" in var_names else None
             print(f"--- median estimates ---")
             print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})")
             print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
@@ -691,6 +760,15 @@ class DmNfw:
         self.inf_debug = inf_debug
         return
 
-    def inf_dm_nfw(self, radius_obs: np.ndarray, vel_obs: np.ndarray, ivar_obs: np.ndarray, vel_sys: float, inc_rad: float, phi_map: np.ndarray):
-        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map)
+    def inf_dm_nfw(
+        self,
+        radius_obs: np.ndarray,
+        vel_obs: np.ndarray,
+        ivar_obs: np.ndarray,
+        vel_sys: float,
+        inc_rad: float,
+        phi_map: np.ndarray,
+        star_mass_map: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+    ):
+        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map, star_mass_map=star_mass_map)
 

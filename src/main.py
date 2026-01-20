@@ -164,7 +164,16 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     #--------------------------------------------------------
     star = Star(drpall_util, firefly_util, maps_util)
     star.set_PLATE_IFU(PLATE_IFU)
-    star_mass_map = star.get_star_mass_map()
+    radius_star, mass_star, std_err_star = star.get_star_mass_map()
+    Re_kpc = star.get_Re_kpc()
+
+    star_mass_result = {
+        'radius': radius_star,
+        'mass_star': mass_star,
+        'std_err_star': std_err_star,
+        'Re_kpc': Re_kpc
+    }
+
 
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
@@ -177,7 +186,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
                                                         vel_sys=vel_sys_fit,
                                                         inc_rad=inc_rad_fit,
                                                         phi_map=phi_map,
-                                                        star_mass_map=star_mass_map)
+                                                        star_mass_param=star_mass_result)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")

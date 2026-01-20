@@ -57,16 +57,19 @@ class Star:
         ratio = np.median(ratio_r[~np.isnan(ratio_r)])
         return ratio
 
-    def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
+
+    def _get_Re_kpc(self, PLATE_IFU: str) -> float:
         _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
-
-        effective_radius = self.drpall_util.get_effective_radius(PLATE_IFU)
-
-        radius_arcsec_map = radius_eff_map * effective_radius
+        Re_arcsec = self.drpall_util.get_effective_radius(PLATE_IFU)
         ratio_r = self.calc_r_ratio_to_h_kpc(_r_arcsec_map, _r_h_kpc_map)
 
-        radius_h_kpc_map = radius_arcsec_map * ratio_r
-        return radius_h_kpc_map
+        Re_kpc = Re_arcsec * ratio_r
+        return Re_kpc
+
+
+    def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
+        Re_kpc = self._get_Re_kpc(PLATE_IFU)
+        return radius_eff_map * Re_kpc
 
 
     ################################################################################
@@ -312,6 +315,9 @@ class Star:
     def set_PLATE_IFU(self, PLATE_IFU: str) -> None:
         self.PLATE_IFU = PLATE_IFU
         return
+
+    def get_Re_kpc(self):
+        return self._get_Re_kpc(self.PLATE_IFU)
 
     def get_star_mass_map(self):
         return self._get_star_mass(self.PLATE_IFU)

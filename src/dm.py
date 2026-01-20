@@ -8,7 +8,7 @@ Vstar^2(r)  = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) 
 Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 '''
 
-from math import log
+from math import inf, log
 from typing import Optional, Tuple
 import os
 from pathlib import Path
@@ -79,7 +79,7 @@ class DmNfw:
     inf_debug: bool = False
     inf_inc: bool = False # Notice: Infer inc may be degenerate with c
     inf_phi_delta: bool = False
-    inf_mstar: bool = True
+    inf_Re: bool = False # Notice: Infer Re may cost more time
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -142,7 +142,7 @@ class DmNfw:
         vel_sys: float,
         inc_rad: float,
         phi_map: np.ndarray,
-        star_mass_map: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+        star_mass_param = None,
     ):
         # ------------------------------------------
         # data selection / precompute
@@ -168,30 +168,15 @@ class DmNfw:
         r_max = np.nanmax(radius_valid)
 
         # star mass map
-        if self.inf_mstar:
-            star_radius, star_mass, star_mass_err = star_mass_map
-            star_radius = np.asarray(star_radius)
-            star_mass = np.asarray(star_mass)
-            star_mass_err = np.asarray(star_mass_err)
-            star_mask = (
-                np.isfinite(star_radius)
-                & np.isfinite(star_mass)
-                & np.isfinite(star_mass_err)
-                & (star_radius >= 0)
-                & (star_mass >= 0)
-                & (star_mass_err > 0)
-            )
-            if np.any(star_mask):
-                star_radius_valid = star_radius[star_mask]
-                star_mass_valid = star_mass[star_mask]
-                star_mass_err_valid = star_mass_err[star_mask]
-                print(
-                    f"Star mass map valid {len(star_mass_valid)}: "
-                    f"radius=[{np.min(star_radius_valid):.2f}, {np.max(star_radius_valid):.2f}] kpc, "
-                    f"mass=[{np.min(star_mass_valid):.2e}, {np.max(star_mass_valid):.2e}] Msun"
-                )
-            else:
-                print("Star mass map provided but no valid points; skipping star mass likelihood.")
+        radius_star = star_mass_param['radius']
+        mass_star = star_mass_param['mass_star']
+        std_err_star = star_mass_param['std_err_star']
+        star_mask = (np.isfinite(radius_star) & np.isfinite(mass_star) & np.isfinite(std_err_star))
+        Re_kpc = star_mass_param['Re_kpc']
+
+        radius_star_valid = np.asarray(radius_star[star_mask], dtype=float)
+        mass_star_valid = np.asarray(mass_star[star_mask], dtype=float)
+        stderr_star_valid = np.asarray(std_err_star[star_mask], dtype=float)
 
         # stellar mass
         _Mstar_elpetro, _Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
@@ -216,16 +201,19 @@ class DmNfw:
         # Note: use pytensor operations instead of numpy/scipy inside the model
         # ------------------------------------------
 
-        # Mstar
-        def v_star_sq_bulge_hernquist(r, MB, a):
-            r = pt.where(r == 0, 1e-6, r)  # avoid division by zero
+        # bulge component: Hernquist profile
+        def v_star_sq_bulge(r, MB, a):
             v_sq = (G_kpc_kms_Msun * MB * r) / (r + a)**2
             return v_sq
 
+        def mass_star_bulge(r, MB, a):
+            mass = MB * (r**2) / (r + a) ** 2
+            return mass
+
         # V_disk^2(r) = (2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-        def v_star_sq_disk_freeman(r, M_d, Rd):
-            r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
-            y = r_safe / (2.0 * Rd)
+        # disk component: Freeman exponential disk
+        def v_star_sq_disk(r, M_d, Rd):
+            y = r / (2.0 * Rd)
 
             # PyMC does not expose bessel_i0/i1/k0/k1 in all versions.
             # Use PyTensor's generic modified Bessel functions:
@@ -238,29 +226,33 @@ class DmNfw:
             v_sq = (2.0 * G_kpc_kms_Msun * M_d / Rd) * (y**2) * (I0 * K0 - I1 * K1)
             return v_sq
 
+        def mass_star_disk(r, MD, Rd):
+            mass = MD * (1.0 - (1.0 + r / Rd) * pt.exp(-r / Rd))
+            return mass
+
         # M_star: total mass of star
         # Re: Half-mass radius
         # f_bulge: bulge mass fraction
         # a: Hernquist scale radius
         # V_star^2 = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
         def v_star_sq_profile(r, Mstar, Re, f_bulge, a):
+            r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
             Rd = Re / 1.678
             MB = f_bulge * Mstar
             MD = (1 - f_bulge) * Mstar
 
-            v_bulge_sq = v_star_sq_bulge_hernquist(r, MB, a)
-            v_disk_sq = v_star_sq_disk_freeman(r, MD, Rd)
+            v_bulge_sq = v_star_sq_bulge(r_safe, MB, a)
+            v_disk_sq = v_star_sq_disk(r_safe, MD, Rd)
             v_baryon_sq = v_bulge_sq + v_disk_sq
             return v_baryon_sq
 
-        def m_star_profile(r, Mstar, Re, f_bulge, a):
-            r_safe = pt.maximum(r, 0.0)
+        def mass_star_profile(r, Mstar, Re, f_bulge, a):
+            r_safe = pt.where(pt.eq(r, 0), 1e-6, r)
             Rd = Re / 1.678
-            MB = f_bulge * Mstar
-            MD = (1 - f_bulge) * Mstar
-            bulge_mass = MB * (r_safe**2) / (r_safe + a) ** 2
-            disk_mass = MD * (1.0 - (1.0 + r_safe / Rd) * pt.exp(-r_safe / Rd))
-            return bulge_mass + disk_mass
+            mass_bulge = mass_star_bulge(r_safe, f_bulge * Mstar, a)
+            mass_disk = mass_star_disk(r_safe, (1 - f_bulge) * Mstar, Rd)
+            mass_total = mass_bulge + mass_disk
+            return mass_total
 
         # r200 closure (kpc) from M200 and Hz
         def r200_from_M200(M200):
@@ -323,17 +315,22 @@ class DmNfw:
             # M200 prior:
             # M200 mu from SHMR relation
             M200_log_mu = pt.log10(M200_expect)
-            M200_log_sigma_t = pm.HalfNormal("M200_log_sigma", sigma=0.6)
+            M200_log_sigma_t = pm.HalfNormal("M200_log_sigma", sigma=0.3)
             M200_log_t = pm.Normal("M200_log10", mu=M200_log_mu, sigma=M200_log_sigma_t)
             M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
             # soft constraint on c from M200-c relation
             # log10(c) ~ N(a + b * (log10(M200) - 12), sigma_dex)
-            intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
-            slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
-            c_log_mu = intercept + slop * (M200_log_t - 12.0)
-            c_sigma_t = pm.HalfNormal("sigma_c", sigma=0.3)
+            if False:
+                intercept = pm.Normal("intercept", mu=0.9, sigma=0.1)
+                slop = pm.Normal("slop", mu=-0.097, sigma=0.02)
+                c_log_mu = intercept + slop * (M200_log_t - 12.0)
+                c_sigma_t = pm.HalfNormal("sigma_c", sigma=0.1)
+            else:
+                c_log_mu =  c_from_M200(M200_t, H)
+                c_sigma_t = pm.HalfNormal("c_sigma", sigma=0.1)
+
             c_log_t = pm.Normal("c_log10", mu=c_log_mu, sigma=c_sigma_t)
             c_t = pm.Deterministic("c", 10**c_log_t)
 
@@ -356,8 +353,15 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Perior for Re: log-normal prior
-            Re_mu = r_max * 0.25
-            Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*pt.log(10)) # 0.3 dex scatter in Re
+            # Re_mu = r_max * 0.25
+            # Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*pt.log(10)) # 0.3 dex scatter in Re
+            if self.inf_Re:
+                Re_log_mu = pt.log10(Re_kpc)
+                Re_log_sigma_t = pm.HalfNormal("Re_log_sigma", sigma=0.3)
+                Re_log_t = pm.Normal("Re_log10", mu=Re_log_mu, sigma=Re_log_sigma_t)
+                Re_t = pm.Deterministic("Re", 10**Re_log_t)
+            else:
+                Re_t = pm.Deterministic('Re', pt.as_tensor_variable(Re_kpc))
 
             # f_bulge prior
             f_bulge_t = pm.Beta("f_bulge", alpha=1.2, beta=4.0)
@@ -376,10 +380,6 @@ class DmNfw:
                 sigma=0.15*pt.log(10),
             )
 
-            # if self.inf_mstar:
-                # stellar mass profile error scale
-                # sigma_mstar_scale_t = pm.LogNormal("sigma_mstar_scale", mu=pt.log(sigma_scale_t), sigma=0.3*pt.log(10))
-
             # ------------------------------------------
             # deterministic relations
             # ------------------------------------------
@@ -393,9 +393,8 @@ class DmNfw:
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
             v_obs_model_t = pm.Deterministic("v_obs_model", v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t))
 
-            if self.inf_mstar:
-                r_star = star_radius_valid
-                m_star_model_t = pm.Deterministic("m_star_model", m_star_profile(r_star, Mstar_t, Re_t, f_bulge_t, a_t))
+            r_star_t = radius_star_valid
+            m_star_model_t = pm.Deterministic("m_star_model", mass_star_profile(r_star_t, Mstar_t, Re_t, f_bulge_t, a_t))
 
             # ------------------------------------------
             # likelihood: observed rotation velocities
@@ -407,11 +406,10 @@ class DmNfw:
             pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
 
             # ------------------------------------------
-            # likelihood: stellar mass profile (optional)
+            # likelihood: stellar mass profile
             # ------------------------------------------
-            if self.inf_mstar:
-                sigma_mstar_t = pm.Deterministic( "sigma_mstar", sigma_scale_t * star_mass_err_valid)
-                pm.Normal("m_star_obs", mu=m_star_model_t, sigma=sigma_mstar_t, observed=star_mass_valid)
+            sigma_mstar_t = pm.Deterministic("sigma_mstar", pt.as_tensor_variable(stderr_star_valid))
+            pm.Normal("m_star_obs", mu=m_star_model_t, sigma=sigma_mstar_t, observed=mass_star_valid)
 
             # ------------------------------------------
             # potential
@@ -429,8 +427,8 @@ class DmNfw:
             # ------------------------------------------
             print(">>> Starting PyMC sampling (NUTS)... this may take time.\n")
 
-            draws = 1000
-            tune = 500
+            draws = 2000
+            tune = 1000
             chains = min(4, os.cpu_count())
             target_accept = 0.95
 
@@ -466,13 +464,13 @@ class DmNfw:
         # ------------------------------------------
         # summary with diagnostics
         # variable in the posterior. Exclude it from the az.summary var_names list.
-        var_names = ["Mstar", "M200", "c", "v_sys", "Re", "f_bulge", "a", "sigma_scale", "sigma_0"]
+        var_names = ["Mstar", "M200", "c", "v_sys", "f_bulge", "a", "sigma_scale", "sigma_0"]
         if self.inf_inc:
             var_names.append("inc")
         if self.inf_phi_delta:
             var_names.append("phi_delta")
-        # if self.inf_mstar:
-        #     var_names.append("sigma_mstar_scale")
+        if self.inf_Re:
+            var_names.append("Re")
 
         az_api = _get_arviz_api()
         _set_arviz_ci_defaults()
@@ -486,14 +484,12 @@ class DmNfw:
         v_sys_median = float(summary.loc["v_sys", "median"])
         inc_median = float(summary.loc["inc", "median"]) if self.inf_inc else inc_rad
         phi_delta_median = float(summary.loc["phi_delta", "median"]) if self.inf_phi_delta else 0.0
-        Re_median = float(summary.loc["Re", "median"])
+        Re_median = float(summary.loc["Re", "median"]) if self.inf_Re else Re_kpc
         f_bulge_median = float(summary.loc["f_bulge", "median"])
         a_median = float(summary.loc["a", "median"])
         sigma_scale_median = float(summary.loc["sigma_scale", "median"])
-        sigma_mstar_scale_median = float(summary.loc["sigma_mstar_scale", "median"]) if "sigma_mstar_scale" in summary.index else None
 
          # standard deviation
-
         Mstar_sd = float(summary.loc["Mstar", "sd"])
         M200_sd = float(summary.loc["M200", "sd"])
         c_sd = float(summary.loc["c", "sd"])
@@ -501,11 +497,11 @@ class DmNfw:
         v_sys_sd = float(summary.loc["v_sys", "sd"])
         inc_sd = float(summary.loc["inc", "sd"]) if self.inf_inc else 0.0
         phi_delta_sd = float(summary.loc["phi_delta", "sd"]) if self.inf_phi_delta else 0.0
-        Re_sd = float(summary.loc["Re", "sd"])
+        Re_sd = float(summary.loc["Re", "sd"]) if self.inf_Re else 0.0
         f_bulge_sd = float(summary.loc["f_bulge", "sd"])
         a_sd = float(summary.loc["a", "sd"])
         sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
-        sigma_mstar_scale_sd = float(summary.loc["sigma_mstar_scale", "sd"]) if "sigma_mstar_scale" in summary.index else None
+
         success = True
         for var in var_names:
             r_hat = float(summary.loc[var, "r_hat"])
@@ -527,14 +523,13 @@ class DmNfw:
         M200_samples = flat_trace["M200"].values
         c_samples = flat_trace["c"].values
         v_sys_samples = flat_trace["v_sys"].values
-        Re_samples = flat_trace["Re"].values
+        Re_samples = flat_trace["Re"].values if self.inf_Re else None
         f_bulge_samples = flat_trace["f_bulge"].values
         a_samples = flat_trace["a"].values
         sigma_scale_samples = flat_trace["sigma_scale"].values
         inc_samples = flat_trace["inc"].values if self.inf_inc else None
         phi_delta_samples = flat_trace["phi_delta"].values if self.inf_phi_delta else None
         sigma0_samples = flat_trace["sigma_0"].values
-        sigma_mstar_scale_samples = flat_trace["sigma_mstar_scale"].values if "sigma_mstar_scale" in var_names else None
 
         # ------------------------------------------
         # Representative Samples
@@ -561,14 +556,13 @@ class DmNfw:
         M200_best = M200_samples[best_idx]
         c_best = c_samples[best_idx]
         v_sys_best = v_sys_samples[best_idx]
-        Re_best = Re_samples[best_idx]
+        Re_best = Re_samples[best_idx] if self.inf_Re else Re_kpc
         f_bulge_best = f_bulge_samples[best_idx]
         a_best = a_samples[best_idx]
         sigma_scale_best = sigma_scale_samples[best_idx]
         inc_best = inc_samples[best_idx] if self.inf_inc else inc_rad
         phi_delta_best = phi_delta_samples[best_idx] if self.inf_phi_delta else 0.0
         sigma0_best = sigma0_samples[best_idx]
-        sigma_mstar_scale_best = sigma_mstar_scale_samples[best_idx] if "sigma_mstar_scale" in var_names else None
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
@@ -677,7 +671,6 @@ class DmNfw:
             print(f" Best f_bulge       : {f_bulge_best:.3f}")
             print(f" Best a             : {a_best:.3f} kpc")
             print(f" Best sigma_scale   : {sigma_scale_best:.3f}")
-            print(f" Best sigma_mstar_scale : {sigma_mstar_scale_best:.3f}") if "sigma_mstar_scale" in var_names else None
             print(f"--- median estimates ---")
             print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})")
             print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
@@ -768,7 +761,7 @@ class DmNfw:
         vel_sys: float,
         inc_rad: float,
         phi_map: np.ndarray,
-        star_mass_map: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None,
+        star_mass_param: Tuple[np.ndarray, np.ndarray, np.ndarray] = None,
     ):
-        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map, star_mass_map=star_mass_map)
+        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map, star_mass_param=star_mass_param)
 

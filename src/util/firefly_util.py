@@ -78,7 +78,7 @@ class FireflyUtil:
         return linear_density, linear_density_err
 
     # HDU11: STELLAR MASS
-    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass. 
+    # Stellar mass, and associated error, derived from the full spectral fit for each Voronoi cell. Different to the global stellar mass.
     # The first two channels give the stellar mass and error per spaxel, the last two channels give the total stellar mass and error of the Voronoi cell.
     # shape: (10735, 2800, 4)
     def get_stellar_mass_cell(self, plateifu: str) -> tuple[np.ndarray, np.ndarray]:
@@ -91,17 +91,17 @@ class FireflyUtil:
 
         data_row = data[row_idx, :, :]  # shape: (2800, 4)
 
-        mass = data_row[:, 2]  # total stellar mass of Voronoi cell in log(M⊙)
-        mass_err = data_row[:, 3]  # error in log(M⊙)
+        mass_log = data_row[:, 2]  # total stellar mass of Voronoi cell in log(M⊙)
+        mass_log_err = data_row[:, 3]  # error in log(M⊙)
 
-        linear_mass = 10**mass  # convert log(M⊙) to M⊙
-        linear_mass_err = linear_mass * np.log(10) * mass_err  # propagate error
-        return linear_mass, linear_mass_err
+        mass = 10**mass_log  # convert log(M⊙) to M⊙
+        mass_err = mass * np.log(10) * mass_log_err  # propagate error
+        return mass, mass_err
 
 
     # HDU4: SPATIAL INFORMATION (VORONOI CELL)
     # bin number
-    # x-position, y-position and, in elliptical polar coordinates, 
+    # x-position, y-position and, in elliptical polar coordinates,
     # radius (in units of effective radius) and azimuth for each Voronoi cell.
     # shape: (10735, 2800, 5)
     def get_spatial_info(self, plateifu: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

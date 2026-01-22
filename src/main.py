@@ -12,9 +12,9 @@ from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
-from stellar import Stellar
-from vel_rot import VelRot
+from rc import RotCurve
 from dm import DmNfw
+from star import Star
 
 root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / "data"
@@ -30,13 +30,10 @@ VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
 DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD1 = 0.07  # threshold for first fitting
-NRMSE_THRESHOLD2 = 0.05  # tighter threshold for second fitting
-CHI_SQ_V_THRESHOLD1 = 5.0  # looser threshold for first fitting
-CHI_SQ_V_THRESHOLD2 = 3.0  # threshold for reduced chi-squared to filter weak fitting
-VEL_OBS_COUNT_THRESHOLD1 = 150  # minimum number of valid velocity data points
-VEL_OBS_COUNT_THRESHOLD2 = 100  # minimum number of valid velocity data points
-RMAX_RT_FACTOR = 2.5  # factor to determine maximum radius for fitting
+NRMSE_THRESHOLD = 0.1
+CHI_SQ_V_THRESHOLD = 10.0
+VEL_OBS_COUNT_THRESHOLD = 150
+RMAX_RT_FACTOR = 2  # factor to determine maximum radius for fitting
 
 csv_lock = Lock()
 
@@ -110,7 +107,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
+    vel_rot = RotCurve(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
@@ -146,9 +143,9 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     data_count = np.sum(np.isfinite(V_obs_map))
     NRMSE = float(fit_params['NRMSE'])
     CHI_SQ_V = float(fit_params['CHI_SQ_V'])
-    if data_count < VEL_OBS_COUNT_THRESHOLD1 or \
-        (NRMSE > NRMSE_THRESHOLD1) or \
-        (CHI_SQ_V > CHI_SQ_V_THRESHOLD1) or \
+    if data_count < VEL_OBS_COUNT_THRESHOLD or \
+        (NRMSE > NRMSE_THRESHOLD) or \
+        (CHI_SQ_V > CHI_SQ_V_THRESHOLD) or \
         (Rmax < Rt * RMAX_RT_FACTOR):
         print(f"First fitting results failure for {PLATE_IFU}, data amount: {data_count}, "
               f"NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, "
@@ -161,16 +158,25 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
 
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
 
-    stellar = Stellar(drpall_util, firefly_util, maps_util)
-    stellar.set_PLATE_IFU(PLATE_IFU)
+    star = Star(drpall_util, firefly_util, maps_util)
+    star.set_PLATE_IFU(PLATE_IFU)
+    radius_star, mass_star, std_err_star = star.get_star_mass_map()
+    Re_kpc = star.get_Re_kpc()
+
+    star_mass_result = {
+        'radius': radius_star,
+        'mass_star': mass_star,
+        'std_err_star': std_err_star,
+        'Re_kpc': Re_kpc
+    }
+
 
     #--------------------------------------------------------
     # DM NFW fitting
     #--------------------------------------------------------
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
-    dm_nfw.set_stellar_util(stellar)
-    dm_nfw.set_plot_enable(debug)
+    dm_nfw.set_plot_enable(False)
     dm_nfw.set_inf_debug(debug)
 
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,
@@ -178,7 +184,8 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
                                                         ivar_obs=ivar_obs_map,
                                                         vel_sys=vel_sys_fit,
                                                         inc_rad=inc_rad_fit,
-                                                        phi_map=phi_map)
+                                                        phi_map=phi_map,
+                                                        star_mass_param=star_mass_result)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")

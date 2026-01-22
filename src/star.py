@@ -30,7 +30,7 @@ from util.plot_util import PlotUtil
 RADIUS_MIN_KPC = 0.1  # kpc
 G = const.G.to('kpc km2 / (Msun s2)').value  # gravitational constant in kpc km^2 / (M_sun s^2)
 
-class Stellar:
+class Star:
     drpall_util = None
     firefly_util = None
     maps_util = None
@@ -57,16 +57,19 @@ class Stellar:
         ratio = np.median(ratio_r[~np.isnan(ratio_r)])
         return ratio
 
-    def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
+
+    def _get_Re_kpc(self, PLATE_IFU: str) -> float:
         _r_arcsec_map, _r_h_kpc_map, _ = self.maps_util.get_radius_map()
-
-        effective_radius = self.drpall_util.get_effective_radius(PLATE_IFU)
-
-        radius_arcsec_map = radius_eff_map * effective_radius
+        Re_arcsec = self.drpall_util.get_effective_radius(PLATE_IFU)
         ratio_r = self.calc_r_ratio_to_h_kpc(_r_arcsec_map, _r_h_kpc_map)
 
-        radius_h_kpc_map = radius_arcsec_map * ratio_r
-        return radius_h_kpc_map
+        Re_kpc = Re_arcsec * ratio_r
+        return Re_kpc
+
+
+    def _calc_radius_to_h_kpc(self, PLATE_IFU, radius_eff_map):
+        Re_kpc = self._get_Re_kpc(PLATE_IFU)
+        return radius_eff_map * Re_kpc
 
 
     ################################################################################
@@ -106,7 +109,7 @@ class Stellar:
     # f_bulge: bulge mass fraction
     # a: Hernquist scale radius
     # V_star^2 = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) K_0(y) - I_1(y) K_1(y)]
-    def _stellar_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float, a: float) -> np.ndarray:
+    def _star_vel_sq_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float, a: float) -> np.ndarray:
         Rd = Re / 1.678
         MB = f_bulge * M_star
         MD = (1 - f_bulge) * M_star
@@ -117,26 +120,26 @@ class Stellar:
         return v_baryon_sq
 
     # Formula: M(r) = MB * r^2 / (r + a)^2 + MD * (1 - (1 + r / rd) * exp(-r / rd))
-    def _stellar_mass_bulge_profile(self, r: np.ndarray, MB: float, a: float,) -> np.ndarray:
+    def _star_mass_bulge_profile(self, r: np.ndarray, MB: float, a: float,) -> np.ndarray:
         bulge_mass = MB * np.square(r) / np.square(r + a)
         return bulge_mass
 
-    def _stellar_mass_disk_profile(self, r: np.ndarray, MD: float, rd: float) -> np.ndarray:
+    def _star_mass_disk_profile(self, r: np.ndarray, MD: float, rd: float) -> np.ndarray:
         disk_mass = MD * (1.0 - (1.0 + r / rd) * np.exp(-r / rd))
         return disk_mass
 
-    def _stellar_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
+    def _star_mass_profile(self, r: np.ndarray, M_star: float, Re: float, f_bulge: float=None, a: float=None) -> np.ndarray:
         Rd = Re / 1.678
 
         if f_bulge:
             MB = f_bulge * M_star
             MD = (1 - f_bulge) * M_star
-            bulge_mass = self._stellar_mass_bulge_profile(r, MB, a)
+            bulge_mass = self._star_mass_bulge_profile(r, MB, a)
         else:
             MD = M_star
             bulge_mass = 0
 
-        disk_mass = self._stellar_mass_disk_profile(r, MD, Rd)
+        disk_mass = self._star_mass_disk_profile(r, MD, Rd)
         total_mass = bulge_mass + disk_mass
         return total_mass
 
@@ -173,18 +176,18 @@ class Stellar:
         return r_bins, mass_r, mass_err_r
 
 
-    def _get_stellar_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
-        mass_stellar_cell, mass_stellar_cell_err = self.firefly_util.get_stellar_mass_cell(PLATE_IFU)
-        print(f"Stellar Mass shape: {mass_stellar_cell.shape}, Unit: M solar, total: {np.nansum(mass_stellar_cell):,.1f} M solar")
+    def _get_star_mass(self, PLATE_IFU: str) -> tuple[np.ndarray, np.ndarray]:
+        mass_star_cell, mass_star_cell_err = self.firefly_util.get_stellar_mass_cell(PLATE_IFU)
+        print(f"Stellar Mass shape: {mass_star_cell.shape}, Unit: M solar, total: {np.nansum(mass_star_cell):,.1f} M solar")
 
         _radius_eff, azimuth = self.firefly_util.get_radius_eff(PLATE_IFU)
-        radius_eff_map, mass_map, mass_err_map = self._calc_mass_of_radius(mass_stellar_cell, mass_stellar_cell_err, _radius_eff)
+        radius_eff_map, mass_map, mass_err_map = self._calc_mass_of_radius(mass_star_cell, mass_star_cell_err, _radius_eff)
         radius_h_kpc_map = self._calc_radius_to_h_kpc(PLATE_IFU, radius_eff_map)
 
         return radius_h_kpc_map, mass_map, mass_err_map
 
 
-    def _fit_stellar_mass(self, radius: np.ndarray, mass_map: np.ndarray, std_err: np.ndarray) -> tuple[float, float, float, float]:
+    def _fit_star_mass(self, radius: np.ndarray, mass_map: np.ndarray, std_err: np.ndarray) -> tuple[float, float, float, float]:
         # Filter valid data
         valid_mask = (np.isfinite(radius))
         valid_mask &= (np.isfinite(mass_map))
@@ -229,12 +232,12 @@ class Stellar:
             def model_func(r, Re_n, f_bulge_n, a_n):
                 params_norm = Re_n, f_bulge_n, a_n
                 Re, f_bulge, a = _denormalize_params(params_norm)
-                return self._stellar_mass_profile(r, mass_star_total, Re, f_bulge, a)
+                return self._star_mass_profile(r, mass_star_total, Re, f_bulge, a)
         else:
             def model_func(r, Re_n):
                 params_norm = Re_n,
                 Re = _denormalize_params(params_norm)
-                return self._stellar_mass_profile(r, mass_star_total, Re)
+                return self._star_mass_profile(r, mass_star_total, Re)
 
         if self.fit_bulge:
             initial_guess = [0.5, 0.5, 0.5]  # normalized initial guess
@@ -281,7 +284,7 @@ class Stellar:
         Re_err = Re_err[0]
         Re_err_pct = (Re_err / Re_fit) * 100.0 if Re_fit != 0 else np.nan
 
-        mass_star_map_fit = self._stellar_mass_profile(radius_valid, mass_star_total, Re_fit)
+        mass_star_map_fit = self._star_mass_profile(radius_valid, mass_star_total, Re_fit)
         M_star_fit = np.nanmax(mass_star_map_fit)
 
         if self.fit_debug:
@@ -313,14 +316,20 @@ class Stellar:
         self.PLATE_IFU = PLATE_IFU
         return
 
-    def get_stellar_mass_total(self):
-        _, mass_map, _ = self._get_stellar_mass(self.PLATE_IFU)
+    def get_Re_kpc(self):
+        return self._get_Re_kpc(self.PLATE_IFU)
+
+    def get_star_mass_map(self):
+        return self._get_star_mass(self.PLATE_IFU)
+
+    def get_star_mass_total(self):
+        _, mass_map, _ = self._get_star_mass(self.PLATE_IFU)
         mass_star_total = np.nanmax(mass_map)
         return mass_star_total
 
-    def fit_stellar_mass(self):
-        radius_map, mass_map, std_err_map = self._get_stellar_mass(self.PLATE_IFU)
-        return self._fit_stellar_mass(radius_map, mass_map, std_err_map)
+    def fit_star_mass(self):
+        radius_map, mass_map, std_err_map = self._get_star_mass(self.PLATE_IFU)
+        return self._fit_star_mass(radius_map, mass_map, std_err_map)
 
 ######################################################
 # main function for test
@@ -339,15 +348,17 @@ def main() -> None:
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    stellar = Stellar(drpall_util, firefly_util, maps_util)
+    star = Star(drpall_util, firefly_util, maps_util)
 
     _, radius_h_kpc_map, _ = maps_util.get_radius_map()
     radius_max = np.nanmax(radius_h_kpc_map)
 
-    stellar.set_PLATE_IFU(PLATE_IFU)
+    star.set_PLATE_IFU(PLATE_IFU)
 
-    stellar_mass, stellar_Re = stellar.fit_stellar_mass()
-    print(f"Stellar fit mass: {stellar_mass:.3e} M solar, Re: {stellar_Re:.2f} kpc/h")
+    fit_results = star.fit_star_mass()
+    star_mass = fit_results['Mstar']
+    star_Re = fit_results['Re']
+    print(f"Stellar fit mass: {star_mass:.3e} M solar, Re: {star_Re:.2f} kpc/h")
     print("")
     return
 

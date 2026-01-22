@@ -8,10 +8,8 @@ import numpy as np
 from astropy.io import fits
 from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
-from scipy import stats
 from scipy.optimize import curve_fit, minimize
-from lmfit import Model, Parameters
-from matplotlib import colors
+from lmfit import Model
 
 # my imports
 from util import plot_util
@@ -32,11 +30,11 @@ PHI_DEG_THRESHOLD = 45.0
 IVAR_RATIO_THRESHOLD = 0.10  # drop the worst 10% of ivar values
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD = 0.08  # threshold for first fitting
-CHI_SQ_V_THRESHOLD = 5.0  # looser threshold for first fitting
+NRMSE_THRESHOLD = 0.10
+CHI_SQ_V_THRESHOLD = 10.0
 VEL_OBS_COUNT_THRESHOLD = 150  # minimum number of valid velocity data points
 
-RADIUS_MIN_KPC = 0.1  # kpc/h
+RADIUS_MIN_KPC = 0.01  # kpc/h
 BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
 VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
 
@@ -48,7 +46,7 @@ data_dir = root_dir / "data"
 # class
 ######################################################################
 
-class VelRot:
+class RotCurve:
     drpall_util = None
     firefly_util = None
     maps_util = None
@@ -385,22 +383,15 @@ class VelRot:
         # Best-fit model from lmfit
         vel_obs_model = lm_result.best_fit
         residuals = np.abs(vel_obs_valid) - np.abs(vel_obs_model)
+        # RMSE and NRMSE
+        rmse = float(np.sqrt(np.nanmean(residuals**2)))
+        nrmse = float(rmse / np.nanmean(np.abs(vel_obs_valid)))
 
-        # Basic fit metrics
-        CHI_SQ_V = float(lm_result.redchi)  # reduced chi-squared from lmfit
+        # Reduced Chi-Squared
+        redchi = float(lm_result.redchi)  # reduced chi-squared from lmfit
         # Inflate uncertainties if reduced chi-squared > 1
-        F_factor = float(np.maximum(np.sqrt(CHI_SQ_V), 1.0))
+        F_factor = float(np.maximum(np.sqrt(redchi), 1.0))
 
-        RMSE = float(np.sqrt(np.nanmean(residuals**2)))
-        NRMSE = float(RMSE / np.nanmean(np.abs(vel_obs_valid)))
-
-        # Covariance / correlation from lmfit
-        if lm_result.covar is not None and np.shape(lm_result.covar) == (6, 6):
-            pcov = np.array(lm_result.covar, dtype=float)
-            COR_MATRIX = pcov / np.outer(np.sqrt(np.diag(pcov)), np.sqrt(np.diag(pcov)))
-        else:
-            pcov = None
-            COR_MATRIX = None
 
         # Parameter standard errors (from lmfit), then scale to physical units + optional inflation
         def _stderr(name: str) -> float:
@@ -440,11 +431,11 @@ class VelRot:
             print("--------------")
             print(f" Calc inc from b/a      : {inc_act:.1e} rad, {np.degrees(inc_act):.2f} deg")
             print("--------------")
-            print(f" Reduced Chi-Squared    : {CHI_SQ_V:.2f}")
-            print(f" RMSE                   : {RMSE:.3f} km/s")
-            print(f" NRMSE                  : {NRMSE:.3f}")
-            print(f" Correlation Matrix     : \n{COR_MATRIX if COR_MATRIX is not None else 'N/A'}")
-            print(f" Fit report             : \n{lm_result.fit_report()}")
+            print(f" Reduced Chi-Squared    : {redchi:.2f}")
+            print(f" NRMSE                  : {nrmse:.3f}")
+            print(f"correlation matrix      : \n{lm_result.covar}")
+            # print("--------------")
+            # print(f" Fit report             : \n{lm_result.fit_report()}")
             print("--------------------------------------------------------------------\n")
 
 
@@ -469,14 +460,14 @@ class VelRot:
             # calulate stderr manually if eval_uncertainty fails
             print("Exception: lmfit eval_uncertainty failed, calculating stderr manually...")
             # Numerical derivatives for uncertainty propagation
-            vel_fit_stderr = RMSE / np.sqrt(len(vel_obs_valid)) * np.ones_like(vel_rot_fitted)
+            vel_fit_stderr = rmse / np.sqrt(len(vel_obs_valid)) * np.ones_like(vel_rot_fitted)
 
         # Apply filter to output maps
         residuals = np.abs(vel_obs_valid) - np.abs(vel_obs_model)
         stderr = np.sqrt(1.0 / ivar_map_valid + (VEL_SYSTEM_ERROR)**2)
         STD_ERROR_RATIO = 3.0
-        STD_ERROR_RATIO = RMSE / SIGMA_OBS_BAR if SIGMA_OBS_BAR > 0 else np.nan
-        print(f"SIGMA_OBS_BAR: {SIGMA_OBS_BAR:.3f} km/s, RMSE: {RMSE:.3f} km/s, STD_ERROR_RATIO: {STD_ERROR_RATIO:.3f}")
+        STD_ERROR_RATIO = rmse / SIGMA_OBS_BAR if SIGMA_OBS_BAR > 0 else np.nan
+        print(f"SIGMA_OBS_BAR: {SIGMA_OBS_BAR:.3f} km/s, RMSE: {rmse:.3f} km/s, STD_ERROR_RATIO: {STD_ERROR_RATIO:.3f}")
         clip_mask_1d = np.abs(residuals) <= STD_ERROR_RATIO * stderr
 
         # Map the 1D mask (for valid points) back to the original map shape
@@ -510,9 +501,9 @@ class VelRot:
             'inc': f"{inc_fit:.2f}",
             'phi_delta': f"{phi_delta_fit:.3f}",
             'Rmax': f"{R_max:.3f}",
-            'RMSE': f"{RMSE:.3f}",
-            'NRMSE': f"{NRMSE:.3f}",
-            'CHI_SQ_V': f"{CHI_SQ_V:.2f}",
+            'RMSE': f"{rmse:.3f}",
+            'NRMSE': f"{nrmse:.3f}",
+            'CHI_SQ_V': f"{redchi:.2f}",
         }
         return True, fit_result, fit_parameters
 
@@ -568,7 +559,7 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     maps_util = MapsUtil(maps_file)
     plot_util = PlotUtil(fits_util)
 
-    vel_rot = VelRot(drpall_util, firefly_util, maps_util, plot_util=None)
+    vel_rot = RotCurve(drpall_util, firefly_util, maps_util, plot_util=None)
     vel_rot.set_PLATE_IFU(PLATE_IFU)
     vel_rot.set_fit_debug(debug=True)
 

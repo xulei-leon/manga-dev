@@ -16,6 +16,7 @@ import numpy as np
 from scipy.optimize import brentq
 import pymc as pm
 import arviz as az
+import pytensor
 import pytensor.tensor as pt
 from astropy import constants as const
 import matplotlib.pyplot as plt
@@ -69,7 +70,6 @@ def _get_ppc_dataset(idata):
         return ppc
     except Exception as exc:
         raise AttributeError("posterior_predictive group not found on inference data") from exc
-
 
 class DmNfw:
     drpall_util: DrpallUtil
@@ -176,29 +176,30 @@ class DmNfw:
         Re_kpc = star_mass_param['Re_kpc']
         print(f"Stellar Mass Re: {Re_kpc:.2f} kpc")
 
-        star_mask = (np.isfinite(radius_star) & np.isfinite(mass_star) & np.isfinite(std_err_star))
-        radius_star_valid = np.asarray(radius_star[star_mask], dtype=float)
-        mass_star_valid = np.asarray(mass_star[star_mask], dtype=float)
-        stderr_star_valid = np.asarray(std_err_star[star_mask], dtype=float)
-        mass_star_total = np.nanmax(mass_star_valid)
-        print(f"Total stellar mass from mass profile: {mass_star_total:.2e} Msun")
+        star_obs_mask = (np.isfinite(radius_star) & np.isfinite(mass_star) & np.isfinite(std_err_star))
+        radius_star_obs_valid = np.asarray(radius_star[star_obs_mask], dtype=float)
+        mass_star_obs_valid = np.asarray(mass_star[star_obs_mask], dtype=float)
+        stderr_star_obs_valid = np.asarray(std_err_star[star_obs_mask], dtype=float)
+        mass_star_obs_total = np.nanmax(mass_star_obs_valid)
+        print(f"Total stellar mass from mass profile: {mass_star_obs_total:.2e} Msun")
 
         # stellar mass
         Mstar_elpetro, Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
         print (f"Stellar mass from DRPALL: Mstar_elpetro={Mstar_elpetro:.2e} Msun, Mstar_sersic={Mstar_sersic:.2e} Msun")
 
         if self.like_mstar:
-            Mstar_expect = mass_star_total  # use the max mass from the mass profile as the expected Mstar
+            Mstar_obs = mass_star_obs_total
         else:
-            Mstar_expect = Mstar_elpetro if Mstar_elpetro is not None else Mstar_sersic
+            Mstar_obs = Mstar_elpetro if Mstar_elpetro is not None else Mstar_sersic
+
+        # estimate M200 from Mstar
+        Mmin=1e9
+        Mmax=1e15
+        M200_est = self._calc_M200_from_Mstar(Mstar_obs, Mmin=Mmin, Mmax=Mmax)
 
         Re = Re_kpc
 
         z = self._get_z()
-
-        Mmin=1e9
-        Mmax=1e15
-        M200_expect = self._calc_M200_from_Mstar(Mstar_expect, Mmin=Mmin, Mmax=Mmax)  # expected M200 from Mstar
 
         # get H(z) in km/s/kpc
         Hz = self._calc_Hz_kpc(z)
@@ -261,6 +262,12 @@ class DmNfw:
             mass_total = mass_bulge + mass_disk
             return mass_total
 
+        # Moster-like SHMR
+        def Mstar_from_M200(M200, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+            x = M200 / M1
+            f = 2.0 * N / (x**(-beta) + x**(gamma))
+            return f * M200
+
         # r200 closure (kpc) from M200 and Hz
         def r200_from_M200(M200):
             return (G_kpc_kms_Msun * M200 / (100.0 * Hz ** 2)) ** (1.0 / 3.0)
@@ -314,13 +321,22 @@ class DmNfw:
             # ------------------------------------------
             # prior distributions
             # ------------------------------------------
-            Mstar_log_mu = pt.log(Mstar_expect)
-            Mstar_t = pm.LogNormal("Mstar", mu=Mstar_log_mu, sigma=0.04*pt.log(10))
+            # Mstar is the total stellar mass for the galaxy with infinity radius
+            # Mstar_obs is only observed up to a certain radius
 
-            # M200 prior:
-            # M200 mu from SHMR relation
-            M200_log_mu = pt.log(M200_expect)
-            M200_t = pm.LogNormal("M200", mu=M200_log_mu, sigma=0.3*pt.log(10))  # 0.3 dex scatter in SHMR
+            # M200 prior (Broad uninformative prior)
+            # Center it around a reasonable value like 10^12 Msun, but allow large width to let data/SHMR decide
+            M200_log_t = pm.Normal("M200_log10", mu=12.0, sigma=1.0)
+            M200_t = pm.Deterministic("M200", 10**M200_log_t)
+
+            # Mstar prior
+            # SHMR Constraint (Relationship between Mstar and M200)
+            # Apply Moster relation forward (M200 -> Mstar)
+            Mstar_mu = Mstar_from_M200(M200_t)
+            Mstar_log_mu = pt.log10(Mstar_mu)
+            Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.3)
+            Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=Mstar_log_sigma_t)
+            Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
             # c prior: log-normal prior
             # soft constraint on c from M200-c relation
@@ -392,37 +408,29 @@ class DmNfw:
             # then allow a global scaling factor to absorb underestimated/overestimated uncertainties.
             # This is often more realistic than treating ivar as perfectly calibrated.
             sigma_obs_t = pm.Deterministic("sigma_obs", sigma_scale_t * stderr_obs_valid)
-
-            v_obs_like = pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
+            rc_like = pm.Normal("v_obs", mu=v_obs_model_t, sigma=sigma_obs_t, observed=vel_obs_valid)
 
             # ------------------------------------------
             # likelihood: stellar mass profile
             # ------------------------------------------
             if self.like_mstar:
-                w_star = pt.as_tensor_variable(0.3)
-                r_star = radius_star_valid
+                w_mstar = pt.as_tensor_variable(0.3)
+                r_star = radius_star_obs_valid
                 m_star_model_t = pm.Deterministic("m_star_model", mass_star_profile(r_star, Mstar_t, Re_t, f_bulge_t, a_t))
                 sigma_star_obs_t = pm.HalfNormal("sigma_star_obs", sigma=0.3)
-                mass_star_obs_t = pt.as_tensor_variable(pt.maximum(mass_star_valid, 1e-6))
-                m_star_obs_like = pm.LogNormal("m_star_obs", mu=pt.log(m_star_model_t), sigma=sigma_star_obs_t, observed=mass_star_obs_t)
-                pm.Potential("m_star_obs_weighted", (w_star - 1.0) * pm.logp(m_star_obs_like, mass_star_obs_t))
+                sigma_star_eff_t = pm.Deterministic("sigma_star_eff", sigma_star_obs_t / pt.sqrt(w_mstar))
+                mass_star_obs_t = pt.as_tensor_variable(pt.maximum(mass_star_obs_valid, 1e-6))
+                mstar_like = pm.LogNormal("m_star_obs", mu=pt.log(m_star_model_t), sigma=sigma_star_eff_t, observed=mass_star_obs_t)
 
             # ------------------------------------------
             # potential
             # ------------------------------------------
-            w_vel = pt.as_tensor_variable(1.0)
-            pm.Potential("v_obs_weighted", (w_vel - 1.0) * pm.logp(v_obs_like, vel_obs_valid))
+            w_rc_like = pt.as_tensor_variable(1.0)
+            pm.Potential("rc_like_weighted", (w_rc_like - 1.0) * pm.logp(rc_like, vel_obs_valid))
 
             if self.like_mstar:
-                w_star = pt.as_tensor_variable(0.3)
-                pm.Potential("v_obs_weighted", (w_vel - 1.0) * pm.logp(v_obs_like, vel_obs_valid))
-
-            # Penalize regions where v_rot_sq < 0 to discourage unphysical solutions.
-            #
-            # neg_term = pt.maximum(-v_rot_sq_t, 0.0)
-            # tau_penalty = 1e-4
-            # penalty_val = -1.0 * (neg_term**2) / (2.0 * tau_penalty**2)
-            # pm.Potential("v_rot_sq_penalty", pt.sum(penalty_val))
+                w_mstar = pt.as_tensor_variable(0.3)
+                pm.Potential("mstar_like_weighted", (w_mstar - 1.0) * pm.logp(mstar_like, mass_star_obs_valid))
 
             # ------------------------------------------
             # sampling options & run
@@ -668,8 +676,8 @@ class DmNfw:
             print("--- LOO ---")
             print(f"{model_loo}")
             print("--- Expectation ---")
-            print(f"Mstar Expect        : {Mstar_expect:.3e} Msun")
-            print(f"M200 Expect         : {M200_expect:.3e} Msun")
+            print(f"Mstar Expect        : {Mstar_obs:.3e} Msun")
+            print(f"M200 Expect         : {M200_est:.3e} Msun")
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")
@@ -702,7 +710,7 @@ class DmNfw:
             print(f" Calc: c            : {c_calc:.3f}")
             print(f" Calc: v_sys        : {vel_sys:.3f} km/s")
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
-            print(f" Stellar Mass       : {Mstar_expect:.3e} Msun")
+            print(f" Stellar Mass       : {Mstar_obs:.3e} Msun")
             print("--- diagnostics ---")
             print(f" Reduced Chi (Best) : {redchi_best:.3f}")
             print(f" NRMSE (Best)       : {nrmse_best:.3f}")

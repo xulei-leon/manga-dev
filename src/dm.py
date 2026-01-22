@@ -323,26 +323,23 @@ class DmNfw:
             # ------------------------------------------
             # Mstar is the total stellar mass for the galaxy with infinity radius
             # Mstar_obs is only observed up to a certain radius
-
-            # M200 prior (Broad uninformative prior)
-            # Center it around a reasonable value like 10^12 Msun, but allow large width to let data/SHMR decide
-            M200_log_t = pm.Normal("M200_log10", mu=12.0, sigma=1.0)
-            M200_t = pm.Deterministic("M200", 10**M200_log_t)
-
             # Mstar prior
-            # SHMR Constraint (Relationship between Mstar and M200)
-            # Apply Moster relation forward (M200 -> Mstar)
-            Mstar_mu = Mstar_from_M200(M200_t)
+            Mstar_mu = Mstar_obs / 0.8
             Mstar_log_mu = pt.log10(Mstar_mu)
             Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.3)
             Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=Mstar_log_sigma_t)
             Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
+            # M200 prior
+            M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
+            M200_t = pm.Deterministic("M200", 10**M200_log_t)
+
             # c prior: log-normal prior
-            # soft constraint on c from M200-c relation
-            c_expect = c_from_M200(M200_t, h=H)
-            c_log_mu = pt.log(c_expect)
-            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=0.1*pt.log(10))
+            # Independent of M200. Set median to 5.0, which is typical for galaxies.
+            c_mu = 10.0
+            c_log_mu = pt.log(c_mu)
+            c_log_sigma_t = pm.HalfNormal("c_log_sigma", sigma=0.6)
+            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=c_log_sigma_t)
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))

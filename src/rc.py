@@ -3,6 +3,7 @@ from calendar import c
 from pathlib import Path
 from tabnanny import check
 from tkinter import N
+import tomllib
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -23,24 +24,34 @@ from util.plot_util import PlotUtil
 ######################################################################
 # constants definitions
 ######################################################################
+# Load configuration file
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+    if not config:
+        raise ValueError("Error: config.toml file is empty")
+
+# get settings from config
+data_directory = config.get("file", {}).get("data_directory", "data")
+
 # Thresholds for filtering velocity data points
-SNR_THRESHOLD = 10.0
-PHI_DEG_THRESHOLD = 45.0
-# GSIGMA_THRESHOLD = 100.0  # km/s
-IVAR_RATIO_THRESHOLD = 0.10  # drop the worst 10% of ivar values
+SNR_THRESHOLD = config.get("thresholds", {}).get("SNR_THRESHOLD", 10.0)
+PHI_DEG_THRESHOLD = config.get("thresholds", {}).get("PHI_DEG_THRESHOLD", 45.0)
+IVAR_RATIO_THRESHOLD = config.get("thresholds", {}).get("IVAR_RATIO_THRESHOLD", 0.10)  # drop the worst 10% of ivar values
 
 # Thresholds for filtering fitting results
-NRMSE_THRESHOLD = 0.10
-CHI_SQ_V_THRESHOLD = 10.0
-VEL_OBS_COUNT_THRESHOLD = 150  # minimum number of valid velocity data points
+NRMSE_THRESHOLD = config.get("thresholds", {}).get("NRMSE_THRESHOLD", 0.10)
+CHI_SQ_V_THRESHOLD = config.get("thresholds", {}).get("CHI_SQ_V_THRESHOLD", 10.0)
+VEL_OBS_COUNT_THRESHOLD = config.get("thresholds", {}).get("VEL_OBS_COUNT_THRESHOLD", 150)  # minimum number of valid velocity data points
 
-RADIUS_MIN_KPC = 0.01  # kpc/h
-BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
-VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
+# fit parameters
+RADIUS_MIN_KPC = config.get("rc", {}).get("RADIUS_MIN_KPC", 0.01)  # kpc/h
+BA_0 = config.get("rc", {}).get("BA_0", 0.2)  # intrinsic axis ratio for inclination calculation
+VEL_SYSTEM_ERROR = config.get("rc", {}).get("VEL_SYSTEM_ERROR", 5.0)  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 root_dir = Path(__file__).resolve().parent.parent
-data_dir = root_dir / "data"
+data_dir = root_dir / data_directory
+data_dir.mkdir(parents=True, exist_ok=True)
 
 ######################################################################
 # class

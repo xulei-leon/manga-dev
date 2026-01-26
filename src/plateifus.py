@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -8,12 +9,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from util.drpall_util import DrpallUtil
 from util.fits_util import FitsUtil
 
+# Load configuration file
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+    if not config:
+        raise ValueError("Error: config.toml file is empty")
 
-INC_MIN = 25.0  # minimum inclination angle in degrees
-INC_MAX = 70.0  # maximum inclination angle in degrees
+# get settings from config
+data_directory = config.get("file", {}).get("data_directory", "data")
+INC_MIN = config.get("plateifus", {}).get("INC_MIN", 25.0)  # minimum inclination angle in degrees
+INC_MAX = config.get("plateifus", {}).get("INC_MAX", 70.0)  # maximum inclination angle in degrees
 
 root_dir = Path(__file__).resolve().parent.parent
-data_dir = root_dir / "data"
+data_dir = root_dir / data_directory
+data_dir.mkdir(parents=True, exist_ok=True)
+
+
 fits_util = FitsUtil(data_dir)
 
 def galaxy_filter():

@@ -1,0 +1,25 @@
+debug_mode = true
+log_level = "INFO"
+
+[file]
+data_directory = "data"
+result_directory = "results"
+rc_param_filename = "rc_param.csv"
+nfw_param_filename = "nfw_param.csv"
+
+[thresholds]
+INC_MIN = 25.0  # minimum inclination angle in degrees
+INC_MAX = 70.0  # maximum inclination angle in degrees
+NRMSE_THRESHOLD = 0.1
+CHI_SQ_V_THRESHOLD = 10.0
+VEL_OBS_COUNT_THRESHOLD = 150
+RMAX_RT_FACTOR = 2
+SNR_THRESHOLD = 10.0
+PHI_DEG_THRESHOLD = 45.0
+IVAR_RATIO_THRESHOLD = 0.10  # drop the worst 10% of ivar values
+INFER_RHAT_THRESHOLD = 1.05
+
+[rc]
+RADIUS_MIN_KPC = 0.01  # kpc/h
+BA_0 = 0.2  # intrinsic axis ratio for inclination calculation
+VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements

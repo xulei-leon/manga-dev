@@ -3,8 +3,8 @@ import os
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from threading import Lock
 import gc
+import tomllib
 
 # my imports
 from util.maps_util import MapsUtil
@@ -16,49 +16,54 @@ from rc import RotCurve
 from dm import DmNfw
 from star import Star
 
+# Load configuration file
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+    if not config:
+        raise ValueError("Error: config.toml file is empty")
+
+# get settings from config
+data_directory = config.get("file", {}).get("data_directory", "data")
+result_directory = config.get("file", {}).get("result_directory", "results")
+VEL_FIT_PARAM_FILENAME = config.get("file", {}).get("rc_param_filename", "rc_param.csv")
+DM_NFW_PARAM_FILENAME = config.get("file", {}).get("nfw_param_filename", "nfw_param.csv")
+
+NRMSE_THRESHOLD = config.get("thresholds", {}).get("NRMSE_THRESHOLD", 0.1)
+CHI_SQ_V_THRESHOLD = config.get("thresholds", {}).get("CHI_SQ_V_THRESHOLD", 10.0)
+VEL_OBS_COUNT_THRESHOLD = config.get("thresholds", {}).get("VEL_OBS_COUNT_THRESHOLD", 150)
+RMAX_RT_FACTOR = config.get("thresholds", {}).get("RMAX_RT_FACTOR", 2)  # factor to determine maximum radius for fitting
+
+# Set up data and result directories
 root_dir = Path(__file__).resolve().parent.parent
-data_dir = root_dir / "data"
-result_dir = data_dir / "results"
+data_dir = root_dir / data_directory
+result_dir = data_dir / result_directory
 data_dir.mkdir(parents=True, exist_ok=True)
 result_dir.mkdir(parents=True, exist_ok=True)
 
 
 fits_util = FitsUtil(data_dir)
 
-VEL_FIT_PARAM_FILENAME = "vel_rot_param.csv"
-VEL_FIT_PARAM_ALL_FILENAME = "vel_rot_param_all.csv"
-DM_NFW_PARAM_FILENAME = "dm_nfw_param.csv"
-
-# Thresholds for filtering fitting results
-NRMSE_THRESHOLD = 0.1
-CHI_SQ_V_THRESHOLD = 10.0
-VEL_OBS_COUNT_THRESHOLD = 150
-RMAX_RT_FACTOR = 2  # factor to determine maximum radius for fitting
-
-csv_lock = Lock()
-
 # Store vel rot fit parameters as CSV file
 def store_params_file(PLATE_IFU: str, fit_parameters: dict, filename:str):
     output_file = result_dir / filename
 
-    with csv_lock:
-        if output_file.exists():
-            try:
-                all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
-            except pd.errors.EmptyDataError:
-                all_fit_parameters = {}
-        else:
+    if output_file.exists():
+        try:
+            all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+        except pd.errors.EmptyDataError:
             all_fit_parameters = {}
+    else:
+        all_fit_parameters = {}
 
-        # clean previous entry
-        if PLATE_IFU in all_fit_parameters:
-            del all_fit_parameters[PLATE_IFU]
+    # clean previous entry
+    if PLATE_IFU in all_fit_parameters:
+        del all_fit_parameters[PLATE_IFU]
 
-        all_fit_parameters[PLATE_IFU] = fit_parameters
+    all_fit_parameters[PLATE_IFU] = fit_parameters
 
-        df = pd.DataFrame.from_dict(all_fit_parameters, orient='index')
-        df.rename_axis('PLATE_IFU', inplace=True)
-        df.to_csv(output_file)
+    df = pd.DataFrame.from_dict(all_fit_parameters, orient='index')
+    df.rename_axis('PLATE_IFU', inplace=True)
+    df.to_csv(output_file)
     return
 
 def get_params_file(PLATE_IFU: str, filename:str):
@@ -67,11 +72,10 @@ def get_params_file(PLATE_IFU: str, filename:str):
     if not output_file.exists():
         return None
 
-    with csv_lock:
-        try:
-            all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
-        except pd.errors.EmptyDataError:
-            return None
+    try:
+        all_fit_parameters = pd.read_csv(output_file, index_col=0).to_dict(orient='index')
+    except pd.errors.EmptyDataError:
+        return None
 
     if PLATE_IFU in all_fit_parameters:
         return all_fit_parameters[PLATE_IFU]
@@ -113,10 +117,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
-    if process_nfw:
-        vel_rot_filename = VEL_FIT_PARAM_FILENAME
-    else:
-        vel_rot_filename = VEL_FIT_PARAM_ALL_FILENAME
+    vel_rot_filename = VEL_FIT_PARAM_FILENAME
 
     #----------------------------------------------------------------------
     # First fitting
@@ -294,12 +295,10 @@ if __name__ == "__main__":
     parser.add_argument('--nfw', type=str, default="on", help='Run dark matter NFW fitting.')
     parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode.')
-    parser.add_argument('--result', type=str, default="results", help='Result directory name.')
 
     args = parser.parse_args()
 
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
-    result_dir = data_dir / args.result if args.result else root_dir / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
 
     main(run_nfw=nfw_enable, ifu=args.ifu, debug=args.debug)

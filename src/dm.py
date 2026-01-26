@@ -11,6 +11,7 @@ Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 from math import inf, log
 import os
 from pathlib import Path
+import tomllib
 
 import numpy as np
 from scipy.optimize import brentq
@@ -26,8 +27,14 @@ from util.drpall_util import DrpallUtil
 H = 1 #0.674  # assuming H0 = 67.4 km/s/Mpc
 G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
-INFER_RHAT_THRESHOLD = 1.05
-VEL_SYSTEM_ERROR = 5.0  # km/s, floor error as systematic uncertainty in velocity measurements
+# Load configuration file
+with open("config.toml", "rb") as f:
+    config = tomllib.load(f)
+    if not config:
+        raise ValueError("Error: config.toml file is empty")
+# thresholds
+INFER_RHAT_THRESHOLD = config.get("thresholds", {}).get("INFER_RHAT_THRESHOLD", 1.05)
+VEL_SYSTEM_ERROR = config.get("rc", {}).get("VEL_SYSTEM_ERROR", 5.0)  # km/s, floor error as systematic uncertainty in velocity measurements
 
 
 def _get_arviz_api():

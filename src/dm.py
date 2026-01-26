@@ -153,10 +153,7 @@ class DmNfw:
         vel_obs_valid = vel_obs[valid_mask]
         ivar_obs_valid = ivar_obs[valid_mask]
         phi_map_valid = phi_map[valid_mask]
-
-        if len(radius_valid) < 50:
-            print("Not enough valid data points for fitting.")
-            return None
+        success = True
 
         print(f"NFW pymc radius valid: range=[{np.min(radius_valid):.2f}, {np.max(radius_valid):.2f}] kpc")
         print(f"NFW pymc vel obs valid {len(vel_obs_valid)}: range=[{np.min(vel_obs_valid):.2f}, {np.max(vel_obs_valid):.2f}] km/s")
@@ -513,7 +510,6 @@ class DmNfw:
         sigma_scale_sd = float(summary.loc["sigma_scale", "sd"])
         sigma_star_obs_sd = float(summary.loc["sigma_star_obs", "sd"]) if self.like_mstar else 0.0
 
-        success = True
         for var in var_names:
             r_hat = float(summary.loc[var, "r_hat"])
             if r_hat > INFER_RHAT_THRESHOLD:
@@ -580,6 +576,7 @@ class DmNfw:
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = c_from_M200(M200_best, h=H)
+
 
         # LOO
         # Request pointwise LOO to include pareto_k values for diagnostics
@@ -728,6 +725,13 @@ class DmNfw:
             plt.tight_layout()
             plt.show()
 
+        # check the inference success
+        if float(np.nanmean(v_rot_best)) <= float(np.nanmean(v_dm_best)):
+            print("Warning: Inferred rotation velocity is less than or equal to dark matter velocity on average. Inference may have failed.")
+            success = False
+        if float(np.nanmean(v_rot_best)) <= float(np.nanmean(v_star_best)):
+            print("Warning: Inferred rotation velocity is less than or equal to stellar velocity on average. Inference may have failed.")
+            success = False
 
         inf_result = {
             'radius': radius_valid,
@@ -747,6 +751,10 @@ class DmNfw:
             'M200_std': M200_sd,
             'c': c_best,
             'c_std': c_sd,
+            'v_rot_mean': float(np.mean(v_rot_best)),
+            'v_dm_mean': float(np.mean(v_dm_best)),
+            'v_star_mean': float(np.mean(v_star_best)),
+            'v_drift_mean': float(np.mean(v_drift_best)),
             'nrmse': nrmse_best,
             'redchi': redchi_best,
             'dev_ppc_p': dev_ppc_p,

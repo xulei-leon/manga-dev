@@ -77,3 +77,6 @@ env/
 
 # data files
 /data
+
+# claude temp files
+tmpclaude*

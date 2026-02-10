@@ -55,10 +55,10 @@ def fit_m200_mstar_mcmc(M200: np.ndarray, Mstar: np.ndarray, draws: int = 800, t
         idata = pm.sample(
             draws=draws,
             tune=tune,
-            chains=2,
-            cores=1,
-            target_accept=0.9,
-            progressbar=False,
+            chains=4,
+            cores=4,
+            target_accept=0.95,
+            progressbar=True,
         )
 
     return idata
@@ -155,7 +155,7 @@ def plot_m200_c():
 
     plt.figure(figsize=(12, 6))
     plt.scatter(M200_raw, c_raw, alpha=0.7, label='Raw', color='black', s=20, linewidths=0.2, edgecolors='k')
-    plt.scatter(M200_raw, c_calc, alpha=0.7, label='Calc (Dutton+14)', color='green', s=20, linewidths=0.2, edgecolors='k')
+    # plt.scatter(M200_raw, c_calc, alpha=0.7, label='Calc (Dutton+14)', color='green', s=20, linewidths=0.2, edgecolors='k')
     if c_fit is not None:
         sort_idx = np.argsort(M200_raw)
         m_sorted = M200_raw[sort_idx]
@@ -218,7 +218,7 @@ def plot_m200_mstar():
 
     plt.figure(figsize=(12, 6))
     plt.scatter(M200, Mstar, alpha=0.7, label='Raw', color='black', s=20, linewidths=0.2, edgecolors='k')
-    plt.scatter(M200, Mstar_calc, alpha=0.7, label='Calc (SHMR)', color='green', linewidths=0.2, edgecolors='k')
+    # plt.scatter(M200, Mstar_calc, alpha=0.7, label='Calc (SHMR)', color='green', linewidths=0.2, edgecolors='k')
     if mstar_fit is not None:
         plt.plot(m_sorted, mstar_fit, color='black', linestyle='-', label='MCMC fit (log-log poly)')
         if mstar_lower is not None and mstar_upper is not None:
@@ -242,7 +242,7 @@ def plot_m200_mstar():
 
 def main():
     plot_m200_c()
-    plot_m200_mstar()
+    # plot_m200_mstar()
     plt.show()
     plt.close()
 

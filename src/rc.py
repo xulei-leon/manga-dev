@@ -10,6 +10,8 @@ from astropy.io import fits
 from astropy.utils.exceptions import AstropyWarning
 import astropy.constants as const
 from scipy.optimize import curve_fit, minimize
+from scipy.signal import fftconvolve
+from scipy.ndimage import zoom
 from lmfit import Model
 
 # my imports
@@ -205,7 +207,7 @@ class RotCurve:
 
     # Formula: V_obs = Vsys + V_rot * (sin(i) * cos(phi - phi_0))
     # Warning: The sign of the calculated velocity may be different from the observed velocity.
-    def _vel_obs_project_profile(self, vel_rot: np.ndarray, vel_sys: float, inc: float, phi_map: np.ndarray) -> np.ndarray:
+    def _vel_los_project_profile(self, vel_rot: np.ndarray, vel_sys: float, inc: float, phi_map: np.ndarray) -> np.ndarray:
         phi_delta = (phi_map + np.pi) % (2 * np.pi)  # phi_map is (phi - phi_0)
 
         correction = np.sin(inc) * np.cos(phi_delta)
@@ -227,6 +229,106 @@ class RotCurve:
         vel_disproject = np.where((phi_delta >= 3*np.pi/2) & (phi_delta < 2*np.pi), np.abs(vel_disproject), vel_disproject)
 
         return vel_disproject
+
+
+    # Calculate the observed velocity from the rotation velocity use PSF(Beam smearing) effect
+    # Flux-weighted Convolution
+    # vel_obs_psf = conv(Vel_los * Flux_eml, PSF) / conv(Flux_eml, PSF)
+    def _calc_vel_obs_psf(
+        self,
+        vel_los: np.ndarray,
+        gflux: np.ndarray,
+        map_shape: tuple[int, int],
+        valid_mask: np.ndarray,
+        high_res_arcsec: float = 0.1,
+        kernel_sigma_mult: float = 4.0,
+    ) -> np.ndarray:
+
+        if len(vel_los.shape) == 1:
+            vel_los_map = np.full(map_shape, np.nan, dtype=float)
+            vel_los_map[valid_mask] = vel_los
+        else:
+            vel_los_map = vel_los
+
+        if len(gflux.shape) == 1:
+            gflux_map = np.full(map_shape, np.nan, dtype=float)
+            gflux_map[valid_mask] = gflux
+        else:
+            gflux_map = gflux
+
+        fwhm = self.maps_util.get_fwhm()
+        if fwhm is None or not np.isfinite(fwhm) or fwhm <= 0:
+            fwhm = 2.5  # Default MaNGA PSF FWHM in arcseconds
+
+        offset_x, offset_y = self.maps_util.get_sky_offsets()
+        dx = np.nanmedian(np.diff(np.unique(offset_x[np.isfinite(offset_x)])))
+        dy = np.nanmedian(np.diff(np.unique(offset_y[np.isfinite(offset_y)])))
+        pixel_scale_arcsec = float(np.nanmedian([np.abs(dx), np.abs(dy)]))
+        if not np.isfinite(pixel_scale_arcsec) or pixel_scale_arcsec <= 0:
+            raise ValueError("pixel_scale_arcsec must be a positive finite value")
+
+        # Guard against bad header scales (e.g., degrees instead of arcsec).
+        if pixel_scale_arcsec < 0.05 or pixel_scale_arcsec > 5.0:
+            pixel_scale_arcsec = 0.5
+
+        max_kernel_radius = int(max(1, min(vel_los_map.shape) // 2))
+        max_kernel_radius = min(max_kernel_radius, 512)
+
+        def _make_kernel(sigma_pixels: float) -> np.ndarray:
+            if not np.isfinite(sigma_pixels) or sigma_pixels <= 0:
+                raise ValueError("sigma_pixels must be a positive finite value")
+            radius = int(np.ceil(sigma_pixels * kernel_sigma_mult))
+            radius = min(max(radius, 1), max_kernel_radius)
+            yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
+            k = np.exp(-(xx**2 + yy**2) / (2.0 * sigma_pixels**2))
+            return k / np.sum(k)
+
+        def _pad_for_fft(arr: np.ndarray, pad: int) -> np.ndarray:
+            return np.pad(arr, pad_width=pad, mode="edge")
+
+        flux = np.where(np.isfinite(gflux_map) & (gflux_map > 0), gflux_map, 0.0)
+        vel = np.where(np.isfinite(vel_los_map), vel_los_map, 0.0)
+
+        # Optional high-res convolution to reduce sampling artifacts near the core.
+        if np.isfinite(high_res_arcsec) and high_res_arcsec > 0 and high_res_arcsec < pixel_scale_arcsec:
+            zoom_factor = float(pixel_scale_arcsec / high_res_arcsec)
+            zoom_factor = min(zoom_factor, 8.0)
+            flux_hr = zoom(flux, zoom_factor, order=1)
+            vel_hr = zoom(vel, zoom_factor, order=1)
+            effective_res = pixel_scale_arcsec / zoom_factor
+            sigma_pix = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)) * effective_res)
+        else:
+            zoom_factor = 1.0
+            flux_hr = flux
+            vel_hr = vel
+            sigma_pix = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)) * pixel_scale_arcsec)
+
+        kernel = _make_kernel(sigma_pix)
+        pad = kernel.shape[0] // 2
+        flux_pad = _pad_for_fft(flux_hr, pad)
+        vel_pad = _pad_for_fft(vel_hr * flux_hr, pad)
+
+        num = fftconvolve(vel_pad, kernel, mode="same")
+        den = fftconvolve(flux_pad, kernel, mode="same")
+
+        num = num[pad:-pad, pad:-pad]
+        den = den[pad:-pad, pad:-pad]
+        den_threshold = np.nanmax(den) * 1e-6
+        vel_obs_psf = np.where(den > den_threshold, num / den, np.nan)
+
+        if zoom_factor != 1.0:
+            factors = [o / s for o, s in zip(vel_los_map.shape, vel_obs_psf.shape)]
+            vel_obs_psf = zoom(vel_obs_psf, factors, order=1)
+
+        # ensure the output shape matches the input shape
+        vel_obs_psf = vel_obs_psf[:vel_los_map.shape[0], :vel_los_map.shape[1]]
+        vel_obs_psf = np.where(np.isfinite(vel_los_map), vel_obs_psf, np.nan)
+
+        # convert to 1D if necessary
+        if len(vel_los.shape) == 1:
+            vel_obs_psf = vel_obs_psf[valid_mask]
+
+        return vel_obs_psf
 
 
     ################################################################################
@@ -289,12 +391,20 @@ class RotCurve:
     # Fitting methods
     ################################################################################
     # use tanh profile to fit vel_rot
-    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
-        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > RADIUS_MIN_KPC)
+    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, gflux_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
+        valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & np.isfinite(gflux_map) & (radius_map > RADIUS_MIN_KPC)
         radius_valid = radius_map[valid_mask]
         vel_obs_valid = vel_obs_map[valid_mask]
         ivar_map_valid = ivar_map[valid_mask]
+        gflux_map_valid = gflux_map[valid_mask]
         phi_map_valid = phi_map[valid_mask]
+        map_shape = radius_map.shape
+
+        if radius_map.shape != vel_obs_map.shape or \
+           radius_map.shape != ivar_map.shape or \
+           radius_map.shape != gflux_map.shape or \
+           radius_map.shape != phi_map.shape:
+            raise ValueError("Input maps must have the same shape")
 
         inc_act = self.get_inc_rad()
         R_max = np.nanmax(radius_valid)
@@ -328,8 +438,8 @@ class RotCurve:
         def model_func(r, Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n):
             Vc, Rt, s_out, Vsys, inc, phi_delta = _denormalize_params([Vc_n, Rt_n, s_out_n, Vsys_n, inc_n, phi_delta_n])
             vel_rot_model = self._vel_rot_tan_sout_profile(r, Vc, Rt, s_out)
-            vel_obs_model = self._vel_obs_project_profile(vel_rot_model, Vsys, inc, phi_map_valid - phi_delta)
-            # vel_obs_model = np.copysign(np.abs(vel_obs_model), vel_obs_valid)
+            vel_los_model = self._vel_los_project_profile(vel_rot_model, Vsys, inc, phi_map_valid - phi_delta)
+            vel_obs_model = self._calc_vel_obs_psf(vel_los_model, gflux_map_valid, map_shape, valid_mask)
             return vel_obs_model
 
         # sigma: Standard Deviation of the Errors
@@ -548,8 +658,8 @@ class RotCurve:
         v_rot_map = self._vel_rot_disproject_profile(v_obs_map, vel_sys, inc_rad, phi_map - phi_delta)
         return r_map, v_rot_map, ivar_map
 
-    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
-        return self._fit_vel_rot(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, gflux_map, phi_map, radius_fit=None):
+        return self._fit_vel_rot(radius_map, vel_obs_map, ivar_map, gflux_map, phi_map, radius_fit=radius_fit)
 
 
 ######################################################
@@ -575,6 +685,7 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     vel_rot.set_fit_debug(debug=True)
 
     r_obs_raw, V_obs_raw, ivar_obs_raw, phi_map = vel_rot.get_vel_obs(is_filter=False)
+    gflux_map, _, _ = maps_util.get_eml_gflux_map()
 
     r_obs_map, V_obs_map, ivar_obs_map, phi_map = vel_rot.get_vel_obs()
     if np.sum(np.isfinite(V_obs_map)) < VEL_OBS_COUNT_THRESHOLD:
@@ -590,7 +701,7 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     # First fitting
     #----------------------------------------------------------------------
     print(f"## Fitting {PLATE_IFU} ##")
-    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, gflux_map, phi_map, radius_fit=r_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return

@@ -115,6 +115,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     vel_rot.set_PLATE_IFU(PLATE_IFU)
 
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
+    gflux_map, _, _ = maps_util.get_eml_gflux_map()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
     vel_rot_filename = VEL_FIT_PARAM_FILENAME
@@ -123,7 +124,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     # First fitting
     #----------------------------------------------------------------------
     print(f"## First fitting {PLATE_IFU} ##")
-    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, gflux_map, phi_map, radius_fit=radius_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return

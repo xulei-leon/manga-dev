@@ -51,6 +51,30 @@ class MapsUtil:
         return masked_velocity_map, velocity_unit, masked_ivar_map
 
 
+    # EMLINE_GFLUX
+    # Emission line flux in 10^-17 erg/s/cm^2/spaxel
+    def get_eml_gflux_map(self, channel_name='Ha-6564') -> tuple[np.ndarray, str, np.ndarray]:
+        """Return the emission line flux map, its unit, and masked IVAR from the MAPS file."""
+        hdr = self.hdu['EMLINE_GFLUX'].header
+        flux_unit = hdr.get('BUNIT', '')
+
+        flux_data = self.hdu['EMLINE_GFLUX'].data
+        mask_data = self.hdu['EMLINE_GFLUX_MASK'].data
+        ivar_data = self.hdu['EMLINE_GFLUX_IVAR'].data
+
+        channel_index = self._channel_dictionary('EMLINE_GFLUX').get(channel_name)
+        if channel_index is None:
+            raise ValueError(f"Channel {channel_name} not found in MAPS file.")
+
+        flux_channel = flux_data[channel_index, ...]
+        mask_channel = mask_data[channel_index, ...]
+        ivar_channel = ivar_data[channel_index, ...]
+
+        masked_flux_map = np.where(mask_channel == 0, flux_channel, np.nan)
+        masked_ivar_map = np.where(ivar_channel > 0, ivar_channel, np.nan)
+
+        return masked_flux_map, flux_unit, masked_ivar_map
+
     # STELLAR_VEL
     # Line-of-sight stellar velocity in km/s, relative to the input guess redshift
     def get_stellar_vel_map(self) -> tuple[np.ndarray, str, np.ndarray]:
@@ -83,7 +107,7 @@ class MapsUtil:
 
     #  ECOOPA: Position angle for ellip. coo
     #  ECOOELL: Ellipticity (1-b/a) for ellip. coo
-    def get_pa(self) -> tuple[float | None, float | None]:
+    def get_pa(self) -> float | None:
         hdr = self.hdu['PRIMARY'].header
         pa_val = hdr.get('ECOOPA', None)
         return pa_val
@@ -94,6 +118,29 @@ class MapsUtil:
         if ellip_val is not None:
             return 1 - ellip_val
         return None
+
+    # GFWHM: Reconstructed FWHM in g-band (arcsec)
+    # RFWHM: Reconstructed FWHM in r-band (arcsec)
+    # IFWHM: Reconstructed FWHM in i-band (arcsec)
+    # ZFWHM: Reconstructed FWHM in z-band (arcsec)
+    def get_fwhm(self, channel_name='Ha-6564') -> float | None:
+        hdr = self.hdu['PRIMARY'].header
+
+        try:
+            wavelength = float(channel_name.split('-')[-1])
+        except (IndexError, ValueError):
+           return None
+
+        if wavelength < 5500:
+            key = 'GFWHM'
+        elif 5500 <= wavelength < 7000:
+            key = 'RFWHM'
+        elif 7000 <= wavelength < 8500:
+            key = 'IFWHM'
+        else:  # wavelength >= 8500
+            key = 'ZFWHM'
+
+        return hdr.get(key, None)
 
 
     # BIN_LWELLCOO
@@ -121,14 +168,14 @@ class MapsUtil:
 
     # BINID
     # C2	Stellar continua	str	Data in channel 2
-    def get_stellar_binid(self) -> tuple[np.ndarray]:
+    def get_stellar_binid(self) -> np.ndarray:
         bin_id_data = self.hdu['BINID'].data
         binid_map = bin_id_data[1, ...]
         return binid_map
 
     # BINID
     # C4	Em. line models	str	Data in channel 4
-    def get_emli_binid(self) -> tuple[np.ndarray]:
+    def get_emli_binid(self) -> np.ndarray:
         bin_id_data = self.hdu['BINID'].data
         binid_map = bin_id_data[3, ...]
         binid_map = np.where(binid_map >= 0, binid_map, np.nan)

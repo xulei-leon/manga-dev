@@ -116,14 +116,16 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
 
     r_obs_map, V_obs_map, ivar_map, phi_map = vel_rot.get_vel_obs()
     gflux_map, _, _ = maps_util.get_eml_gflux_map()
+    fwhm_arcsec = maps_util.get_fwhm()
+    pixel_scale_arcsec = maps_util.get_pixel_scale()
     radius_fit = vel_rot.get_radius_fit(np.nanmax(r_obs_map), count=1000)
 
     vel_rot_filename = VEL_FIT_PARAM_FILENAME
 
     #----------------------------------------------------------------------
-    # First fitting
+    # RC fitting
     #----------------------------------------------------------------------
-    print(f"## First fitting {PLATE_IFU} ##")
+    print(f"## RC fitting {PLATE_IFU} ##")
     success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_map, gflux_map, phi_map, radius_fit=radius_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
@@ -174,20 +176,30 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
 
 
     #--------------------------------------------------------
-    # DM NFW fitting
+    # DM NFW inference
     #--------------------------------------------------------
+    print(f"## DM NFW inferring {PLATE_IFU} ##")
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_plot_enable(debug)
     dm_nfw.set_inf_debug(debug)
 
-    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(radius_obs=r_obs_map,
-                                                        vel_obs=V_obs_map,
-                                                        ivar_obs=ivar_obs_map,
-                                                        vel_sys=vel_sys_fit,
-                                                        inc_rad=inc_rad_fit,
-                                                        phi_map=phi_map,
-                                                        star_mass_param=star_mass_result)
+    vel_param = {
+        "radius_obs": r_obs_map,
+        "vel_obs": V_obs_map,
+        "ivar_obs": ivar_obs_map,
+        "vel_sys": vel_sys_fit,
+        "inc_rad": inc_rad_fit,
+        "phi_map": phi_map,
+        "gflux_map": gflux_map,
+        "fwhm_arcsec": fwhm_arcsec,
+        "pixel_scale_arcsec": pixel_scale_arcsec,
+    }
+
+    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(
+        vel_param=vel_param,
+        star_mass_param=star_mass_result,
+    )
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")

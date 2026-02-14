@@ -142,6 +142,15 @@ class MapsUtil:
 
         return hdr.get(key, None)
 
+    # PC2_2	0.000138889	float	Coordinate transformation matrix element
+    def get_pixel_scale(self) -> float | None:
+        hdr = self.hdu['PRIMARY'].header
+        pc2_2 = hdr.get('PC2_2', None)
+        if pc2_2 is None:
+            return None
+
+        return abs(pc2_2) * 3600  # degrees to arcsec
+
 
     # BIN_LWELLCOO
     # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header.

@@ -19,6 +19,7 @@ import pymc as pm
 import arviz as az
 import pytensor
 import pytensor.tensor as pt
+from pytensor.tensor.nnet import conv2d
 from astropy import constants as const
 import matplotlib.pyplot as plt
 
@@ -143,14 +144,19 @@ class DmNfw:
     ################################################################################
     def _inf_dm_nfw_pymc(
         self,
-        radius_obs: np.ndarray,
-        vel_obs: np.ndarray,
-        ivar_obs: np.ndarray,
-        vel_sys: float,
-        inc_rad: float,
-        phi_map: np.ndarray,
+        vel_param: dict,
         star_mass_param: dict,
     ):
+        radius_obs = vel_param["radius_obs"]
+        vel_obs = vel_param["vel_obs"]
+        ivar_obs = vel_param["ivar_obs"]
+        vel_sys = vel_param["vel_sys"]
+        inc_rad = vel_param["inc_rad"]
+        phi_map = vel_param["phi_map"]
+        gflux_map = vel_param["gflux_map"]
+        fwhm_arcsec = float(vel_param.get("psf_fwhm_arcsec", 2.5))
+        pixel_scale_arcsec = float(vel_param.get("pixel_scale_arcsec", 0.5))
+
         # ------------------------------------------
         # data selection / precompute
         # ------------------------------------------
@@ -313,12 +319,50 @@ class DmNfw:
 
         # Formula: v_obs = v_sys + v_rot * (sin(i) * cos(phi - phi_0))
         # Warning: The sign of the calculated velocity may be different from the observed velocity.
-        def v_obs_project_profile(v_rot, v_sys, inc, phi_map):
+        def v_los_project_profile(v_rot, v_sys, inc, phi_map):
             # phi_delta = (phi_map + pt.pi) % (2 * pt.pi)  # phi_map is (phi - phi_0)
             phi_delta = phi_map + pt.pi
             correction = pt.sin(inc) * pt.cos(phi_delta)
             v_obs = v_sys + v_rot * correction
             return v_obs
+
+        # PSF convolution for v_obs
+        # Using conv2d from pytensor
+        # v_obs = conv2d( (v_los * gflux_map), kernel ) / conv2d( gflux_map, kernel )
+        def v_obs_psf(vel_los, gflux_map, map_shape, valid_mask, fwhm_arcsec, pixel_scale_arcsec):
+            if not np.isfinite(fwhm_arcsec) or fwhm_arcsec <= 0:
+                fwhm_arcsec = 2.5
+            if not np.isfinite(pixel_scale_arcsec) or pixel_scale_arcsec <= 0:
+                pixel_scale_arcsec = 0.5
+
+            sigma_pix = fwhm_arcsec / (2.0 * np.sqrt(2.0 * np.log(2.0)) * pixel_scale_arcsec)
+            kernel_sigma_mult = 4.0
+            radius = int(np.ceil(sigma_pix * kernel_sigma_mult))
+            radius = max(radius, 1)
+            max_radius = min(min(map_shape) // 2, 512)
+            radius = min(radius, max_radius)
+
+            yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
+            kernel = np.exp(-(xx**2 + yy**2) / (2.0 * sigma_pix**2))
+            kernel = kernel / np.sum(kernel)
+
+            gflux_t = pt.as_tensor_variable(gflux_map)
+            vel_map = pt.zeros(map_shape)
+            idx = np.where(valid_mask)
+            vel_map = pt.set_subtensor(vel_map[idx], vel_los)
+
+            vel_flux = vel_map * gflux_t
+            kernel_t = pt.as_tensor_variable(kernel)
+
+            vel_flux_4 = vel_flux.dimshuffle("x", "x", 0, 1)
+            flux_4 = gflux_t.dimshuffle("x", "x", 0, 1)
+            kernel_4 = kernel_t.dimshuffle("x", "x", 0, 1)
+
+            num = conv2d(vel_flux_4, kernel_4, border_mode="half")
+            den = conv2d(flux_4, kernel_4, border_mode="half")
+            v_map = num / pt.maximum(den, 1e-6)
+            v_map2 = v_map[0, 0, :, :]
+            return v_map2[idx]
 
         # PyMC model
         with pm.Model() as model:
@@ -399,7 +443,10 @@ class DmNfw:
             v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
-            v_obs_model_t = pm.Deterministic("v_obs_model", v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t))
+            v_los = v_los_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t)
+
+            v_obs = v_obs_psf(v_los, gflux_map, vel_obs.shape, valid_mask, fwhm_arcsec, pixel_scale_arcsec)
+            v_obs_model_t = pm.Deterministic("v_obs_model", v_obs)
 
             # ------------------------------------------
             # likelihood: observed rotation velocities
@@ -786,15 +833,6 @@ class DmNfw:
         self.inf_debug = inf_debug
         return
 
-    def inf_dm_nfw(
-        self,
-        radius_obs: np.ndarray,
-        vel_obs: np.ndarray,
-        ivar_obs: np.ndarray,
-        vel_sys: float,
-        inc_rad: float,
-        phi_map: np.ndarray,
-        star_mass_param: dict,
-    ):
-        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map, star_mass_param=star_mass_param)
+    def inf_dm_nfw(self, vel_param: dict, star_mass_param: dict = None) -> tuple:
+        return self._inf_dm_nfw_pymc(vel_param, star_mass_param=star_mass_param)
 

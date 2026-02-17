@@ -88,7 +88,7 @@ class DmNfw:
     pri_phi_delta: bool = False
     pri_Re: bool = True # Notice: Infer Re may cost more time
     like_mstar: bool = False
-    pri_shmr: bool = False
+    pri_shmr: bool = True
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -376,12 +376,21 @@ class DmNfw:
                 Re_t = pm.Deterministic("Re", pt.as_tensor_variable(Re))
 
             # f_bulge prior
-            f_bulge_t = pm.Beta("f_bulge", alpha=1.2, beta=4.0)
-            # f_bulge_t = pm.Uniform("f_bulge", lower=0.0, upper=0.2)
+            # logit(f_bulge) ~ N(mu_logit, sigma_f)
+            # mu_logit = a (log10 M* - 10.5)
+            # The slope `a`, transition mass `M0`, and scatter `sigma_f` are tunable hyperparameters.
+            _a_slope = 3.0
+            _M0 = 10.5
+            logM_star = pt.log10(Mstar_t)
+            mu_logit = _a_slope * (logM_star - _M0)
+            # latent logit variable
+            logit_f = pm.Normal("logit_f", mu=mu_logit, sigma=0.5)
+            # transform to (0,1)
+            f_bulge_t = pm.Deterministic("f_bulge", pm.math.sigmoid(logit_f))
 
             # a prior
-            a_mu = r_max * 0.1
-            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.3*pt.log(10))
+            a_mu = Re_t * 0.07  # (Re / 1.678) * 0.12 = Re * 0.07
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.3)
 
             # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)

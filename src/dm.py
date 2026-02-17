@@ -343,11 +343,9 @@ class DmNfw:
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
-            # Independent of M200. Set median to 5.0, which is typical for galaxies.
-            c_mu = 10.0
-            c_log_mu = pt.log(c_mu)
-            c_log_sigma_t = pm.HalfNormal("c_log_sigma", sigma=0.6)
-            c_t = pm.LogNormal("c", mu=c_log_mu, sigma=c_log_sigma_t)
+            # Independent of M200
+            c_mu = 8.0 # typical for Milky Way
+            c_t = pm.LogNormal("c", mu=pt.log(c_mu), sigma=0.2*pt.log(10))
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))
@@ -377,7 +375,7 @@ class DmNfw:
 
             # f_bulge prior
             # logit(f_bulge) ~ N(mu_logit, sigma_f)
-            # mu_logit = a (log10 M* - 10.5)
+            # mu_logit = a * (log10 M* - 10.5)
             # The slope `a`, transition mass `M0`, and scatter `sigma_f` are tunable hyperparameters.
             _a_slope = 3.0
             _M0 = 10.5
@@ -439,8 +437,13 @@ class DmNfw:
             # ------------------------------------------
             # potential
             # ------------------------------------------
-            w_rc_like = pt.as_tensor_variable(1.0)
-            pm.Potential("rc_like_weighted", (w_rc_like - 1.0) * pm.logp(rc_like, vel_obs_valid))
+            # Down-weight small radii with a smooth logistic ramp in radius.
+            r_like = pt.as_tensor_variable(radius_valid)
+            r0 = r_max * 0.3
+            width = r_max * 0.1
+            w_min = 0.3
+            w_rc_like = w_min + (1.0 - w_min) * pm.math.sigmoid((r_like - r0) / pt.maximum(width, 1e-6))
+            pm.Potential("rc_like_weighted", pt.sum((w_rc_like - 1.0) * pm.logp(rc_like, vel_obs_valid)))
 
             if self.like_mstar:
                 w_mstar = pt.as_tensor_variable(0.3)

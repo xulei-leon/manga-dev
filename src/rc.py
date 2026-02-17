@@ -289,7 +289,12 @@ class RotCurve:
     # Fitting methods
     ################################################################################
     # use tanh profile to fit vel_rot
-    def _fit_vel_rot(self, radius_map: np.ndarray, vel_obs_map: np.ndarray, ivar_map: np.ndarray, phi_map: np.ndarray, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
+    def _fit_vel_rot(self, vel_param: dict, radius_fit: np.ndarray=None) -> tuple[bool, dict, dict]:
+        radius_map = vel_param["radius_obs"]
+        vel_obs_map = vel_param["vel_obs"]
+        ivar_map = vel_param["ivar_obs"]
+        phi_map = vel_param["phi_map"]
+
         valid_mask = np.isfinite(vel_obs_map) & np.isfinite(radius_map) & (radius_map > RADIUS_MIN_KPC)
         radius_valid = radius_map[valid_mask]
         vel_obs_valid = vel_obs_map[valid_mask]
@@ -548,8 +553,8 @@ class RotCurve:
         v_rot_map = self._vel_rot_disproject_profile(v_obs_map, vel_sys, inc_rad, phi_map - phi_delta)
         return r_map, v_rot_map, ivar_map
 
-    def fit_vel_rot(self, radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=None):
-        return self._fit_vel_rot(radius_map, vel_obs_map, ivar_map, phi_map, radius_fit=radius_fit)
+    def fit_vel_rot(self, vel_param: dict, radius_fit=None):
+        return self._fit_vel_rot(vel_param, radius_fit=radius_fit)
 
 
 ######################################################
@@ -590,7 +595,13 @@ def test_process(PLATE_IFU: str, check: bool=True) -> None:
     # First fitting
     #----------------------------------------------------------------------
     print(f"## Fitting {PLATE_IFU} ##")
-    success, fit_result, fit_params = vel_rot.fit_vel_rot(r_obs_map, V_obs_map, ivar_obs_map, phi_map, radius_fit=r_fit)
+    vel_param = {
+        "radius_obs": r_obs_map,
+        "vel_obs": V_obs_map,
+        "ivar_obs": ivar_obs_map,
+        "phi_map": phi_map,
+    }
+    success, fit_result, fit_params = vel_rot.fit_vel_rot(vel_param, radius_fit=r_fit)
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return

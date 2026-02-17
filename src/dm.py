@@ -8,6 +8,7 @@ Vstar^2(r)  = (G * MB * r) / (r + a)^2 +(2 * G * M_baryon / Rd) * y^2 * [I_0(y) 
 Vdrift^2{r) = 2 * sigma_0^2 * (r / R_d)
 '''
 
+from encodings.punycode import T
 from math import inf, log
 import os
 from pathlib import Path
@@ -87,6 +88,7 @@ class DmNfw:
     pri_phi_delta: bool = False
     pri_Re: bool = True # Notice: Infer Re may cost more time
     like_mstar: bool = False
+    pri_shmr: bool = False
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -143,14 +145,15 @@ class DmNfw:
     ################################################################################
     def _inf_dm_nfw_pymc(
         self,
-        radius_obs: np.ndarray,
-        vel_obs: np.ndarray,
-        ivar_obs: np.ndarray,
-        vel_sys: float,
-        inc_rad: float,
-        phi_map: np.ndarray,
+        vel_param: dict,
         star_mass_param: dict,
     ):
+        radius_obs = vel_param["radius_obs"]
+        vel_obs = vel_param["vel_obs"]
+        ivar_obs = vel_param["ivar_obs"]
+        vel_sys = vel_param["vel_sys"]
+        inc_rad = vel_param["inc_rad"]
+        phi_map = vel_param["phi_map"]
         # ------------------------------------------
         # data selection / precompute
         # ------------------------------------------
@@ -290,7 +293,7 @@ class DmNfw:
         def nfw_num_den(x, c):
             cx = c * x
             num = pt.log1p(cx) - (cx) / (1.0 + cx)
-            den = pt.log1p(c) - c / (1.0 + c)
+            den = pt.maximum(pt.log1p(c) - c / (1.0 + c), 1e-12)
             return num, den
 
         def v_dm_sq_profile(r, M200, c, V200):
@@ -328,15 +331,16 @@ class DmNfw:
             # Mstar is the total stellar mass for the galaxy with infinity radius
             # Mstar_obs is only observed up to a certain radius
             # Mstar prior
-            Mstar_mu = Mstar_obs / 0.8
-            Mstar_log_mu = pt.log10(Mstar_mu)
-            Mstar_log_sigma_t = pm.HalfNormal("Mstar_log_sigma", sigma=0.3)
-            Mstar_log_t = pm.Normal("Mstar_log10", mu=Mstar_log_mu, sigma=Mstar_log_sigma_t)
+            Mstar_log_t = pm.Normal("Mstar_log10", mu=pt.log10(Mstar_obs), sigma=0.2)
             Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
 
             # M200 prior
-            M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
-            M200_t = pm.Deterministic("M200", 10**M200_log_t)
+            if self.pri_shmr:
+                M200_log_t = pm.Normal("M200_log10", mu=pt.log10(M200_est), sigma=0.2)
+                M200_t = pm.Deterministic("M200", 10**M200_log_t)
+            else:
+                M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
+                M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
             # c prior: log-normal prior
             # Independent of M200. Set median to 5.0, which is typical for galaxies.
@@ -786,15 +790,6 @@ class DmNfw:
         self.inf_debug = inf_debug
         return
 
-    def inf_dm_nfw(
-        self,
-        radius_obs: np.ndarray,
-        vel_obs: np.ndarray,
-        ivar_obs: np.ndarray,
-        vel_sys: float,
-        inc_rad: float,
-        phi_map: np.ndarray,
-        star_mass_param: dict,
-    ):
-        return self._inf_dm_nfw_pymc(radius_obs, vel_obs, ivar_obs, vel_sys, inc_rad, phi_map, star_mass_param=star_mass_param)
+    def inf_dm_nfw(self, vel_param: dict, star_mass_param: dict = None) -> tuple:
+        return self._inf_dm_nfw_pymc(vel_param, star_mass_param=star_mass_param)
 

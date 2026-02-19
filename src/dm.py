@@ -192,7 +192,16 @@ class DmNfw:
         Mstar_elpetro, Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
         print (f"Stellar mass from DRPALL: Mstar_elpetro={Mstar_elpetro:.2e} Msun, Mstar_sersic={Mstar_sersic:.2e} Msun")
 
-        Mstar_obs = Mstar_elpetro if Mstar_elpetro is not None else Mstar_sersic
+        # For disk-dominated galaxies, elpetro photometry (de Vaucouleurs aperture) systematically
+        # underestimates stellar mass by ~0.05-0.15 dex relative to sersic. Using the larger of the two
+        # as the prior center prevents the model from compensating low V_star with a more concentrated DM halo.
+        if Mstar_elpetro is not None and Mstar_sersic is not None:
+            Mstar_obs = max(Mstar_elpetro, Mstar_sersic)
+        elif Mstar_elpetro is not None:
+            Mstar_obs = Mstar_elpetro
+        else:
+            Mstar_obs = Mstar_sersic
+        print(f"Stellar mass prior center: Mstar_obs={Mstar_obs:.2e} Msun (max of elpetro/sersic)")
 
         # estimate M200 from Mstar
         Mmin=1e9
@@ -311,20 +320,19 @@ class DmNfw:
             # ------------------------------------------
             # prior distributions
             # ------------------------------------------
-            # Mstar is the total stellar mass for the galaxy with infinity radius
-            # Mstar_obs is only observed up to a certain radius
-            # Mstar prior
+            # Mstar is the total stellar mass for the galaxy with infinity radius, which should be larger than the observed Mstar within finite aperture.
+            # Use a soft LogNormal prior to allow some flexibility while keeping it anchored around the observed value.
             Mstar_t = pm.LogNormal("Mstar", mu=pt.log(Mstar_obs), sigma=0.05*pt.log(10))
 
             # M200 prior
             if self.pri_shmr:
-                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.2*pt.log(10))
+                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.15*pt.log(10))
             else:
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
-            # c prior: independent of M200.
-            c_t = pm.LogNormal("c", mu=pt.log(10.0), sigma=0.4 * pt.log(10))
+            # c prior: independent of M200, soft LogNormal.
+            c_t = pm.LogNormal("c", mu=pt.log(9.0), sigma=0.2 * pt.log(10))
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))
@@ -346,7 +354,7 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Re prior
-            Re_t = pm.TruncatedNormal('Re', mu=Re_ref_kpc, sigma=Re_ref_kpc * 0.20, lower=float(Re_ref_kpc * 0.3), upper=float(Re_ref_kpc * 2.0))
+            Re_t = pm.TruncatedNormal('Re', mu=Re_ref_kpc, sigma=Re_ref_kpc * 0.10, lower=float(Re_ref_kpc * 0.5), upper=float(Re_ref_kpc * 2.0))
 
             # f_bulge prior
             # logit(f_bulge) ~ N(mu_logit, sigma_f)

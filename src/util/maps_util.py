@@ -155,16 +155,30 @@ class MapsUtil:
     # BIN_LWELLCOO
     # Light-weighted elliptical polar coordinates of each bin from the galaxy center based on the on-sky coordinates in BIN_LWSKYCOO and the ECOOPA and ECOOELL parameters (typically taken from the NASA-Sloan atlas) in the primary header.
     # r: Lum. weighted elliptical radius (arcsec)
-    # R: R h/kpc (kpc/h)
+    # R: R h/kpc (kpc/h)  — the DAP stores distances in h^{-1} kpc using H0=100 (h=1) convention.
+    #    To get physical kpc for H0=67.4 (h=0.674): r_phys = r_h_kpc / h = r_h_kpc / 0.674
     # azimuth: Lum. weighted elliptical azimuth
+    H0_MANGA = 100.0   # km/s/Mpc — H0 assumed by the MaNGA DAP for all spatial quantities
+    H0_PHYS  = 67.4    # km/s/Mpc — physical H0 used in this project
+    H_RATIO  = H0_PHYS / H0_MANGA  # = 0.674; r_phys = r_DAP / H_RATIO
+
     def get_radius_map(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return the radial map from the MAPS file."""
+        """Return the radial map from the MAPS file.
+
+        The BIN_LWELLCOO channel 2 stores the elliptical radius in h^{-1} kpc
+        (using H0=100 by DAP convention).  We convert to physical kpc by
+        dividing by h = H0_PHYS/100 = 0.674, i.e., multiplying by 1/h = 1.484.
+        Failure to do this conversion understates x = r/r200 by factor h,
+        causing the NFW model to evaluate too deep inside the profile and
+        systematically overestimate the concentration parameter c.
+        """
         data = self.hdu['BIN_LWELLCOO'].data
         radius = data[0, ...]
-        r_h_kpc = data[2, ...]
+        r_h_kpc_raw = data[2, ...]             # h^{-1} kpc  (H0 = 100 convention)
+        r_kpc = r_h_kpc_raw / MapsUtil.H_RATIO # physical kpc (H0 = 67.4)
         azimuth = data[3, ...]
 
-        return radius, r_h_kpc, azimuth
+        return radius, r_kpc, azimuth
 
     # BIN_LWSKYCOO
     def get_skycoo_map(self) -> tuple[np.ndarray, np.ndarray]:

@@ -5,7 +5,8 @@ log_level = "INFO"
 data_directory = "data"
 result_directory = "results"
 rc_param_filename = "rc_param.csv"
-nfw_param_filename = "nfw_param.csv"
+nfw_param_cm200_filename = "nfw_param_cm200.csv"
+nfw_param_shmr_filename = "nfw_param_shmr.csv"
 
 [thresholds]
 INC_MIN = 25.0  # minimum inclination angle in degrees

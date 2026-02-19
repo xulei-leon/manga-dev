@@ -25,7 +25,9 @@ with open("config.toml", "rb") as f:
 data_directory = config.get("file", {}).get("data_directory", "data")
 result_directory = config.get("file", {}).get("result_directory", "results")
 VEL_FIT_PARAM_FILENAME = config.get("file", {}).get("rc_param_filename", "rc_param.csv")
-DM_NFW_PARAM_FILENAME = config.get("file", {}).get("nfw_param_filename", "nfw_param.csv")
+DM_NFW_PARAM_FILENAME = {}
+DM_NFW_PARAM_FILENAME['c-m200'] = config.get("file", {}).get("nfw_param_cm200_filename", "nfw_param_cm200.csv")
+DM_NFW_PARAM_FILENAME['shmr'] = config.get("file", {}).get("nfw_param_shmr_filename", "nfw_param_shmr.csv")
 
 NRMSE_THRESHOLD = config.get("thresholds", {}).get("NRMSE_THRESHOLD", 0.1)
 CHI_SQ_V_THRESHOLD = config.get("thresholds", {}).get("CHI_SQ_V_THRESHOLD", 10.0)
@@ -82,11 +84,12 @@ def get_params_file(PLATE_IFU: str, filename:str):
         return None
 
 
-def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
-    nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME)
-    if debug is None and process_nfw and nfw_param is not None:
-        print(f"DM NFW parameters already exist for {PLATE_IFU}. Skipping processing.")
-        return
+def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode: str="c-m200"):
+    if debug is None and process_nfw:
+        nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME[mode])
+        if nfw_param is not None:
+            print(f"DM NFW parameters already exist for {PLATE_IFU} mode={mode}. Skipping processing.")
+            return
 
     vel_rot_param = get_params_file(PLATE_IFU, VEL_FIT_PARAM_FILENAME)
     if not process_nfw and vel_rot_param is not None:
@@ -189,10 +192,19 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
         "phi_map": phi_map,
     }
 
+    print(f"## DM NFW inferring {PLATE_IFU} mode: {mode} ##")
+    # Configure dm_nfw according to mode:
+    #   'c-m200' → M200 wide independent prior; c tightly follows c-M200 relation
+    #   'shmr'   → M200 anchored to Mstar via SHMR; c independent LogNormal
+    dm_nfw.set_inf_mode(mode)
+
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(vel_param=vel_param)
-    store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
+    if isinstance(inf_params, dict):
+        inf_params['inf_mode'] = mode
+    store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME[mode])
+
     if not success:
-        print(f"Inferring dark matter NFW failed for {PLATE_IFU}")
+        print(f"Inferring dark matter NFW failed for {PLATE_IFU} mode={mode}")
         return
 
     r_inf = inf_result['radius']
@@ -200,13 +212,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     V_dm_inf = inf_result['v_dm']
     V_star_inf = inf_result['v_star']
     V_drift_inf = inf_result['v_drift']
-    sigma_obs_inf = inf_result['sigma_obs']
-    res_obs_inf = inf_result['res_obs']
 
-
-    #--------------------------------------------------------
-    # DM NFW fitting
-    #--------------------------------------------------------
     print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
     print(f"V_total_fit shape: {V_rot_inf.shape}, range: [{np.nanmin(V_rot_inf):,.1f}, {np.nanmax(V_rot_inf):,.1f}] km/s")
@@ -214,9 +220,6 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
     print(f"V_star_fit shape: {V_star_inf.shape}, range: [{np.nanmin(V_star_inf):,.1f}, {np.nanmax(V_star_inf):,.1f}] km/s")
     print(f"V_drift_fit shape: {V_drift_inf.shape}, range: [{np.nanmin(V_drift_inf):,.1f}, {np.nanmax(V_drift_inf):,.1f}] km/s")
 
-    ########################################################
-    ## plot velocity map
-    ########################################################
     plot_util.plot_rv_curves([
         {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None, 'size': 5},
         {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'black', 'linestyle': '-'},
@@ -264,7 +267,7 @@ def get_plate_list_from_fit():
     plate_ifu_list.sort()
     return plate_ifu_list
 
-def main(run_nfw: bool = True, ifu: str = None, debug: bool = False):
+def main(run_nfw: bool = True, ifu: str = None, debug: bool = False, mode: str = "c-m200"):
     plate_ifu_list = []
 
     if ifu == "all":
@@ -277,21 +280,25 @@ def main(run_nfw: bool = True, ifu: str = None, debug: bool = False):
     if not plate_ifu_list or len(plate_ifu_list) == 0:
         plate_ifu_list = TEST_PLATE_IFUS
 
-    def _process(plate_ifu):
-        print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} ##########")
+    # Determine which modes to run for each galaxy
+    modes_to_run = ["c-m200", "shmr"] if mode == "all" else [mode]
+
+    def _process(plate_ifu, run_mode):
+        print(f"\n\n########## Processing PLATE_IFU: {plate_ifu} mode={run_mode} ##########")
         if debug:
-            process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug)
+            process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug, mode=run_mode)
         else:
             try:
-                process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug)
+                process_plate_ifu(plate_ifu, process_nfw=run_nfw, debug=debug, mode=run_mode)
             except Exception as e:
-                print(f"Error processing {plate_ifu}: {e}")
+                print(f"Error processing {plate_ifu} mode={run_mode}: {e}")
 
         # Clear pymc internal cache to free up memory
         gc.collect()
 
     for plate_ifu in tqdm(plate_ifu_list, total=len(plate_ifu_list), desc="Processing galaxies", unit="galaxy"):
-        _process(plate_ifu)
+        for run_mode in modes_to_run:
+            _process(plate_ifu, run_mode)
     return
 
 import argparse
@@ -300,6 +307,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MaNGA galaxies for velocity rotation and DM NFW fitting.")
     parser.add_argument('--nfw', type=str, default="on", help='Run dark matter NFW fitting.')
     parser.add_argument('--ifu', type=str, default="all", help='Type of data to process (all, fit, test.)')
+    parser.add_argument('--mode', type=str, default="c-m200", help='NFW fitting mode (c-m200, shmr).')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode.')
 
     args = parser.parse_args()
@@ -307,4 +315,4 @@ if __name__ == "__main__":
     nfw_enable = args.nfw.lower() in ['on', 'true', 'enable' ,'1']
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    main(run_nfw=nfw_enable, ifu=args.ifu, debug=args.debug)
+    main(run_nfw=nfw_enable, ifu=args.ifu, debug=args.debug, mode=args.mode)

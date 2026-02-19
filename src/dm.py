@@ -89,7 +89,7 @@ class DmNfw:
     inf_debug: bool = False
     pri_inc: bool = False # Notice: Infer inc may be degenerate with c
     pri_phi_delta: bool = False
-    pri_shmr: bool = True
+    inf_mode: str = "c-m200" # "c-m200" or "shmr"
 
     def __init__(self, drpall_util: DrpallUtil):
         self.drpall_util = drpall_util
@@ -207,7 +207,7 @@ class DmNfw:
         # estimate M200 from Mstar
         Mmin=1e9
         Mmax=1e15
-        M200_est = self._calc_M200_from_Mstar(Mstar_obs, Mmin=Mmin, Mmax=Mmax)
+        M200_shmr = self._calc_M200_from_Mstar(Mstar_obs, Mmin=Mmin, Mmax=Mmax)
 
         z = self._get_z()
 
@@ -326,15 +326,33 @@ class DmNfw:
             # Use a soft LogNormal prior to allow some flexibility while keeping it anchored around the observed value.
             Mstar_t = pm.LogNormal("Mstar", mu=pt.log(Mstar_obs), sigma=0.05*pt.log(10))
 
+            # c-m200 mode: c and M200 are independent free parameters, with M200 anchored to SHMR-inferred value via a soft prior.
+            # SHMR-infer mode: M200 has a wide independent prior, and c is tightly constrained by the theoretical c-M200 relation.
+
             # M200 prior
-            if self.pri_shmr:
-                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.2*pt.log(10))
+            if self.inf_mode == "c-m200":
+                # M200 prior anchored to SHMR-inferred value
+                M200_t = pm.LogNormal("M200", mu=pt.log(M200_shmr), sigma=0.2*pt.log(10))
+                print(f"M200 prior (c-M200 mode): LogNormal centred on SHMR-inferred M200={M200_shmr:.2e} Msun, sigma=0.2 dex")
             else:
+                # SHMR-infer mode: M200 independent wide prior, not anchored to Mstar.
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
+                print(f"M200 prior (SHMR-infer mode): TruncatedNormal in log10 space, mu=12.0, sigma=1.0 dex, range=[1e9, 3e13] Msun")
 
-            # c prior: independent of M200, soft LogNormal.
-            c_t = pm.LogNormal("c", mu=pt.log(9.0), sigma=0.2 * pt.log(10))
+
+            # c prior
+            if self.inf_mode == "c-m200":
+                # Independent c: decoupled from M200, for empirical c-M200 fitting later.
+                c_t = pm.LogNormal("c", mu=pt.log(9.0), sigma=0.2 * pt.log(10))
+                print(f"c prior (c-M200 mode): LogNormal centred on c≈9, sigma=0.2 dex")
+            else:
+                # c tightly constrained by theoretical c-M200 relation.
+                # Dutton & Macciò (2014): c = 5.74 * (M200 / (2e12/h))^(-0.097)
+                # Intrinsic scatter: sigma ≈ 0.11 dex (from Dutton & Macciò 2014 Table 2)
+                c_theory_t = c_from_M200(M200_t, h=H_ACTUAL)
+                c_t = pm.LogNormal("c", mu=pt.log(c_theory_t), sigma=0.11 * pt.log(10))
+                print(f"c prior (SHMR-infer mode): LogNormal centred on c_from_M200(M200), sigma=0.11 dex")
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))
@@ -673,7 +691,7 @@ class DmNfw:
             print(f"{model_loo}")
             print("--- Expectation ---")
             print(f"Mstar Expect        : {Mstar_obs:.3e} Msun")
-            print(f"M200 Expect         : {M200_est:.3e} Msun")
+            print(f"M200 Expect         : {M200_shmr:.3e} Msun")
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")
@@ -814,6 +832,9 @@ class DmNfw:
     def set_plot_enable(self, plot_enable: bool) -> None:
         self.plot_enable = plot_enable
         return
+
+    def set_inf_mode(self, inf_mode: str) -> None:
+        self.inf_mode = inf_mode
 
     def set_inf_debug(self, inf_debug: bool) -> None:
         self.inf_debug = inf_debug

@@ -21,6 +21,8 @@ import arviz as az
 import pytensor
 import pytensor.tensor as pt
 from astropy import constants as const
+from astropy.cosmology import FlatLambdaCDM
+from astropy import units as u
 import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
@@ -138,6 +140,21 @@ class DmNfw:
 
         return brentq(f, Mmin, Mmax)
 
+    def _get_Re_kpc(self, z: float) -> float:
+        """Return half-light radius in kpc.
+
+        Uses the NSA Petrosian r-band half-light radius from DRPALL (arcsec)
+        converted to kpc via the angular diameter distance using astropy.cosmology.
+        """
+        Re_arcsec = self.drpall_util.get_effective_radius(self.PLATE_IFU)
+
+        cosmo = FlatLambdaCDM(H0=67.4, Om0=0.315)
+        D_A_kpc = cosmo.angular_diameter_distance(z).to(u.kpc).value
+        Re_kpc = float(Re_arcsec) / 206265.0 * D_A_kpc
+        print(f"Re from DRPALL: {Re_arcsec:.2f} arcsec -> {Re_kpc:.2f} kpc (D_A={D_A_kpc:.0f} kpc)")
+        return Re_kpc
+
+
     ################################################################################
     # MCMC PyMC inference methods
     ################################################################################
@@ -186,6 +203,9 @@ class DmNfw:
 
         # get H(z) in km/s/kpc
         Hz = self._calc_Hz_kpc(z)
+
+        # Photometric half-light radius (kpc) used to anchor Re and a priors
+        Re_ref_kpc = self._get_Re_kpc(z)
 
         # ------------------------------------------
         # helper functions (closures)
@@ -303,10 +323,8 @@ class DmNfw:
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
 
-            # c prior: log-normal prior
-            # Independent of M200
-            c_mu = 8.0 # typical for Milky Way
-            c_t = pm.LogNormal("c", mu=pt.log(c_mu), sigma=0.2*pt.log(10))
+            # c prior: independent of M200.
+            c_t = pm.LogNormal("c", mu=pt.log(10.0), sigma=0.4 * pt.log(10))
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))
@@ -328,9 +346,7 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Re prior
-            Re_mu = r_max * 0.25
-            Re_t = pm.LogNormal('Re', mu=pt.log(Re_mu), sigma=0.3*pt.log(10))
-
+            Re_t = pm.TruncatedNormal('Re', mu=Re_ref_kpc, sigma=Re_ref_kpc * 0.20, lower=float(Re_ref_kpc * 0.3), upper=float(Re_ref_kpc * 2.0))
 
             # f_bulge prior
             # logit(f_bulge) ~ N(mu_logit, sigma_f)
@@ -346,8 +362,9 @@ class DmNfw:
             f_bulge_t = pm.Deterministic("f_bulge", pm.math.sigmoid(logit_f))
 
             # a prior
-            a_mu = Re_t * 0.07  # (Re / 1.678) * 0.12 = Re * 0.07
-            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.3)
+            # a = Rd * 0.12,  Rd = Re / 1.678
+            a_mu = float(Re_ref_kpc * 0.07)
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.25)
 
             # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)

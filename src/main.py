@@ -257,8 +257,11 @@ TEST_PLATE_IFUS = [
 ]
 
 PLATES_FILENAME = "plateifus.txt"
-def get_plate_ifu_list():
-    plate_ifu_file = data_dir / PLATES_FILENAME
+def get_plate_ifu_list(filename=None):
+    if filename is not None:
+        plate_ifu_file = data_dir / filename
+    else:
+        plate_ifu_file = data_dir / PLATES_FILENAME
 
     with open(plate_ifu_file, 'r') as f:
         plate_ifu_list = [line.strip() for line in f if line.strip()]
@@ -284,7 +287,7 @@ def main(run_nfw: bool = True, ifu: str = None, debug: bool = False):
     if ifu == "all":
         plate_ifu_list = get_plate_ifu_list()
     elif ifu == "test":
-        plate_ifu_list = TEST_PLATE_IFUS
+        plate_ifu_list = get_plate_ifu_list("plateifus_test.txt")
     else:
         plate_ifu_list = [ifu]
 

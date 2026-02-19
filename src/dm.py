@@ -331,13 +331,11 @@ class DmNfw:
             # Mstar is the total stellar mass for the galaxy with infinity radius
             # Mstar_obs is only observed up to a certain radius
             # Mstar prior
-            Mstar_log_t = pm.Normal("Mstar_log10", mu=pt.log10(Mstar_obs), sigma=0.2)
-            Mstar_t = pm.Deterministic("Mstar", 10**Mstar_log_t)
+            Mstar_t = pm.LogNormal("Mstar", mu=pt.log(Mstar_obs), sigma=0.05*pt.log(10))
 
             # M200 prior
             if self.pri_shmr:
-                M200_log_t = pm.Normal("M200_log10", mu=pt.log10(M200_est), sigma=0.2)
-                M200_t = pm.Deterministic("M200", 10**M200_log_t)
+                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.2*pt.log(10))
             else:
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
@@ -466,7 +464,8 @@ class DmNfw:
                 displaybar = False
                 checks = False
 
-            sampler = "nutpie" # 'nutpie', 'numpyro'
+            # MUST to use nutpie because v_star_sq_disk() uses Bessel functions which are not supported by numpyro/blackjax samplers.
+            sampler = 'nutpie' #'nutpie', 'numpyro', 'blackjax'
             init = "jitter+adapt_full" # jitter+adapt_diag, jitter+adapt_full
             random_seed = 42
             trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
@@ -535,10 +534,10 @@ class DmNfw:
 
         for var in var_names:
             r_hat = float(summary.loc[var, "r_hat"])
+            ess_bulk = float(summary.loc[var, "ess_bulk"])
             if r_hat > INFER_RHAT_THRESHOLD:
                 print(f"Warning: R-hat for variable {var} is {r_hat:.3f} > {INFER_RHAT_THRESHOLD}, indicating potential non-convergence.")
                 success = False
-
 
         # extract posterior samples
         posterior = _get_posterior_dataset(trace)
@@ -733,6 +732,34 @@ class DmNfw:
             print(f" NRMSE (Best)       : {nrmse_best:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
             print("------------------------------------------------------------\n")
+            try:
+                stats = trace.sample_stats
+                if "diverging" in stats:
+                    divergences = int(np.sum(stats["diverging"].values))
+                    print(f"Diagnostics : divergences = {divergences}")
+                if "tree_depth" in stats:
+                    max_treedepth = int(np.max(stats["tree_depth"].values))
+                    print(f"Diagnostics : max tree depth = {max_treedepth}")
+                if "energy" in stats:
+                    bfmi = az.bfmi(trace)
+                    bfmi_min = float(np.min(bfmi))
+                    print(f"Diagnostics : BFMI(min) = {bfmi_min:.3f}")
+            except Exception as exc:
+                print(f"Diagnostics     : sampler stats unavailable ({exc})")
+            print("------------------------------------------------------------\n")
+            try:
+                diag_samples = [np.asarray(flat_trace[var].values).reshape(-1) for var in var_names]
+                corr = np.corrcoef(diag_samples)
+                print("Diagnostics      : correlation matrix for flagged params")
+                header = "\t" + " ".join([f"{v:>10s}" for v in var_names])
+                print(header)
+                for i, var in enumerate(var_names):
+                    row = " ".join([f"{corr[i, j]:10.3f}" for j in range(len(var_names))])
+                    print(f"{var:>10s} {row}")
+            except Exception as exc:
+                print(f"Diagnostics      : correlation matrix unavailable ({exc})")
+            print("------------------------------------------------------------\n")
+
 
         # ---------------------
         # plot
@@ -749,12 +776,23 @@ class DmNfw:
             plt.show()
 
         # check the inference success
-        if float(np.nanmean(v_rot_best)) <= float(np.nanmean(v_dm_best)):
+        mean_v_rot = float(np.nanmean(v_rot_best))
+        mean_v_dm = float(np.nanmean(v_dm_best))
+        mean_v_star = float(np.nanmean(v_star_best))
+        mean_v_drift = float(np.nanmean(v_drift_best))
+        if mean_v_rot <= mean_v_dm:
             print("Warning: Inferred rotation velocity is less than or equal to dark matter velocity on average. Inference may have failed.")
             success = False
-        if float(np.nanmean(v_rot_best)) <= float(np.nanmean(v_star_best)):
+        if mean_v_rot <= mean_v_star:
             print("Warning: Inferred rotation velocity is less than or equal to stellar velocity on average. Inference may have failed.")
             success = False
+
+        if self.inf_debug:
+            frac_star = float(np.mean(v_rot_best <= v_star_best))
+            frac_dm = float(np.mean(v_rot_best <= v_dm_best))
+            print("Diagnostics: v components summary")
+            print(f"  mean(v_rot)={mean_v_rot:.3f}, mean(v_star)={mean_v_star:.3f}, mean(v_dm)={mean_v_dm:.3f}, mean(v_drift)={mean_v_drift:.3f}")
+            print(f"  frac(v_rot<=v_star)={frac_star:.3f}, frac(v_rot<=v_dm)={frac_dm:.3f}")
 
         inf_result = {
             'radius': radius_valid,

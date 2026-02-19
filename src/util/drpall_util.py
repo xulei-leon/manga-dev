@@ -183,6 +183,13 @@ class DrpallUtil:
         reff = self._fetch_scalar_column_value(plateifu, ["NSA_ELPETRO_TH50_R"])
         return reff
 
+    # NSA_SERSIC_N: Sersic index from single-component Sersic fit.
+    # n=1 → pure exponential disk; n=4 → de Vaucouleurs (classical elliptical / pure bulge).
+    def get_sersic_n(self, plateifu: str) -> float | None:
+        """Return Sersic index n for plateifu from NSA, or None if unavailable."""
+        val = self._fetch_scalar_column_value(plateifu, ["NSA_SERSIC_N", "nsa_sersic_n"])
+        return float(val) if val is not None else None
+
 
     def search_plateifu_by_inc(self, inc_min: float, inc_max: float) -> Table:
         """Search galaxies with inclination between inc_min and inc_max (degrees)."""

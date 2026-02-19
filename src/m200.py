@@ -155,7 +155,7 @@ def plot_m200_c():
 
     plt.figure(figsize=(12, 6))
     plt.scatter(M200_raw, c_raw, alpha=0.7, label='Raw', color='black', s=20, linewidths=0.2, edgecolors='k')
-    # plt.scatter(M200_raw, c_calc, alpha=0.7, label='Calc (Dutton+14)', color='green', s=20, linewidths=0.2, edgecolors='k')
+    plt.scatter(M200_raw, c_calc, alpha=0.7, label='Calc (Dutton+14)', color='green', s=20, linewidths=0.2, edgecolors='k')
     if c_fit is not None:
         sort_idx = np.argsort(M200_raw)
         m_sorted = M200_raw[sort_idx]

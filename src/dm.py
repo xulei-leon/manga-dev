@@ -27,7 +27,8 @@ import matplotlib.pyplot as plt
 
 from util.drpall_util import DrpallUtil
 
-H = 1 #0.674  # assuming H0 = 67.4 km/s/Mpc
+H0 = 67.4  # km/s/Mpc
+H_ACTUAL = 0.674
 G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
 
 # Load configuration file
@@ -105,7 +106,7 @@ class DmNfw:
 
     # hubble parameter
     # H(z) = H0 * sqrt( Omega_m*(1 + z)^3 + Omega_Lambda )
-    def _calc_Hz_kpc(self, z: float, H0=67.4, Om=0.315, Ol=0.685) -> float:
+    def _calc_Hz_kpc(self, z: float, H0=H0, Om=0.315, Ol=0.685) -> float:
         Hz = H0 * np.sqrt(Om * (1 + z)**3 + Ol)
         Hz = Hz / 1000
         return Hz # in km/s/kpc
@@ -129,7 +130,8 @@ class DmNfw:
         return V200
 
     # Moster-like SHMR
-    def _calc_Mstar_from_Mhalo(self, M200: float, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+    # M1 from Moster+2013 is in h^-1 Msun; convert to physical Msun by dividing by h
+    def _calc_Mstar_from_Mhalo(self, M200: float, M1=10**11.59 / H_ACTUAL, N=0.0351, beta=1.376, gamma=0.608):
         x = M200 / M1
         f = 2.0 * N / (x**(-beta) + x**(gamma))
         return f * M200
@@ -148,12 +150,23 @@ class DmNfw:
         """
         Re_arcsec = self.drpall_util.get_effective_radius(self.PLATE_IFU)
 
-        cosmo = FlatLambdaCDM(H0=67.4, Om0=0.315)
+        cosmo = FlatLambdaCDM(H0=H0, Om0=0.315)
         D_A_kpc = cosmo.angular_diameter_distance(z).to(u.kpc).value
         Re_kpc = float(Re_arcsec) / 206265.0 * D_A_kpc
         print(f"Re from DRPALL: {Re_arcsec:.2f} arcsec -> {Re_kpc:.2f} kpc (D_A={D_A_kpc:.0f} kpc)")
         return Re_kpc
 
+    def _get_mass_star(self) -> float:
+        Mstar_elpetro, Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
+
+        print (f"Stellar mass from DRPALL: Mstar_elpetro={Mstar_elpetro:.2e} Msun, Mstar_sersic={Mstar_sersic:.2e} Msun")
+
+        Mstar = Mstar_elpetro if Mstar_elpetro is not None else Mstar_sersic
+
+        scale = (1.0 / H_ACTUAL) ** 2
+        Mstar_scaled = Mstar * scale
+        print(f"Stellar mass scaled by h^-2: Mstar_scaled={Mstar_scaled:.2e} Msun (h={H_ACTUAL})")
+        return Mstar_scaled
 
     ################################################################################
     # MCMC PyMC inference methods
@@ -189,19 +202,7 @@ class DmNfw:
         r_max = np.nanmax(radius_valid)
 
         # stellar mass
-        Mstar_elpetro, Mstar_sersic = self.drpall_util.get_stellar_mass(self.PLATE_IFU)
-        print (f"Stellar mass from DRPALL: Mstar_elpetro={Mstar_elpetro:.2e} Msun, Mstar_sersic={Mstar_sersic:.2e} Msun")
-
-        # For disk-dominated galaxies, elpetro photometry (de Vaucouleurs aperture) systematically
-        # underestimates stellar mass by ~0.05-0.15 dex relative to sersic. Using the larger of the two
-        # as the prior center prevents the model from compensating low V_star with a more concentrated DM halo.
-        if Mstar_elpetro is not None and Mstar_sersic is not None:
-            Mstar_obs = max(Mstar_elpetro, Mstar_sersic)
-        elif Mstar_elpetro is not None:
-            Mstar_obs = Mstar_elpetro
-        else:
-            Mstar_obs = Mstar_sersic
-        print(f"Stellar mass prior center: Mstar_obs={Mstar_obs:.2e} Msun (max of elpetro/sersic)")
+        Mstar_obs = self._get_mass_star()
 
         # estimate M200 from Mstar
         Mmin=1e9
@@ -262,7 +263,8 @@ class DmNfw:
 
 
         # Moster-like SHMR
-        def Mstar_from_M200(M200, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
+        # M1 from Moster+2013 is in h^-1 Msun; convert to physical Msun by dividing by h
+        def Mstar_from_M200(M200, M1=10**11.59 / H_ACTUAL, N=0.0351, beta=1.376, gamma=0.608):
             x = M200 / M1
             f = 2.0 * N / (x**(-beta) + x**(gamma))
             return f * M200
@@ -326,7 +328,7 @@ class DmNfw:
 
             # M200 prior
             if self.pri_shmr:
-                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.15*pt.log(10))
+                M200_t = pm.LogNormal("M200", mu=pt.log(M200_est), sigma=0.2*pt.log(10))
             else:
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
@@ -354,25 +356,48 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Re prior
-            Re_t = pm.TruncatedNormal('Re', mu=Re_ref_kpc, sigma=Re_ref_kpc * 0.10, lower=float(Re_ref_kpc * 0.5), upper=float(Re_ref_kpc * 2.0))
+            Re_t = pm.LogNormal('Re', mu=pt.log(Re_ref_kpc), sigma=0.1*pt.log(10))
 
             # f_bulge prior
-            # logit(f_bulge) ~ N(mu_logit, sigma_f)
-            # mu_logit = a * (log10 M* - 10.5)
-            # The slope `a`, transition mass `M0`, and scatter `sigma_f` are tunable hyperparameters.
-            _a_slope = 3.0
-            _M0 = 10.5
-            logM_star = pt.log10(Mstar_t)
-            mu_logit = _a_slope * (logM_star - _M0)
-            # latent logit variable
-            logit_f = pm.Normal("logit_f", mu=mu_logit, sigma=0.5)
+            # Use NSA Sersic index n (direct morphological measurement of this galaxy)
+            # as the prior center for bulge fraction, which is more accurate than a
+            # population-level M*-B/T relation.
+            #
+            # Empirical logit-linear relation (Fisher & Drory 2008; Simard+2011):
+            #   logit(f_bulge) ≈ k * (n - n0),  k≈1.2, n0≈2.5
+            # n=1 (pure disk)  → f_bulge ≈ 0.16
+            # n=2.5 (mixed)    → f_bulge ≈ 0.50
+            # n=4 (pure bulge) → f_bulge ≈ 0.84
+            _sersic_n = self.drpall_util.get_sersic_n(self.PLATE_IFU)
+            if _sersic_n is not None:
+                logit_f_mu = float(1.2 * (_sersic_n - 2.5))
+                logit_f_sigma = 0.2  # ~0.05 in f_bulge near center; tighter to resist c–f_bulge degeneracy
+                print(f"f_bulge prior: Sersic n={_sersic_n:.2f} \u2192 logit mu={logit_f_mu:.2f} \u2192 f_bulge\u2248{1/(1+np.exp(-logit_f_mu)):.2f}")
+            else:
+                logit_f_mu = 0.0  # fallback: f_bulge \u2248 0.5
+                logit_f_sigma = 0.8  # wide prior when no morphology data
+                print("f_bulge prior: Sersic n unavailable, using logit mu=0 (f_bulge≈0.5)")
+            # latent logit variable with fixed (numpy) prior center — no stochastic dependency,
+            # avoids funnel geometry that degrades NUTS sampling efficiency.
+            logit_f = pm.Normal("logit_f", mu=logit_f_mu, sigma=logit_f_sigma)
             # transform to (0,1)
             f_bulge_t = pm.Deterministic("f_bulge", pm.math.sigmoid(logit_f))
 
-            # a prior
-            # a = Rd * 0.12,  Rd = Re / 1.678
-            a_mu = float(Re_ref_kpc * 0.07)
-            a_t = pm.LogNormal("a", mu=pt.log(a_mu), sigma=0.25)
+            # a prior: Hernquist scale radius
+            # Physical anchor: bulge half-mass radius r_{1/2} = 1.82 * a
+            # Empirical: bulge half-light radius ≈ 0.1–0.3 Re,total for spiral/lenticular
+            # galaxies (van der Wel+2014; Shen+2003), so  a ≈ 0.05–0.16 Re.
+            # We use a LogNormal prior centred at 0.13*Re (≈ Re,bulge/Re ≈ 0.24):
+            #   – strictly positive, no hard boundary that traps NUTS
+            #   – 95% credible range: a ∈ [0.04*Re, 0.50*Re]  (sigma=0.6 in log space)
+            #   – allows the data to push a toward larger values when warranted,
+            #     without a hard wall causing sampling pathology
+            a_mu_val = float(Re_ref_kpc * 0.13)   # centre: Re,bulge ≈ 1.82*a ≈ 0.24*Re
+            a_sigma_val = 0.6                      # log-scale sigma; 95% ≈ [0.04, 0.50]*Re
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu_val), sigma=a_sigma_val)
+            print(f"a prior: LogNormal centre={a_mu_val:.3f} kpc (≈0.13*Re), "
+                  f"95% CI ≈ [{a_mu_val*np.exp(-2*a_sigma_val):.3f}, "
+                  f"{a_mu_val*np.exp(2*a_sigma_val):.3f}] kpc")
 
             # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)
@@ -557,7 +582,7 @@ class DmNfw:
 
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
-        c_calc = c_from_M200(M200_best, h=H)
+        c_calc = c_from_M200(M200_best, h=H_ACTUAL)
 
 
         # LOO

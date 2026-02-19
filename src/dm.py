@@ -368,15 +368,11 @@ class DmNfw:
             # n=1 (pure disk)  → f_bulge ≈ 0.16
             # n=2.5 (mixed)    → f_bulge ≈ 0.50
             # n=4 (pure bulge) → f_bulge ≈ 0.84
-            _sersic_n = self.drpall_util.get_sersic_n(self.PLATE_IFU)
-            if _sersic_n is not None:
-                logit_f_mu = float(1.2 * (_sersic_n - 2.5))
-                logit_f_sigma = 0.2  # ~0.05 in f_bulge near center; tighter to resist c–f_bulge degeneracy
-                print(f"f_bulge prior: Sersic n={_sersic_n:.2f} \u2192 logit mu={logit_f_mu:.2f} \u2192 f_bulge\u2248{1/(1+np.exp(-logit_f_mu)):.2f}")
-            else:
-                logit_f_mu = 0.0  # fallback: f_bulge \u2248 0.5
-                logit_f_sigma = 0.8  # wide prior when no morphology data
-                print("f_bulge prior: Sersic n unavailable, using logit mu=0 (f_bulge≈0.5)")
+            sersic_n = self.drpall_util.get_sersic_n(self.PLATE_IFU)
+            logit_f_mu = float(1.2 * (sersic_n - 2.5))
+            logit_f_sigma = 0.2  # ~0.05 in f_bulge near center; tighter to resist c–f_bulge degeneracy
+            print(f"f_bulge prior: Sersic n={sersic_n:.2f} \u2192 logit mu={logit_f_mu:.2f} \u2192 f_bulge\u2248{1/(1+np.exp(-logit_f_mu)):.2f}")
+
             # latent logit variable with fixed (numpy) prior center — no stochastic dependency,
             # avoids funnel geometry that degrades NUTS sampling efficiency.
             logit_f = pm.Normal("logit_f", mu=logit_f_mu, sigma=logit_f_sigma)
@@ -788,6 +784,7 @@ class DmNfw:
 
         inf_params = {
             'result': 'success' if success else 'failure',
+            'sersic_n': sersic_n,
             'Mstar': Mstar_best,
             'Mstar_std': Mstar_sd,
             'M200': M200_best,

@@ -14,7 +14,6 @@ from util.firefly_util import FireflyUtil
 from util.plot_util import PlotUtil
 from rc import RotCurve
 from dm import DmNfw
-from star import Star
 
 # Load configuration file
 with open("config.toml", "rb") as f:
@@ -172,19 +171,6 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
 
     r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
 
-    star = Star(drpall_util, firefly_util, maps_util)
-    star.set_PLATE_IFU(PLATE_IFU)
-    radius_star, mass_star, std_err_star = star.get_star_mass_map()
-    Re_kpc = star.get_Re_kpc()
-
-    star_mass_result = {
-        'radius': radius_star,
-        'mass_star': mass_star,
-        'std_err_star': std_err_star,
-        'Re_kpc': Re_kpc
-    }
-
-
     #--------------------------------------------------------
     # DM NFW inference
     #--------------------------------------------------------
@@ -203,10 +189,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False):
         "phi_map": phi_map,
     }
 
-    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(
-        vel_param=vel_param,
-        star_mass_param=star_mass_result,
-    )
+    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(vel_param=vel_param)
     store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME)
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU}")

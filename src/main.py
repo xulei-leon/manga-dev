@@ -25,9 +25,9 @@ with open("config.toml", "rb") as f:
 data_directory = config.get("file", {}).get("data_directory", "data")
 result_directory = config.get("file", {}).get("result_directory", "results")
 VEL_FIT_PARAM_FILENAME = config.get("file", {}).get("rc_param_filename", "rc_param.csv")
-DM_NFW_PARAM_FILENAME = {}
-DM_NFW_PARAM_FILENAME['c-m200'] = config.get("file", {}).get("nfw_param_cm200_filename", "nfw_param_cm200.csv")
-DM_NFW_PARAM_FILENAME['shmr'] = config.get("file", {}).get("nfw_param_shmr_filename", "nfw_param_shmr.csv")
+NFW_PARAM_FILENAME = {}
+NFW_PARAM_FILENAME['c-m200'] = config.get("file", {}).get("nfw_param_cm200_filename", "nfw_param_cm200.csv")
+NFW_PARAM_FILENAME['shmr'] = config.get("file", {}).get("nfw_param_shmr_filename", "nfw_param_shmr.csv")
 
 NRMSE_THRESHOLD = config.get("thresholds", {}).get("NRMSE_THRESHOLD", 0.1)
 CHI_SQ_V_THRESHOLD = config.get("thresholds", {}).get("CHI_SQ_V_THRESHOLD", 10.0)
@@ -86,7 +86,7 @@ def get_params_file(PLATE_IFU: str, filename:str):
 
 def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode: str="c-m200"):
     if debug is None and process_nfw:
-        nfw_param = get_params_file(PLATE_IFU, DM_NFW_PARAM_FILENAME[mode])
+        nfw_param = get_params_file(PLATE_IFU, NFW_PARAM_FILENAME[mode])
         if nfw_param is not None:
             print(f"DM NFW parameters already exist for {PLATE_IFU} mode={mode}. Skipping processing.")
             return
@@ -201,7 +201,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode
     success, inf_result, inf_params = dm_nfw.inf_dm_nfw(vel_param=vel_param)
     if isinstance(inf_params, dict):
         inf_params['inf_mode'] = mode
-    store_params_file(PLATE_IFU, inf_params, filename=DM_NFW_PARAM_FILENAME[mode])
+    store_params_file(PLATE_IFU, inf_params, filename=NFW_PARAM_FILENAME[mode])
 
     if not success:
         print(f"Inferring dark matter NFW failed for {PLATE_IFU} mode={mode}")

@@ -374,7 +374,7 @@ class DmNfw:
                 phi_delta_t = pm.Deterministic("phi_delta", pt.as_tensor_variable(0.0))
 
             # Re prior
-            Re_t = pm.LogNormal('Re', mu=pt.log(Re_ref_kpc), sigma=0.1*pt.log(10))
+            Re_t = pm.LogNormal('Re', mu=pt.log(Re_ref_kpc), sigma=0.05*pt.log(10))
 
             # f_bulge prior
             # Use NSA Sersic index n (direct morphological measurement of this galaxy)
@@ -398,20 +398,12 @@ class DmNfw:
             f_bulge_t = pm.Deterministic("f_bulge", pm.math.sigmoid(logit_f))
 
             # a prior: Hernquist scale radius
-            # Physical anchor: bulge half-mass radius r_{1/2} = 1.82 * a
-            # Empirical: bulge half-light radius ≈ 0.1–0.3 Re,total for spiral/lenticular
-            # galaxies (van der Wel+2014; Shen+2003), so  a ≈ 0.05–0.16 Re.
-            # We use a LogNormal prior centred at 0.13*Re (≈ Re,bulge/Re ≈ 0.24):
-            #   – strictly positive, no hard boundary that traps NUTS
-            #   – 95% credible range: a ∈ [0.04*Re, 0.50*Re]  (sigma=0.6 in log space)
-            #   – allows the data to push a toward larger values when warranted,
-            #     without a hard wall causing sampling pathology
-            a_mu_val = float(Re_ref_kpc * 0.13)   # centre: Re,bulge ≈ 1.82*a ≈ 0.24*Re
-            a_sigma_val = 0.6                      # log-scale sigma; 95% ≈ [0.04, 0.50]*Re
-            a_t = pm.LogNormal("a", mu=pt.log(a_mu_val), sigma=a_sigma_val)
+            a_mu_val = float(Re_ref_kpc * 0.13)   # centre: 0.13*Re based on empirical bulge size relation
+            a_sigma = 0.3  # natural-log sigma; 95% CI ≈ [0.0723*Re, 0.2339*Re] (≈0.13 dex)
+            a_t = pm.LogNormal("a", mu=pt.log(a_mu_val), sigma=a_sigma)
             print(f"a prior: LogNormal centre={a_mu_val:.3f} kpc (≈0.13*Re), "
-                  f"95% CI ≈ [{a_mu_val*np.exp(-2*a_sigma_val):.3f}, "
-                  f"{a_mu_val*np.exp(2*a_sigma_val):.3f}] kpc")
+                  f"95% CI ≈ [{a_mu_val*np.exp(-2*a_sigma):.3f}, "
+                  f"{a_mu_val*np.exp(2*a_sigma):.3f}] kpc")
 
             # sigma_scale prior: to scale the measurement errors
             stderr_obs_valid_mean = np.nanmean(stderr_obs_valid)

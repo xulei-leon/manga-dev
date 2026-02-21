@@ -1,381 +1,353 @@
 import tomllib
-from xml.sax.saxutils import prepare_input_source
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
-from scipy import stats
-import pymc as pm
+from scipy.optimize import curve_fit
 
-# Load configuration file
-with open("config.toml", "rb") as f:
-    config = tomllib.load(f)
-    if not config:
-        raise ValueError("Error: config.toml file is empty")
+# Constants
+M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
+H_0 = 0.674           # Hubble parameter
+DM_INTRINSIC_SIGMA_DEX = 0.10  # Intrinsic scatter in dex for c
 
-# get settings from config
+def load_config() -> dict:
+    """Load configuration from config.toml."""
+    config_path = Path("config.toml")
+    if not config_path.exists():
+        raise FileNotFoundError("Error: config.toml file not found")
+
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+        if not config:
+            raise ValueError("Error: config.toml file is empty")
+    return config
+
+# Initialize paths from config
+config = load_config()
 data_directory = config.get("file", {}).get("data_directory", "data")
 result_directory = config.get("file", {}).get("result_directory", "results")
-NFW_PARAM_FILENAME = {}
-NFW_PARAM_FILENAME['c-m200'] = config.get("file", {}).get("nfw_param_cm200_filename", "nfw_param_cm200.csv")
-NFW_PARAM_FILENAME['shmr'] = config.get("file", {}).get("nfw_param_shmr_filename", "nfw_param_shmr.csv")
+NFW_PARAM_CM200_FILENAME = config.get("file", {}).get("nfw_param_cm200_filename", "nfw_param_cm200.csv")
 
 root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / data_directory
 result_dir = data_dir / result_directory
 
-
-# c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
-def _calc_c_from_M200(M200: float, h: float=0.674) -> float:
-    M_pivot_h_inv = 2e12 # in Msun/h
-    mass_ratio = M200 / (M_pivot_h_inv / h)
-    return 5.74 * (mass_ratio)**(-0.097)
-
-# Moster-like SHMR
-# Mstar = 2 * N * Mhalo / ( (Mhalo/M1)**(-beta) + (Mhalo/M1)**gamma )
-def _calc_Mstar_from_Mhalo(M200: float, M1=10**11.59, N=0.0351, beta=1.376, gamma=0.608):
-    x = M200 / M1
-    f = 2.0 * N / (x**(-beta) + x**(gamma))
-    return f * M200
-
-
-def fit_m200_mstar_mcmc(M200: np.ndarray, Mstar: np.ndarray, draws: int = 800, tune: int = 800):
-    valid_mask = (M200 > 0) & (Mstar > 0)
-    if not np.any(valid_mask):
-        return None
-
-    log_m200 = np.log10(M200[valid_mask])
-    log_mstar = np.log10(Mstar[valid_mask])
-
-    with pm.Model() as model:
-        a = pm.Normal("a", mu=0.0, sigma=5.0)
-        b = pm.Normal("b", mu=0.0, sigma=5.0)
-        c = pm.Normal("c", mu=0.0, sigma=5.0)
-        sigma = pm.HalfNormal("sigma", sigma=0.5)
-
-        mu = a + b * log_m200 + c * log_m200**2
-        pm.Normal("obs", mu=mu, sigma=sigma, observed=log_mstar)
-
-        idata = pm.sample(
-            draws=draws,
-            tune=tune,
-            chains=4,
-            cores=4,
-            target_accept=0.95,
-            progressbar=True,
-        )
-
-    return idata
-
-def get_all_nfw_params(mode: str = 'c-m200'):
-    nfw_param_file = result_dir / NFW_PARAM_FILENAME[mode]
-    nfw_params = pd.read_csv(nfw_param_file, index_col=0).to_dict(orient='index')
-    # remove result is not success
-    nfw_params = {k: v for k, v in nfw_params.items() if v.get('result') == 'success'}
-    return nfw_params
-
-def get_m200_c():
-    nfw_params = get_all_nfw_params("c-m200")
-    if nfw_params is None:
-        return None
-
-    # extract M200 and c as numpy arrays
-    M200 = np.array([nfw_params[PLATE_IFU]['M200'] for PLATE_IFU in nfw_params])
-    M200_std = np.array([nfw_params[PLATE_IFU]['M200_std'] for PLATE_IFU in nfw_params])
-    c = np.array([nfw_params[PLATE_IFU]['c'] for PLATE_IFU in nfw_params])
-    c_std = np.array([nfw_params[PLATE_IFU]['c_std'] for PLATE_IFU in nfw_params])
-    return M200, M200_std, c, c_std
-
-def get_m200_mstar():
-    nfw_params = get_all_nfw_params("shmr")
-    if nfw_params is None:
-        return None
-
-    # extract M200 and Mstar as numpy arrays
-    M200 = np.array([nfw_params[PLATE_IFU]['M200'] for PLATE_IFU in nfw_params])
-    Mstar = np.array([nfw_params[PLATE_IFU]['Mstar'] for PLATE_IFU in nfw_params])
-    return M200, Mstar
-
-def _fit_loglog_linear(M200: np.ndarray, c: np.ndarray):
-    log_m200 = np.log10(M200)
-    log_c = np.log10(c)
-    A = np.column_stack([log_m200, np.ones_like(log_m200)])
-    coeffs, *_ = np.linalg.lstsq(A, log_c, rcond=None)
-    slope, intercept = coeffs
-    return slope, intercept
-
-
-def fit_loglog_linear_scipy(M200: np.ndarray, c: np.ndarray):
-    """Fit log10(c) = slope * log10(M200) + intercept using scipy.stats.linregress.
-
-    Returns: slope, intercept, slope_err, intercept_err, rvalue, pvalue, sigma_y
+def c_m200_model(M200: np.ndarray, c0: float, alpha: float, h: float = H_0) -> np.ndarray:
     """
-    log_m200 = np.log10(M200)
-    log_c = np.log10(c)
-    n = len(log_m200)
-    res = stats.linregress(log_m200, log_c)
-    slope = res.slope
-    intercept = res.intercept
-    slope_err = res.stderr
-    rvalue = res.rvalue
-    pvalue = res.pvalue
+    Theoretical non-linear model for c-M200 relation.
+    c = c0 * (M200 / (M_pivot_h_inv / h))^alpha
+    """
+    mass_ratio = M200 / (M_PIVOT_H_INV / h)
+    return c0 * (mass_ratio)**alpha
 
-    # residuals and standard error of the regression
-    pred = slope * log_m200 + intercept
-    resid = log_c - pred
-    dof = n - 2
-    if dof > 0:
-        sigma_y = np.sqrt(np.sum(resid ** 2) / dof)
-    else:
-        sigma_y = float('nan')
+def get_m200_c_data():
+    """
+    Load M200 and c data from the results CSV file.
+    Returns M200, M200_std, c, c_std, sersic_n arrays.
+    """
+    nfw_param_file = result_dir / NFW_PARAM_CM200_FILENAME
+    if not nfw_param_file.exists():
+        print(f"Warning: Data file {nfw_param_file} not found.")
+        return None, None, None, None, None
 
-    xbar = np.mean(log_m200)
-    Sxx = np.sum((log_m200 - xbar) ** 2)
-    if Sxx > 0 and dof > 0:
-        intercept_err = sigma_y * np.sqrt(1.0 / n + xbar ** 2 / Sxx)
-    else:
-        intercept_err = float('nan')
+    df = pd.read_csv(nfw_param_file, index_col=0)
 
-    return slope, intercept, slope_err, intercept_err, rvalue, pvalue, sigma_y
+    # Filter for successful fits
+    if 'result' in df.columns:
+        df = df[df['result'] == 'success']
 
+    if df.empty:
+        print("Warning: No successful fits found in data.")
+        return None, None, None, None, None
 
-def filter_m200_c_outliers(M200: np.ndarray, c: np.ndarray, sigma: float = 3.0):
+    M200 = df['M200'].values
+    M200_std = df['M200_std'].values if 'M200_std' in df.columns else np.zeros_like(M200)
+    c = df['c'].values
+    c_std = df['c_std'].values if 'c_std' in df.columns else np.zeros_like(c)
+    sersic_n = df['sersic_n'].values if 'sersic_n' in df.columns else np.zeros_like(c)
+
+    return M200, M200_std, c, c_std, sersic_n
+
+def filter_outliers(M200: np.ndarray, c: np.ndarray, sigma_threshold: float = 3.0) -> np.ndarray:
+    """
+    Filter out outliers based on Median Absolute Deviation (MAD) of residuals in log-log space.
+    Returns a boolean mask of valid data points to keep.
+    """
     valid_mask = (M200 > 0) & (c > 0)
     if not np.any(valid_mask):
-        return None
+        return valid_mask
 
     M200_valid = M200[valid_mask]
     c_valid = c[valid_mask]
 
-    slope, intercept = _fit_loglog_linear(M200_valid, c_valid)
+    # Simple log-log linear fit for outlier detection
     log_m200 = np.log10(M200_valid)
     log_c = np.log10(c_valid)
-    residuals = log_c - (slope * log_m200 + intercept)
+    A = np.column_stack([log_m200, np.ones_like(log_m200)])
+    coeffs, *_ = np.linalg.lstsq(A, log_c, rcond=None)
+    slope, intercept = coeffs
 
+    residuals = log_c - (slope * log_m200 + intercept)
     mad = np.median(np.abs(residuals - np.median(residuals)))
+
     if mad == 0:
-        # keep all valid entries
-        keep_mask_full = np.zeros_like(valid_mask, dtype=bool)
-        keep_mask_full[valid_mask] = True
-        return keep_mask_full
+        return valid_mask
 
     robust_sigma = 1.4826 * mad
-    keep_mask = np.abs(residuals) <= sigma * robust_sigma
-    keep_mask_full = np.zeros_like(valid_mask, dtype=bool)
-    keep_mask_full[valid_mask] = keep_mask
-    return keep_mask_full
+    keep_mask = np.abs(residuals) <= sigma_threshold * robust_sigma
 
+    final_mask = np.zeros_like(valid_mask, dtype=bool)
+    final_mask[valid_mask] = keep_mask
+    return final_mask
 
-def fit_m200_c_linear(M200: np.ndarray, c: np.ndarray, M200_std: np.ndarray = None, c_std: np.ndarray = None):
-    """Fit log10(c) = slope * log10(M200) + intercept and compute fit metrics.
-
-    Parameters
-    ----------
-    M200, c       : data arrays (linear units)
-    M200_std, c_std : optional 1-sigma uncertainties in the same linear units.
-                    When provided, chi-squared and RMSE are uncertainty-weighted.
-                    When absent, sigma_y (std of residuals, dof-corrected) is used.
-
-    Returns
-    -------
-    (slope, intercept, slope_err, intercept_err, chi_squared, rmse, nrmse)
-
-    All residual-based metrics are in log10 space.
-    NRMSE is normalised by the full observed log10(c) range.
+def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
-    if M200 is None or c is None or len(M200) == 0:
-        return (None, None, None, None, None, None, None)
+    Fit the non-linear c-M200 relation using scipy.optimize.curve_fit.
+    Includes an intrinsic scatter (in dex) added in quadrature to the measurement errors.
+    Returns c0_fit, alpha_fit, c0_err, alpha_err, log_rmse.
+    """
+    # Initial guess for c0 and alpha based on typical values (e.g., Dutton & Macciò 2014)
+    p0 = [8.5, -0.10]
 
-    slope, intercept, slope_err, intercept_err, rvalue, pvalue, sigma_y = fit_loglog_linear_scipy(M200, c)
-
-    # residuals in log10 space
-    log_m200 = np.log10(M200)
-    log_c_obs = np.log10(c)
-    log_c_fit = slope * log_m200 + intercept
-    residuals = log_c_obs - log_c_fit
-
-    # normalisation range — always the full dataset range
-    log_c_range = np.max(log_c_obs) - np.min(log_c_obs)
-
-    if M200_std is not None and c_std is not None:
-        # propagate absolute errors → log10-space uncertainty
-        # sigma_log10(x) ≈ sigma_x / (x * ln 10)
-        log_m200_err = np.where(
-            (M200_std > 0) & (M200 > 0),
-            M200_std / (M200 * np.log(10)),
-            0.0,
-        )
-        log_c_err = np.where(
-            (c_std > 0) & (c > 0),
-            c_std / (c * np.log(10)),
-            0.0,
-        )
-        # total effective y-error: propagate x-uncertainty through the slope
-        sigma_eff = np.sqrt(log_c_err ** 2 + (slope * log_m200_err) ** 2)
-        valid = sigma_eff > 0
-        if np.any(valid):
-            # weighted chi-squared
-            chi_squared = float(np.sum((residuals[valid] / sigma_eff[valid]) ** 2))
-            # weighted RMSE: sum(w_i * r_i^2) / sum(w_i), w_i = 1/sigma_i^2
-            weights = 1.0 / sigma_eff[valid] ** 2
-            chi_squared_reduced = chi_squared / max(np.sum(valid) - 2, 1)
-            rmse = float(np.sqrt(np.sum(weights * residuals[valid] ** 2) / np.sum(weights)))
-        else:
-            # all errors zero — fall through to unweighted
-            chi_squared = float(np.sum((residuals / sigma_y) ** 2))
-            chi_squared_reduced = chi_squared / max(len(residuals) - 2, 1)
-            rmse = float(sigma_y)
-    else:
-        # no measurement errors: use sigma_y (dof-corrected regression std) as per-point error
-        chi_squared = float(np.sum((residuals / sigma_y) ** 2))   # = n - 2 by construction
-        chi_squared_reduced = chi_squared / max(len(residuals) - 2, 1)
-        rmse = float(sigma_y)   # dof-corrected std of residuals
-
-    nrmse = float(rmse / log_c_range) if log_c_range > 0 else float('nan')
-
-    # print concise summary
-    print("--------- M200-c fit results ---------")
-    print(f"Fit params")
-    print(f" slope      : {slope:.6f} ± {slope_err:.6f}")
-    print(f" intercept  : {intercept:.6f} ± {intercept_err:.6f}")
-    print("---------------")
-    print(f"Fit metrics")
-    # print(f" χ²         : {chi_squared:.3e}")
-    print(f" χ² reduced : {chi_squared_reduced:.3f}")
-    # print(f" RMSE       : {rmse:.3e}")
-    print(f" NRMSE      : {nrmse:.3f}")
-    # print(f" r          : {rvalue:.3f}")
-    # print(f" p          : {pvalue:.3e}")
-    print("--------------------------------------")
-
-    return (slope, intercept, slope_err, intercept_err, chi_squared, rmse, nrmse)
-
-
-# plot M200 vs c
-def plot_m200_c():
-    M200_raw, M200_std, c_raw, c_std = get_m200_c()
-    mask = filter_m200_c_outliers(M200_raw, c_raw)
-    if mask is not None:
-        M200_raw = M200_raw[mask]
-        M200_std = M200_std[mask]
-        c_raw = c_raw[mask]
-        c_std = c_std[mask]
-
-    if M200_raw is None or c_raw is None:
-        print("No DM NFW parameters found.")
-        return
-
-    c_calc = _calc_c_from_M200(M200_raw)  # Use the concentration-mass relation function
-
-    slope, intercept, slope_err, intercept_err, chi_squared, rmse, nrmse = fit_m200_c_linear(
-        M200_raw, c_raw, M200_std=M200_std, c_std=c_std
-    )
-    c_fit = None
-    c_fit_upper = None
-    c_fit_lower = None
+    # Use c_std for weighting if available and valid
     sigma = None
-    if slope is not None:
-        log_m200 = np.log10(M200_raw)
-        log_c_fit = slope * log_m200 + intercept
-        c_fit = 10 ** log_c_fit
+    absolute_sigma = False
+    if c_std is not None and np.all(c_std > 0):
+        # Convert intrinsic scatter from dex to linear scale error approximately
+        # delta_c / c = ln(10) * delta_log10_c
+        intrinsic_scatter_linear = c * np.log(10) * intrinsic_scatter_dex
+        # Add measurement error and intrinsic scatter in quadrature
+        sigma = np.sqrt(c_std**2 + intrinsic_scatter_linear**2)
+        absolute_sigma = True
+    else:
+        # If no measurement errors, just use intrinsic scatter
+        sigma = c * np.log(10) * intrinsic_scatter_dex
+        absolute_sigma = True
 
-        log_c_obs = np.log10(c_raw)
-        residuals = log_c_obs - log_c_fit
-        sigma = np.std(residuals)
-        c_fit_upper = 10 ** (log_c_fit + sigma)
-        c_fit_lower = 10 ** (log_c_fit - sigma)
+    # Wrapper to fix h parameter
+    def model_to_fit(M, c0, alpha):
+        return c_m200_model(M, c0, alpha, h=H_0)
 
-    plt.figure(figsize=(12, 6))
-    plt.scatter(M200_raw, c_raw, alpha=0.7, label='Raw', color='black', s=20, linewidths=0.2, edgecolors='k')
-    # plt.scatter(M200_raw, c_calc, alpha=0.7, label='Calc (Dutton+14)', color='green', s=20, linewidths=0.2, edgecolors='k')
-    if c_fit is not None:
-        sort_idx = np.argsort(M200_raw)
-        m_sorted = M200_raw[sort_idx]
-        c_sorted = c_fit[sort_idx]
-        plt.plot(m_sorted, c_sorted, color='black', label='Fit (log-log)', linestyle='-')
-        if c_fit_upper is not None and c_fit_lower is not None:
-            c_upper_sorted = c_fit_upper[sort_idx]
-            c_lower_sorted = c_fit_lower[sort_idx]
-            plt.fill_between(
-                m_sorted,
-                c_lower_sorted,
-                c_upper_sorted,
-                color='red',
-                alpha=0.2,
-                label='Fit ±1σ'
-            )
-        # fit metrics are computed and printed inside `fit_m200_c_linear`
-    plt.xscale('log')
-    plt.xlabel('M200 [Msun]')
-    plt.ylabel('c')
-    plt.title('DM NFW: M200 vs c')
-    # plt.legend()
-    # plt.grid(True, which="both", ls="--")
-    plt.savefig(result_dir / "m200_c.png")
-
-def plot_m200_mstar():
-    M200, Mstar = get_m200_mstar()
-    if M200 is None or Mstar is None:
-        print("No DM NFW parameters found.")
-        return
-
-    Mstar_calc = _calc_Mstar_from_Mhalo(M200)  # Use the Moster-like SHMR function
-
-    idata = fit_m200_mstar_mcmc(M200, Mstar)
-    m_sorted = None
-    mstar_fit = None
-    mstar_lower = None
-    mstar_upper = None
-    if idata is not None:
-        sort_idx = np.argsort(M200)
-        m_sorted = M200[sort_idx]
-        log_m200_sorted = np.log10(m_sorted)
-
-        posterior = idata.posterior
-        a = posterior["a"].values.reshape(-1)
-        b = posterior["b"].values.reshape(-1)
-        c = posterior["c"].values.reshape(-1)
-
-        mu_samples = (
-            a[:, None]
-            + b[:, None] * log_m200_sorted[None, :]
-            + c[:, None] * log_m200_sorted[None, :] ** 2
+    try:
+        popt, pcov = curve_fit(
+            model_to_fit,
+            M200,
+            c,
+            p0=p0,
+            sigma=sigma,
+            absolute_sigma=absolute_sigma,
+            maxfev=10000
         )
-        mu_mean = np.mean(mu_samples, axis=0)
-        mu_p16 = np.percentile(mu_samples, 16, axis=0)
-        mu_p84 = np.percentile(mu_samples, 84, axis=0)
+        c0_fit, alpha_fit = popt
+        c0_err, alpha_err = np.sqrt(np.diag(pcov))
 
-        mstar_fit = 10 ** mu_mean
-        mstar_lower = 10 ** mu_p16
-        mstar_upper = 10 ** mu_p84
+        c_pred = model_to_fit(M200, c0_fit, alpha_fit)
 
-    plt.figure(figsize=(12, 6))
-    plt.scatter(M200, Mstar, alpha=0.7, label='Raw', color='black', s=20, linewidths=0.2, edgecolors='k')
-    # plt.scatter(M200, Mstar_calc, alpha=0.7, label='Calc (SHMR)', color='green', linewidths=0.2, edgecolors='k')
-    if mstar_fit is not None:
-        plt.plot(m_sorted, mstar_fit, color='black', linestyle='-', label='MCMC fit (log-log poly)')
-        if mstar_lower is not None and mstar_upper is not None:
-            plt.fill_between(
-                m_sorted,
-                mstar_lower,
-                mstar_upper,
-                color='red',
-                alpha=0.2,
-                label='Fit ±1σ'
-            )
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlabel('M200 [Msun]')
-    plt.ylabel('Mstar [Msun]')
-    plt.title('DM NFW: M200 vs Mstar')
-    # plt.legend()
-    # plt.grid(True, which="both", ls="--")
-    plt.savefig(result_dir / "m200_mstar.png")
+        # Calculate metrics in log space for better representation in log-log plots
+        log_c = np.log10(c)
+        log_c_pred = np.log10(c_pred)
+        log_residuals = log_c - log_c_pred
+        log_rmse = np.sqrt(np.mean(log_residuals**2))
+
+        if sigma is not None:
+            residuals = c - c_pred
+            chi_squared = np.sum((residuals / sigma)**2)
+            dof = len(M200) - len(popt)
+            chi_squared_reduced = chi_squared / max(dof, 1)
+        else:
+            chi_squared_reduced = np.nan
+
+        print("--------- Non-linear M200-c fit results ---------")
+        print(f" c0             : {c0_fit:.4f} ± {c0_err:.4f}")
+        print(f" alpha          : {alpha_fit:.4f} ± {alpha_err:.4f}")
+        print("---------------")
+        print(f" chi² reduced   : {chi_squared_reduced:.3f}")
+        print(f" Log RMSE       : {log_rmse:.3f}")
+        print("-------------------------------------------------")
+
+        return c0_fit, alpha_fit, c0_err, alpha_err, log_rmse
+
+    except Exception as e:
+        print(f"Fitting failed: {e}")
+        return None, None, None, None, None
+
+def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fit: float, alpha_fit: float, log_rmse: float):
+    """
+    Plot the M200 vs c data and the overall non-linear fit with residuals, color-coded by Sersic n.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    plt.subplots_adjust(hspace=0.05)
+
+    # Split data by Sersic n
+    mask_high_n = sersic_n >= 2.5
+    mask_low_n = sersic_n < 2.5
+
+    # Plot raw data with color mapping based on sersic_n
+    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=r'Data ($n \geq 2.5$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=r'Data ($n < 2.5$)', s=20, edgecolors='none')
+
+    # Plot fit
+    if c0_fit is not None and alpha_fit is not None:
+        # Generate smooth curve for plotting
+        m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
+        c_plot = c_m200_model(m_plot, c0_fit, alpha_fit, h=H_0)
+
+        ax1.plot(m_plot, c_plot, color='black', linewidth=2,
+                 label=rf'Fit (All): $c_0={c0_fit:.2f}$, $\alpha={alpha_fit:.3f}$')
+
+        # Plot ±1 sigma band in log space
+        if log_rmse is not None and not np.isnan(log_rmse):
+            c_upper = 10**(np.log10(c_plot) + log_rmse)
+            c_lower = 10**(np.log10(c_plot) - log_rmse)
+            ax1.fill_between(m_plot, c_lower, c_upper,
+                             color='black', alpha=0.2, label=r'Fit $\pm 1\sigma$ (log)')
+
+        # Calculate residuals (in log space)
+        c_pred = c_m200_model(M200, c0_fit, alpha_fit, h=H_0)
+        log_residuals = np.log10(c) - np.log10(c_pred)
+
+        # Plot residuals color-coded by sersic_n
+        ax2.scatter(M200[mask_high_n], log_residuals[mask_high_n], color='red', alpha=0.6, s=20, edgecolors='none')
+        ax2.scatter(M200[mask_low_n], log_residuals[mask_low_n], color='blue', alpha=0.6, s=20, edgecolors='none')
+        ax2.axhline(0, color='black', linestyle='--', linewidth=1.5)
+
+        if log_rmse is not None and not np.isnan(log_rmse):
+            ax2.axhline(log_rmse, color='black', linestyle=':', alpha=0.5)
+            ax2.axhline(-log_rmse, color='black', linestyle=':', alpha=0.5)
+            ax2.fill_between(m_plot, -log_rmse, log_rmse, color='black', alpha=0.1)
+
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax1.set_ylabel(r'$c$', fontsize=12)
+    ax1.set_title('DM NFW: $M_{200}$ vs $c$ (All Data)', fontsize=14)
+    ax1.legend(fontsize=11)
+    ax1.grid(True, which="both", ls="--", alpha=0.5)
+
+    ax2.set_xscale('log')
+    ax2.set_xlabel(r'$M_{200} \ [M_\odot]$', fontsize=12)
+    ax2.set_ylabel(r'$\Delta \log_{10} c$', fontsize=12)
+    ax2.grid(True, which="both", ls="--", alpha=0.5)
+
+    # Save plot
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / "m200_c_all.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Overall plot saved to {plot_path}")
+
+def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
+                c0_high: float, alpha_high: float, rmse_high: float,
+                c0_low: float, alpha_low: float, rmse_low: float):
+    """
+    Plot the M200 vs c data and the non-linear fits with residuals, separated by Sersic n.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    plt.subplots_adjust(hspace=0.05)
+
+    # Split data by Sersic n
+    mask_high_n = sersic_n >= 2.5
+    mask_low_n = sersic_n < 2.5
+
+    # Plot raw data with color mapping based on sersic_n
+    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=r'Data ($n \geq 2.5$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=r'Data ($n < 2.5$)', s=20, edgecolors='none')
+
+    m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
+
+    # Plot high n fit
+    if c0_high is not None and alpha_high is not None:
+        c_plot_high = c_m200_model(m_plot, c0_high, alpha_high, h=H_0)
+        ax1.plot(m_plot, c_plot_high, color='darkred', linewidth=2,
+                 label=rf'Fit ($n \geq 2.5$): $c_0={c0_high:.2f}$, $\alpha={alpha_high:.3f}$')
+
+        if rmse_high is not None and not np.isnan(rmse_high):
+            c_upper = 10**(np.log10(c_plot_high) + rmse_high)
+            c_lower = 10**(np.log10(c_plot_high) - rmse_high)
+            ax1.fill_between(m_plot, c_lower, c_upper, color='red', alpha=0.15)
+
+        c_pred_high = c_m200_model(M200[mask_high_n], c0_high, alpha_high, h=H_0)
+        log_res_high = np.log10(c[mask_high_n]) - np.log10(c_pred_high)
+        ax2.scatter(M200[mask_high_n], log_res_high, color='red', alpha=0.6, s=20, edgecolors='none')
+
+    # Plot low n fit
+    if c0_low is not None and alpha_low is not None:
+        c_plot_low = c_m200_model(m_plot, c0_low, alpha_low, h=H_0)
+        ax1.plot(m_plot, c_plot_low, color='darkblue', linewidth=2,
+                 label=rf'Fit ($n < 2.5$): $c_0={c0_low:.2f}$, $\alpha={alpha_low:.3f}$')
+
+        if rmse_low is not None and not np.isnan(rmse_low):
+            c_upper = 10**(np.log10(c_plot_low) + rmse_low)
+            c_lower = 10**(np.log10(c_plot_low) - rmse_low)
+            ax1.fill_between(m_plot, c_lower, c_upper, color='blue', alpha=0.15)
+
+        c_pred_low = c_m200_model(M200[mask_low_n], c0_low, alpha_low, h=H_0)
+        log_res_low = np.log10(c[mask_low_n]) - np.log10(c_pred_low)
+        ax2.scatter(M200[mask_low_n], log_res_low, color='blue', alpha=0.6, s=20, edgecolors='none')
+
+    ax2.axhline(0, color='black', linestyle='--', linewidth=1.5)
+
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax1.set_ylabel(r'$c$', fontsize=12)
+    ax1.set_title('DM NFW: $M_{200}$ vs $c$', fontsize=14)
+    ax1.legend(fontsize=11)
+    ax1.grid(True, which="both", ls="--", alpha=0.5)
+
+    ax2.set_xscale('log')
+    ax2.set_xlabel(r'$M_{200} \ [M_\odot]$', fontsize=12)
+    ax2.set_ylabel(r'$\Delta \log_{10} c$', fontsize=12)
+    ax2.grid(True, which="both", ls="--", alpha=0.5)
+
+    # Save plot
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / "m200_c_split.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Split plot saved to {plot_path}")
 
 
 def main():
-    plot_m200_c()
-    # plot_m200_mstar()
+    # 1. Load data
+    M200_raw, M200_std, c_raw, c_std, sersic_n_raw = get_m200_c_data()
+    if M200_raw is None or c_raw is None:
+        print("Failed to load data. Exiting.")
+        return
+
+    # 2. Filter outliers
+    mask = filter_outliers(M200_raw, c_raw)
+    M200 = M200_raw[mask]
+    c = c_raw[mask]
+    c_err = c_std[mask] if c_std is not None else None
+    sersic_n = sersic_n_raw[mask]
+
+    if len(M200) < 3:
+        print("Not enough valid data points for fitting.")
+        return
+
+    # 3. Perform overall non-linear fit
+    print("\n--- Fitting All Data ---")
+    c0_all, alpha_all, _, _, rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
+
+    # 4. Plot overall results
+    plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all)
+
+    # 5. Split data and perform non-linear fits separately
+    mask_high_n = sersic_n >= 2.5
+    mask_low_n = sersic_n < 2.5
+
+    print("\n--- Fitting High Sersic n (>= 2.5) ---")
+    c0_high, alpha_high, _, _, rmse_high = fit_m200_c_nonlinear(
+        M200[mask_high_n], c[mask_high_n],
+        c_std=c_err[mask_high_n] if c_err is not None else None
+    )
+
+    print("\n--- Fitting Low Sersic n (< 2.5) ---")
+    c0_low, alpha_low, _, _, rmse_low = fit_m200_c_nonlinear(
+        M200[mask_low_n], c[mask_low_n],
+        c_std=c_err[mask_low_n] if c_err is not None else None
+    )
+
+    # 6. Plot split results
+    plot_m200_c_split(M200, c, sersic_n, c0_high, alpha_high, rmse_high, c0_low, alpha_low, rmse_low)
+
     plt.show()
     plt.close()
 

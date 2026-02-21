@@ -30,6 +30,7 @@ from util.drpall_util import DrpallUtil
 H0 = 67.4  # km/s/Mpc
 H_ACTUAL = 0.674
 G_kpc_kms_Msun = const.G.to('kpc km^2 / s^2 Msun').value  # kpc km^2 / s^2 / Msun
+M_pivot_h_inv = 2e12 # in Msun/h, pivot mass for c-M200 relation
 
 # Load configuration file
 with open("config.toml", "rb") as f:
@@ -119,7 +120,6 @@ class DmNfw:
    # c = r200 / rss
    # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
     def _calc_c_from_M200(self, M200: float, h: float) -> float:
-        M_pivot_h_inv = 2e12 # in Msun/h
         mass_ratio = M200 / (M_pivot_h_inv / h)
         return 5.74 * (mass_ratio)**(-0.097)
 
@@ -222,6 +222,9 @@ class DmNfw:
         # Note: use pytensor operations instead of numpy/scipy inside the model
         # ------------------------------------------
 
+        # ------------------------------------------
+        # Vstar
+        # ------------------------------------------
         # bulge component: Hernquist profile
         def v_star_sq_bulge(r, MB, a):
             v_sq = (G_kpc_kms_Msun * MB * r) / (r + a)**2
@@ -262,12 +265,25 @@ class DmNfw:
             return v_baryon_sq
 
 
+        # ------------------------------------------
+        # Vdm
+        # ------------------------------------------
         # Moster-like SHMR
         # M1 from Moster+2013 is in h^-1 Msun; convert to physical Msun by dividing by h
         def Mstar_from_M200(M200, M1=10**11.59 / H_ACTUAL, N=0.0351, beta=1.376, gamma=0.608):
             x = M200 / M1
             f = 2.0 * N / (x**(-beta) + x**(gamma))
             return f * M200
+
+        # c = c0 * (M200 / (M_pivot_h_inv / h))^alpha
+        # logc = log(c0) + alpha * (log(M200) - log(M_pivot_h_inv / h))
+        def c_M200_profile(M200, h, c0, alpha):
+            mass_ratio = M200 / (M_pivot_h_inv / h)
+            return c0 * (mass_ratio)**alpha
+
+        # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
+        def c_from_M200(M200, h):
+            return c_M200_profile(M200, h, 8.5, -0.10)
 
         # r200 closure (kpc) from M200 and Hz
         def r200_from_M200(M200):
@@ -277,11 +293,9 @@ class DmNfw:
         def x_from_M200(r, M200):
             return r / r200_from_M200(M200)
 
-        # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
-        def c_from_M200(M200, h):
-            M_pivot_h_inv = 2e12 # in Msun/h
-            mass_ratio = M200 / (M_pivot_h_inv / h)
-            return 5.74 * (mass_ratio)**(-0.097)
+        def V200_from_M200(M200):
+            return (10.0 * G_kpc_kms_Msun * Hz * M200) ** (1.0 / 3.0)
+
 
         # numerator/denominator for NFW profile
         def nfw_num_den(x, c):
@@ -290,14 +304,19 @@ class DmNfw:
             den = pt.maximum(pt.log1p(c) - c / (1.0 + c), 1e-12)
             return num, den
 
-        def v_dm_sq_profile(r, M200, c, V200):
+        # Vdm^2(r) = V200^2 / x * (ln(1 + c*x) - (c*x)/(1 + c*x)) / (ln(1 + c) - c/(1 + c))
+        def v_dm_sq_profile(r, M200, c):
             x = x_from_M200(r, M200)
             num, den = nfw_num_den(x, c)
             x_safe = pt.maximum(x, 1e-6)
             den_safe = pt.maximum(den, 1e-6)
+            V200 = V200_from_M200(M200)
             return (V200**2 / x_safe) * (num / den_safe)
 
-        # V_drift^2 = 2 * sigma_0^2 * (R / R_d)
+        # ------------------------------------------
+        # Vdrift
+        # ------------------------------------------
+        # Vdrift^2 = 2 * sigma_0^2 * (R / R_d)
         # Re is equivalent to the half-mass radius
         # Re = 1.68 * Rd.
         def v_drift_sq_profile(r, sigma_0, Re):
@@ -324,7 +343,9 @@ class DmNfw:
             # ------------------------------------------
             # Mstar is the total stellar mass for the galaxy with infinity radius, which should be larger than the observed Mstar within finite aperture.
             # Use a soft LogNormal prior to allow some flexibility while keeping it anchored around the observed value.
-            Mstar_t = pm.LogNormal("Mstar", mu=pt.log(Mstar_obs), sigma=0.05*pt.log(10))
+            # Mstar_t = pm.LogNormal("Mstar", mu=pt.log(Mstar_obs), sigma=0.05*pt.log(10))
+            log_Mstar_t = pm.Normal("log_Mstar", mu=pt.log(Mstar_obs), sigma=0.05)
+            Mstar_t = pm.Deterministic("Mstar", pt.exp(log_Mstar_t))
 
             # c-m200 mode: c and M200 are independent free parameters, with M200 anchored to SHMR-inferred value via a soft prior.
             # SHMR-infer mode: M200 has a wide independent prior, and c is tightly constrained by the theoretical c-M200 relation.
@@ -332,27 +353,29 @@ class DmNfw:
             # M200 prior
             if self.inf_mode == "c-m200":
                 # M200 prior anchored to SHMR-inferred value
-                M200_t = pm.LogNormal("M200", mu=pt.log(M200_shmr), sigma=0.2*pt.log(10))
-                print(f"M200 prior (c-M200 mode): LogNormal centred on SHMR-inferred M200={M200_shmr:.2e} Msun, sigma=0.2 dex")
+                # M200_t = pm.LogNormal("M200", mu=pt.log(M200_shmr), sigma=0.2*pt.log(10))
+                log_M200_t = pm.Normal("M200_log10", mu=pt.log(M200_shmr), sigma=0.2)
+                M200_t = pm.Deterministic("M200", pt.exp(log_M200_t))
+                print(f"M200 prior (c-M200 mode): LogNormal centred on SHMR-inferred M200={M200_shmr:.2e} Msun")
             else:
                 # SHMR-infer mode: M200 independent wide prior, not anchored to Mstar.
                 M200_log_t = pm.TruncatedNormal("M200_log10", mu=12.0, sigma=1.0, lower=9.0, upper=13.5)
                 M200_t = pm.Deterministic("M200", 10**M200_log_t)
                 print(f"M200 prior (SHMR-infer mode): TruncatedNormal in log10 space, mu=12.0, sigma=1.0 dex, range=[1e9, 3e13] Msun")
 
-
             # c prior
             if self.inf_mode == "c-m200":
                 # Independent c: decoupled from M200, for empirical c-M200 fitting later.
-                c_t = pm.LogNormal("c", mu=pt.log(9.0), sigma=0.2 * pt.log(10))
-                print(f"c prior (c-M200 mode): LogNormal centred on c≈9, sigma=0.2 dex")
+                c_mu = 9.0  # typical concentration for ~Milky Way mass halos; use a soft prior to allow flexibility.
+                c_sigma = 0.2  # in log space, corresponds to ~0.46 dex in linear space, allowing a wide range of concentrations.
             else:
                 # c tightly constrained by theoretical c-M200 relation.
                 # Dutton & Macciò (2014): c = 5.74 * (M200 / (2e12/h))^(-0.097)
                 # Intrinsic scatter: sigma ≈ 0.11 dex (from Dutton & Macciò 2014 Table 2)
-                c_theory_t = c_from_M200(M200_t, h=H_ACTUAL)
-                c_t = pm.LogNormal("c", mu=pt.log(c_theory_t), sigma=0.11 * pt.log(10))
-                print(f"c prior (SHMR-infer mode): LogNormal centred on c_from_M200(M200), sigma=0.11 dex")
+                c_mu = c_from_M200(M200_t, h=H_ACTUAL)
+                c_sigma = 0.11  # intrinsic scatter in c at fixed M200, in log space
+            log_c_t = pm.Normal("log_c", mu=pt.log(c_mu), sigma=c_sigma)
+            c_t = pm.Deterministic("c", pt.exp(log_c_t))
 
             # sigma_0 prior:
             sigma_0_t = pm.LogNormal("sigma_0", mu=pt.log(5.0), sigma=0.3*pt.log(10))
@@ -417,12 +440,9 @@ class DmNfw:
             # ------------------------------------------
             # deterministic relations
             # ------------------------------------------
-            # V200: derived from M200
-            V200_t = pm.Deterministic("V200", (10 * G_kpc_kms_Msun * Hz * M200_t) ** (1.0 / 3.0))
-
             r = radius_valid  # numpy array
             v_star_t = pm.Deterministic("v_star", pt.sqrt(v_star_sq_profile(r, Mstar_t, Re_t, f_bulge_t, a_t)))
-            v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t, V200_t)))
+            v_dm_t = pm.Deterministic("v_dm", pt.sqrt(v_dm_sq_profile(r, M200_t, c_t)))
             v_drift_t = pm.Deterministic("v_drift", pt.sqrt(v_drift_sq_profile(r, sigma_0_t, Re_t)))
             v_rot_t = pm.Deterministic("v_rot", pt.sqrt(pt.maximum(1e-9, v_rot_sq_profile(v_dm_t, v_star_t, v_drift_t))))
             v_obs_model_t = pm.Deterministic("v_obs_model", v_obs_project_profile(v_rot_t, v_sys_t, inc_t, phi_map_valid-phi_delta_t))
@@ -672,6 +692,10 @@ class DmNfw:
         chi2_best = np.sum(res_norm_best[mask]**2)
         redchi_best = float(chi2_best / dof)
 
+        # Get the correlation between variables c and M200 from the posterior samples
+        c_m200_corr = float(np.corrcoef(c_samples, M200_samples)[0, 1])
+
+
         # ---------------------
         # Inference summary info
         # ---------------------
@@ -720,32 +744,14 @@ class DmNfw:
             print(f" NRMSE (Best)       : {nrmse_best:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
             print("------------------------------------------------------------\n")
-            try:
-                stats = trace.sample_stats
-                if "diverging" in stats:
-                    divergences = int(np.sum(stats["diverging"].values))
-                    print(f"Diagnostics : divergences = {divergences}")
-                if "tree_depth" in stats:
-                    max_treedepth = int(np.max(stats["tree_depth"].values))
-                    print(f"Diagnostics : max tree depth = {max_treedepth}")
-                if "energy" in stats:
-                    bfmi = az.bfmi(trace)
-                    bfmi_min = float(np.min(bfmi))
-                    print(f"Diagnostics : BFMI(min) = {bfmi_min:.3f}")
-            except Exception as exc:
-                print(f"Diagnostics     : sampler stats unavailable ({exc})")
-            print("------------------------------------------------------------\n")
-            try:
-                diag_samples = [np.asarray(flat_trace[var].values).reshape(-1) for var in var_names]
-                corr = np.corrcoef(diag_samples)
-                print("Diagnostics      : correlation matrix for flagged params")
-                header = "\t" + " ".join([f"{v:>10s}" for v in var_names])
-                print(header)
-                for i, var in enumerate(var_names):
-                    row = " ".join([f"{corr[i, j]:10.3f}" for j in range(len(var_names))])
-                    print(f"{var:>10s} {row}")
-            except Exception as exc:
-                print(f"Diagnostics      : correlation matrix unavailable ({exc})")
+            diag_samples = [np.asarray(flat_trace[var].values).reshape(-1) for var in var_names]
+            corr = np.corrcoef(diag_samples)
+            print("Correlation Matrix")
+            header = "\t" + " ".join([f"{v:>10s}" for v in var_names])
+            print(header)
+            for i, var in enumerate(var_names):
+                row = " ".join([f"{corr[i, j]:10.3f}" for j in range(len(var_names))])
+                print(f"{var:>10s} {row}")
             print("------------------------------------------------------------\n")
 
 
@@ -801,6 +807,7 @@ class DmNfw:
             'M200_std': M200_sd,
             'c': c_best,
             'c_std': c_sd,
+            'c_M200_corr': c_m200_corr,
             'v_rot_mean': float(np.mean(v_rot_best)),
             'v_dm_mean': float(np.mean(v_dm_best)),
             'v_star_mean': float(np.mean(v_star_best)),

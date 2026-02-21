@@ -1,4 +1,5 @@
 import os
+from statistics import mean
 import tomllib
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ import arviz as az
 # Constants
 M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
 H_0 = 0.674           # Hubble parameter
-DM_INTRINSIC_SIGMA_DEX = 0.10  # Intrinsic scatter in dex for c
+DM_INTRINSIC_SIGMA_DEX = 0.15  # Intrinsic scatter in dex for c
 
 def load_config() -> dict:
     """Load configuration from config.toml."""
@@ -103,7 +104,7 @@ def filter_outliers(M200: np.ndarray, c: np.ndarray, sigma_threshold: float = 3.
     final_mask[valid_mask] = keep_mask
     return final_mask
 
-def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
     """
     Fit the non-linear c-M200 relation using scipy.optimize.curve_fit.
     Includes an intrinsic scatter (in dex) added in quadrature to the measurement errors.
@@ -160,13 +161,14 @@ def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = No
         else:
             chi_squared_reduced = np.nan
 
-        print("--------- Non-linear M200-c fit results ---------")
-        print(f" c0             : {c0_fit:.4f} ± {c0_err:.4f}")
-        print(f" alpha          : {alpha_fit:.4f} ± {alpha_err:.4f}")
-        print("---------------")
-        print(f" chi² reduced   : {chi_squared_reduced:.3f}")
-        print(f" Log RMSE       : {log_rmse:.3f}")
-        print("-------------------------------------------------")
+        if verbose:
+            print("--------- Non-linear M200-c fit results ---------")
+            print(f" c0             : {c0_fit:.4f} ± {c0_err:.4f}")
+            print(f" alpha          : {alpha_fit:.4f} ± {alpha_err:.4f}")
+            print("---------------")
+            print(f" chi² reduced   : {chi_squared_reduced:.3f}")
+            print(f" Log RMSE       : {log_rmse:.3f}")
+            print("-------------------------------------------------")
 
         return c0_fit, alpha_fit, c0_err, alpha_err, log_rmse
 
@@ -174,7 +176,7 @@ def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = No
         print(f"Fitting failed: {e}")
         return None, None, None, None, None
 
-def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
     """
     Fit the non-linear c-M200 relation using PyMC (MCMC).
     Returns c0_fit, alpha_fit, c0_err, alpha_err, log_rmse.
@@ -198,10 +200,11 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
 
         # Expected value
         log_c_expect = log_c0_t + alpha_t * (log_M200 - log_M_pivot)
-        log_c_t = pm.Deterministic('log_c', log_c_expect)
+        log_c_t = pm.Deterministic('log_c_model', log_c_expect)
+        c_model_t = pm.Deterministic('c_model', 10**log_c_t)
 
         # Likelihood
-        c_obs = pm.Normal('c_obs', mu=log_c_t, sigma=total_log_err, observed=log_c)
+        log_c_like = pm.Normal('log_c_obs', mu=log_c_t, sigma=total_log_err, observed=log_c)
 
         # Sampling
         draws = 3000
@@ -238,12 +241,14 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     posterior = trace.posterior
     log_c0_samples = posterior['log_c0'].values.flatten()
     alpha_samples = posterior['alpha'].values.flatten()
+    c_model_samples = posterior['c_model'].values.flatten()
 
     # Maximum A Posteriori (MAP) estimates
     lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
     best_idx = int(lp_stacked.argmax("sample").values)
     log_c0_best = log_c0_samples[best_idx]
     alpha_best = alpha_samples[best_idx]
+    c_model_best = c_model_samples[best_idx]
 
     # Convert back to linear c0
     c0_mean = 10**log_c0_mean
@@ -260,19 +265,154 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     log_residuals = np.log10(c) - np.log10(c_pred)
     log_rmse = np.sqrt(np.mean(log_residuals**2))
 
-    print("--------- MCMC M200-c fit results ---------")
-    print(f" c0 best        : {c0_best:.4f} ± {c0_err:.4f}")
-    print(f" alpha best     : {alpha_best:.4f} ± {alpha_err:.4f}")
-    print("---------------")
-    print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
-    print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_err:.4f}")
-    print("---------------")
-    print(f" Log RMSE       : {log_rmse:.3f}")
-    print("-------------------------------------------")
+    # Recalculate Reduced Chi2 for the best fit
+    params_num = 2  # log_c0 and alpha
+    mask = np.isfinite(M200) & np.isfinite(c)
+    res_obs_best = c - c_model_best
+    res_norm_best = res_obs_best / (total_log_err * c * np.log(10))  # Convert log error to linear space for chi2
+    rmse_best = np.sqrt(np.mean(res_norm_best[mask]**2))
+    nrmse_best = rmse_best / (np.mean(c[mask]) if np.mean(c[mask]) > 0 else 1)
+
+
+    dof = int(max(np.sum(mask) - params_num, 1))
+    redchi_best = np.sum(res_norm_best[mask]**2) / dof if dof > 0 else np.nan
+
+    if verbose:
+        print("--------- MCMC M200-c fit results ---------")
+        print(f" c0 best        : {c0_best:.4f} ± {c0_err:.4f}")
+        print(f" alpha best     : {alpha_best:.4f} ± {alpha_err:.4f}")
+        print("---------------")
+        print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
+        print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_err:.4f}")
+        print("---------------")
+        print(f" Log RMSE       : {log_rmse:.3f}")
+        print(f" NRMSE          : {nrmse_best:.3f}")
+        print(f" Reduced Chi²   : {redchi_best:.3f}")
+        print("-------------------------------------------")
 
     return c0_best, alpha_best, c0_err, alpha_err, log_rmse
 
-def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fit: float, alpha_fit: float, log_rmse: float):
+def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+    """
+    Use a Bayesian switchpoint model to infer the optimal Sersic n threshold.
+    """
+    print("\n--- Inferring optimal Sersic n threshold using MCMC ---")
+    log_M200 = np.log10(M200)
+    log_c = np.log10(c)
+    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
+
+    if c_std is not None and np.all(c_std > 0):
+        log_c_err = c_std / (c * np.log(10))
+        total_log_err = np.sqrt(log_c_err**2 + intrinsic_scatter_dex**2)
+    else:
+        total_log_err = np.full_like(log_c, intrinsic_scatter_dex)
+
+    with pm.Model() as model:
+        # Threshold prior: restrict to 10th-90th percentile to avoid edge effects
+        lower_bound = np.percentile(sersic_n, 10)
+        upper_bound = np.percentile(sersic_n, 90)
+        threshold = pm.Uniform('threshold', lower=lower_bound, upper=upper_bound)
+
+        # Steepness of the sigmoid transition
+        k = pm.HalfNormal('k', sigma=10)
+
+        # Priors for high n group
+        log_c0_high = pm.Normal('log_c0_high', mu=np.log10(8.5), sigma=0.5)
+        alpha_high = pm.Normal('alpha_high', mu=-0.1, sigma=0.2)
+
+        # Priors for low n group
+        log_c0_low = pm.Normal('log_c0_low', mu=np.log10(8.5), sigma=0.5)
+        alpha_low = pm.Normal('alpha_low', mu=-0.1, sigma=0.2)
+
+        # Weight for high group (1 when sersic_n > threshold, 0 when sersic_n < threshold)
+        w = pm.math.sigmoid(k * (sersic_n - threshold))
+
+        # Expected value
+        log_c_expect_high = log_c0_high + alpha_high * (log_M200 - log_M_pivot)
+        log_c_expect_low = log_c0_low + alpha_low * (log_M200 - log_M_pivot)
+
+        log_c_expect = w * log_c_expect_high + (1 - w) * log_c_expect_low
+
+        # Likelihood
+        log_c_obs = pm.Normal('log_c_obs', mu=log_c_expect, sigma=total_log_err, observed=log_c)
+
+        # Sampling
+        draws = 3000
+        tune = 2000
+        chains = min(4, os.cpu_count())
+        sampler = 'nutpie'
+        init = "jitter+adapt_full"
+
+        trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
+                          nuts_sampler=sampler, target_accept=0.95,
+                          random_seed=42, progressbar=True,
+                          return_inferencedata=True)
+
+    summary = az.summary(trace, var_names=["threshold", "log_c0_high", "alpha_high", "log_c0_low", "alpha_low"], round_to=4)
+
+    threshold_mean = summary.loc['threshold', 'mean']
+    threshold_sd = summary.loc['threshold', 'sd']
+
+    print("--------- MCMC Threshold Inference Results ---------")
+    print(f" Inferred Sersic n threshold: {threshold_mean:.4f} ± {threshold_sd:.4f}")
+    print(f" High n - log_c0: {summary.loc['log_c0_high', 'mean']:.4f}, alpha: {summary.loc['alpha_high', 'mean']:.4f}")
+    print(f" Low n  - log_c0: {summary.loc['log_c0_low', 'mean']:.4f}, alpha: {summary.loc['alpha_low', 'mean']:.4f}")
+    print("----------------------------------------------------")
+
+    return threshold_mean
+
+def infer_sersic_n_threshold_grid(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+    """
+    Infer the optimal Sersic n threshold by grid search, minimizing the combined RMSE.
+    """
+    print("\n--- Inferring optimal Sersic n threshold using Grid Search ---")
+    lower_bound = np.percentile(sersic_n, 15)
+    upper_bound = np.percentile(sersic_n, 85)
+
+    thresholds = np.linspace(lower_bound, upper_bound, 50)
+    best_threshold = 2.5
+    min_rmse = np.inf
+
+    for t in thresholds:
+        mask_high = sersic_n >= t
+        mask_low = sersic_n < t
+
+        if np.sum(mask_high) < 5 or np.sum(mask_low) < 5:
+            continue
+
+        # Fit high
+        res_high = fit_m200_c_nonlinear(M200[mask_high], c[mask_high],
+                                        c_std[mask_high] if c_std is not None else None,
+                                        intrinsic_scatter_dex, verbose=False)
+        # Fit low
+        res_low = fit_m200_c_nonlinear(M200[mask_low], c[mask_low],
+                                       c_std[mask_low] if c_std is not None else None,
+                                       intrinsic_scatter_dex, verbose=False)
+
+        if res_high[0] is None or res_low[0] is None:
+            continue
+
+        # Calculate combined RMSE
+        rmse_high = res_high[4]
+        rmse_low = res_low[4]
+
+        # Weighted average of RMSE squared
+        n_high = np.sum(mask_high)
+        n_low = np.sum(mask_low)
+        combined_rmse = np.sqrt((n_high * rmse_high**2 + n_low * rmse_low**2) / (n_high + n_low))
+
+        if combined_rmse < min_rmse:
+            min_rmse = combined_rmse
+            best_threshold = t
+
+    print(f"--------- Grid Search Threshold Inference Results ---------")
+    print(f" Best Sersic n threshold: {best_threshold:.4f}")
+    print(f" Minimum combined Log RMSE: {min_rmse:.4f}")
+    print("-----------------------------------------------------------")
+
+    return best_threshold
+
+def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fit: float, alpha_fit: float, log_rmse: float, threshold: float = 2.5):
     """
     Plot the M200 vs c data and the overall non-linear fit with residuals, color-coded by Sersic n.
     """
@@ -280,12 +420,12 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
     plt.subplots_adjust(hspace=0.05)
 
     # Split data by Sersic n
-    mask_high_n = sersic_n >= 2.5
-    mask_low_n = sersic_n < 2.5
+    mask_high_n = sersic_n >= threshold
+    mask_low_n = sersic_n < threshold
 
     # Plot raw data with color mapping based on sersic_n
-    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=r'Data ($n \geq 2.5$)', s=20, edgecolors='none')
-    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=r'Data ($n < 2.5$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=rf'Data ($n \geq {threshold:.2f}$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=rf'Data ($n < {threshold:.2f}$)', s=20, edgecolors='none')
 
     # Plot fit
     if c0_fit is not None and alpha_fit is not None:
@@ -337,7 +477,8 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
 
 def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
                 c0_high: float, alpha_high: float, rmse_high: float,
-                c0_low: float, alpha_low: float, rmse_low: float):
+                c0_low: float, alpha_low: float, rmse_low: float,
+                threshold: float = 2.5):
     """
     Plot the M200 vs c data and the non-linear fits with residuals, separated by Sersic n.
     """
@@ -345,12 +486,12 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     plt.subplots_adjust(hspace=0.05)
 
     # Split data by Sersic n
-    mask_high_n = sersic_n >= 2.5
-    mask_low_n = sersic_n < 2.5
+    mask_high_n = sersic_n >= threshold
+    mask_low_n = sersic_n < threshold
 
     # Plot raw data with color mapping based on sersic_n
-    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=r'Data ($n \geq 2.5$)', s=20, edgecolors='none')
-    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=r'Data ($n < 2.5$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.6, label=rf'Data ($n \geq {threshold:.2f}$)', s=20, edgecolors='none')
+    ax1.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.6, label=rf'Data ($n < {threshold:.2f}$)', s=20, edgecolors='none')
 
     m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
 
@@ -358,7 +499,7 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     if c0_high is not None and alpha_high is not None:
         c_plot_high = c_m200_model(m_plot, c0_high, alpha_high, h=H_0)
         ax1.plot(m_plot, c_plot_high, color='darkred', linewidth=2,
-                 label=rf'Fit ($n \geq 2.5$): $c_0={c0_high:.2f}$, $\alpha={alpha_high:.3f}$')
+                 label=rf'Fit ($n \geq {threshold:.2f}$): $c_0={c0_high:.2f}$, $\alpha={alpha_high:.3f}$')
 
         if rmse_high is not None and not np.isnan(rmse_high):
             c_upper = 10**(np.log10(c_plot_high) + rmse_high)
@@ -373,7 +514,7 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     if c0_low is not None and alpha_low is not None:
         c_plot_low = c_m200_model(m_plot, c0_low, alpha_low, h=H_0)
         ax1.plot(m_plot, c_plot_low, color='darkblue', linewidth=2,
-                 label=rf'Fit ($n < 2.5$): $c_0={c0_low:.2f}$, $\alpha={alpha_low:.3f}$')
+                 label=rf'Fit ($n < {threshold:.2f}$): $c_0={c0_low:.2f}$, $\alpha={alpha_low:.3f}$')
 
         if rmse_low is not None and not np.isnan(rmse_low):
             c_upper = 10**(np.log10(c_plot_low) + rmse_low)
@@ -439,27 +580,33 @@ def main(mode: str = 'curve_fit'):
     print("\n--- Fitting All Data ---")
     c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, c_std=c_err)
 
-    # 4. Plot overall results
-    plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all)
+    # 4. Infer optimal Sersic n threshold
+    if mode == 'mcmc':
+        threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
+    else:
+        threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
 
-    # 5. Split data and perform non-linear fits separately
-    mask_high_n = sersic_n >= 2.5
-    mask_low_n = sersic_n < 2.5
+    # 5. Plot overall results
+    plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all, threshold=threshold)
 
-    print("\n--- Fitting High Sersic n (>= 2.5) ---")
+    # 6. Split data and perform non-linear fits separately
+    mask_high_n = sersic_n >= threshold
+    mask_low_n = sersic_n < threshold
+
+    print(f"\n--- Fitting High Sersic n (>= {threshold:.2f}) ---")
     c0_high, alpha_high, _, _, rmse_high = fit_func(
         M200[mask_high_n], c[mask_high_n],
         c_std=c_err[mask_high_n] if c_err is not None else None
     )
 
-    print("\n--- Fitting Low Sersic n (< 2.5) ---")
+    print(f"\n--- Fitting Low Sersic n (< {threshold:.2f}) ---")
     c0_low, alpha_low, _, _, rmse_low = fit_func(
         M200[mask_low_n], c[mask_low_n],
         c_std=c_err[mask_low_n] if c_err is not None else None
     )
 
-    # 6. Plot split results
-    plot_m200_c_split(M200, c, sersic_n, c0_high, alpha_high, rmse_high, c0_low, alpha_low, rmse_low)
+    # 7. Plot split results
+    plot_m200_c_split(M200, c, sersic_n, c0_high, alpha_high, rmse_high, c0_low, alpha_low, rmse_low, threshold=threshold)
 
     plt.show()
     plt.close()

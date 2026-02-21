@@ -1,9 +1,12 @@
+import os
 import tomllib
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
+import pymc as pm
+import arviz as az
 
 # Constants
 M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
@@ -171,6 +174,104 @@ def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = No
         print(f"Fitting failed: {e}")
         return None, None, None, None, None
 
+def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+    """
+    Fit the non-linear c-M200 relation using PyMC (MCMC).
+    Returns c0_fit, alpha_fit, c0_err, alpha_err, log_rmse.
+    """
+    # Convert to log space for better MCMC sampling
+    log_M200 = np.log10(M200)
+    log_c = np.log10(c)
+    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
+
+    # Calculate total error in log space
+    if c_std is not None and np.all(c_std > 0):
+        log_c_err = c_std / (c * np.log(10))
+        total_log_err = np.sqrt(log_c_err**2 + intrinsic_scatter_dex**2)
+    else:
+        total_log_err = np.full_like(log_c, intrinsic_scatter_dex)
+
+    with pm.Model() as model:
+        # Priors
+        log_c0_t = pm.Normal('log_c0', mu=np.log10(8.5), sigma=0.5)
+        alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.2)
+
+        # Expected value
+        log_c_expect = log_c0_t + alpha_t * (log_M200 - log_M_pivot)
+        log_c_t = pm.Deterministic('log_c', log_c_expect)
+
+        # Likelihood
+        c_obs = pm.Normal('c_obs', mu=log_c_t, sigma=total_log_err, observed=log_c)
+
+        # Sampling
+        draws = 3000
+        tune = 2000
+        chains = min(4, os.cpu_count())
+        target_accept = 0.95
+        displaybar = True
+        checks = True
+        sampler = 'nutpie'
+        init = "jitter+adapt_full"
+        random_seed = 42
+        trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
+                          nuts_sampler=sampler, target_accept=target_accept,
+                          progressbar=displaybar,
+                          random_seed=random_seed,
+                          return_inferencedata=True, compute_convergence_checks=checks)
+
+        try:
+            pm.compute_log_likelihood(trace)
+        except Exception as exc:
+            print(f"Warning: compute_log_likelihood failed: {exc}")
+
+        ppc_idata = pm.sample_posterior_predictive(trace, random_seed=random_seed, extend_inferencedata=True)
+
+    var_names = ["log_c0", "alpha"]
+    summary = az.summary(trace, var_names=var_names, round_to=4)
+
+    log_c0_mean = summary.loc['log_c0', 'mean']
+    alpha_mean = summary.loc['alpha', 'mean']
+    log_c0_sd = summary.loc['log_c0', 'sd']
+    alpha_sd = summary.loc['alpha', 'sd']
+
+    # extract posterior samples
+    posterior = trace.posterior
+    log_c0_samples = posterior['log_c0'].values.flatten()
+    alpha_samples = posterior['alpha'].values.flatten()
+
+    # Maximum A Posteriori (MAP) estimates
+    lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
+    best_idx = int(lp_stacked.argmax("sample").values)
+    log_c0_best = log_c0_samples[best_idx]
+    alpha_best = alpha_samples[best_idx]
+
+    # Convert back to linear c0
+    c0_mean = 10**log_c0_mean
+    c0_best = 10**log_c0_best
+    # Error propagation for c0: sigma_c0 = c0 * ln(10) * sigma_log_c0
+    c0_err = c0_best * np.log(10) * log_c0_sd
+
+    alpha_mean = alpha_mean
+    alpha_best = alpha_best
+    alpha_err = alpha_sd
+
+    # Calculate RMSE
+    c_pred = c_m200_model(M200, c0_best, alpha_best, h=H_0)
+    log_residuals = np.log10(c) - np.log10(c_pred)
+    log_rmse = np.sqrt(np.mean(log_residuals**2))
+
+    print("--------- MCMC M200-c fit results ---------")
+    print(f" c0 best        : {c0_best:.4f} ± {c0_err:.4f}")
+    print(f" alpha best     : {alpha_best:.4f} ± {alpha_err:.4f}")
+    print("---------------")
+    print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
+    print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_err:.4f}")
+    print("---------------")
+    print(f" Log RMSE       : {log_rmse:.3f}")
+    print("-------------------------------------------")
+
+    return c0_best, alpha_best, c0_err, alpha_err, log_rmse
+
 def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fit: float, alpha_fit: float, log_rmse: float):
     """
     Plot the M200 vs c data and the overall non-linear fit with residuals, color-coded by Sersic n.
@@ -304,7 +405,11 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     print(f"Split plot saved to {plot_path}")
 
 
-def main():
+def main(mode: str = 'curve_fit'):
+    """
+    Main execution function.
+    mode: 'curve_fit' (default) or 'mcmc'
+    """
     # 1. Load data
     M200_raw, M200_std, c_raw, c_std, sersic_n_raw = get_m200_c_data()
     if M200_raw is None or c_raw is None:
@@ -322,9 +427,17 @@ def main():
         print("Not enough valid data points for fitting.")
         return
 
+    # Select fitting function based on mode
+    if mode == 'mcmc':
+        print("\nUsing MCMC (PyMC) for fitting...")
+        fit_func = fit_m200_c_mcmc
+    else:
+        print("\nUsing curve_fit for fitting...")
+        fit_func = fit_m200_c_nonlinear
+
     # 3. Perform overall non-linear fit
     print("\n--- Fitting All Data ---")
-    c0_all, alpha_all, _, _, rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
+    c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, c_std=c_err)
 
     # 4. Plot overall results
     plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all)
@@ -334,13 +447,13 @@ def main():
     mask_low_n = sersic_n < 2.5
 
     print("\n--- Fitting High Sersic n (>= 2.5) ---")
-    c0_high, alpha_high, _, _, rmse_high = fit_m200_c_nonlinear(
+    c0_high, alpha_high, _, _, rmse_high = fit_func(
         M200[mask_high_n], c[mask_high_n],
         c_std=c_err[mask_high_n] if c_err is not None else None
     )
 
     print("\n--- Fitting Low Sersic n (< 2.5) ---")
-    c0_low, alpha_low, _, _, rmse_low = fit_m200_c_nonlinear(
+    c0_low, alpha_low, _, _, rmse_low = fit_func(
         M200[mask_low_n], c[mask_low_n],
         c_std=c_err[mask_low_n] if c_err is not None else None
     )
@@ -352,4 +465,10 @@ def main():
     plt.close()
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Fit c-M200 relation.")
+    parser.add_argument('--mode', type=str, choices=['curve_fit', 'mcmc'], default='curve_fit',
+                        help="Fitting method to use: 'curve_fit' or 'mcmc'")
+    args = parser.parse_args()
+
+    main(mode=args.mode)

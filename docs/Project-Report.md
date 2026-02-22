@@ -2,7 +2,7 @@
 
 ## 1. 引言
 
-在现代宇宙学标准模型（$\Lambda$CDM）的框架下，星系形成并演化于由暗物质主导的引力势阱（暗物质晕）中。高分辨率的冷暗物质（CDM）宇宙学 N 体模拟表明，暗物质晕的密度分布普遍遵循 Navarro-Frenk-White (NFW) 轮廓。该轮廓的特征是密度在中心区域呈现 $\rho \propto r^{-1}$ 的尖点（Cusp），而在外部区域以 $\rho \propto r^{-3}$ 的形式衰减。NFW 轮廓主要由两个关键物理参数决定：维里质量（$M_{200}$）和浓集度（$c$）。$M_{200}$ 代表了暗物质晕的整体规模与引力束缚范围；浓集度 $c$ 则反映了暗物质向中心聚集的程度。宇宙学模拟预言，$c$ 与 $M_{200}$ 之间存在反相关的标度关系（即质量越大的暗晕，形成时间越晚，中心浓集度越低），这一关系是检验暗物质本质和星系形成历史的重要探针。
+在现代宇宙学标准模型（$\Lambda$ CDM）的框架下，星系形成并演化于由暗物质主导的引力势阱（暗物质晕）中。高分辨率的冷暗物质（CDM）宇宙学 N 体模拟表明，暗物质晕的密度分布普遍遵循 Navarro-Frenk-White (NFW) 轮廓。该轮廓的特征是密度在中心区域呈现 $\rho \propto r^{-1}$ 的尖点（Cusp），而在外部区域以 $\rho \propto r^{-3}$ 的形式衰减。NFW 轮廓主要由两个关键物理参数决定：维里质量（$M_{200}$）和浓集度（$c$）。$M_{200}$ 代表了暗物质晕的整体规模与引力束缚范围；浓集度 $c$ 则反映了暗物质向中心聚集的程度。宇宙学模拟预言，$c$ 与 $M_{200}$ 之间存在反相关的标度关系（即质量越大的暗晕，形成时间越晚，中心浓集度越低），这一关系是检验暗物质本质和星系形成历史的重要探针。
 
 在观测层面，星系的气体旋转曲线（Rotation Curve, RC）直接反映了星系内部的总引力势，是测量暗物质晕质量分布的最有效手段之一。本项目的核心目的：利用 MaNGA（Mapping Nearby Galaxies at Apache Point Observatory）积分场光谱（IFU）巡天提供的大样本二维运动学数据，提取高质量的星系气体旋转曲线，同时构建包含恒星盘、球核与暗物质晕的多组分动力学质量模型。在此基础上，我们采用马尔可夫链蒙特卡洛（MCMC）贝叶斯推断方法，精确测量星系暗物质晕的 $M_{200}$ 与 $c$。
 
@@ -78,14 +78,20 @@ $$ \log_{10} c = \log_{10} c_0 - \alpha \log_{10}\left(\frac{M_{200}}{10^{12} M_
 - **数据点（Spaxel）过滤**：仅保留 $\text{SNR} \ge 10.0$ 且方位角位于运动学长轴 $\pm 45^\circ$ 范围内的像素点，以抑制非圆运动（如旋臂流、棒结构）的干扰。同时，剔除 IVAR 最低的 10% 数据点以去除异常噪声。
 - **星系级过滤**：使用 Levenberg-Marquardt 算法进行加权拟合。根据拟合残差，剔除归一化均方根误差（$\text{NRMSE} > 0.1$）或约化卡方（$\chi^2 > 10$）过大的星系，确保进入 MCMC 阶段的星系具有规则且高质量的旋转曲线。
 
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="fig-4.2.png" alt="RC 拟合结果" width="50%">
+</div>
+
+*图 4.2：星系二维速度场的经验旋转曲线（RC）优化拟合示例。*
+
 ### 4.3 使用 MCMC 方法推断 $c$ 和 $M_{200}$
 基于公式（2.1）及（2.3）至（2.6），我们在 PyMC 框架下构建贝叶斯模型，使用 NUTS 采样器推断暗物质晕参数。在实际推断中，如果仅仅依靠旋转曲线（RC）的物理公式进行约束，由于公式（2.3）至（2.6）涉及的自由参数过多（如核球质量、盘质量、暗晕质量与浓集度等），且缺乏其他物理背景的额外限制，模型会面临极其严重的参数简并问题（尤其是盘-晕简并）。因此，在实际项目开发中，我们进行了 MCMC 先验参数的调试与似然函数的优化，以引入更多物理约束。具体的贝叶斯框架设置如下：
 
 **1. 物理先验（Priors）的精细设定**
 为打破简并并确保物理合理性，我们为各参数设定了强物理先验：
 - **恒星质量 ($M_{\star}$)**：采用对数正态先验 $\mathcal{LN}(\mu = \ln M_{\star,\mathrm{obs}}, \sigma = 0.05 \ln 10)$。将其紧密锚定在 DRPALL 提供的观测值上，仅允许 0.05 dex 的浮动。
-- **暗物质晕质量 ($M_{200}$)**：在独立推断模式下，采用宽泛的截断正态先验（对数空间下 $\mu=12.0, \sigma=1.0$ dex）；在锚定模式下，则通过恒星-暗晕质量关系（SHMR）施加 $\sigma=0.2$ dex 的对数正态先验。
-- **浓集度 ($c$)**：采用对数正态先验。独立模式下中心值设为 $c \approx 9$（$\sigma=0.2$ dex）；锚定模式下则受理论 $c-M_{200}$ 关系严格约束（$\sigma=0.11$ dex）。
+- **暗物质晕质量 ($M_{200}$)**：通过恒星-暗晕质量关系（SHMR）施加 $\sigma=0.2$ dex 的对数正态先验。
+- **浓集度 ($c$)**：采用对数正态先验。中心值设为 $c \approx 9$（$\sigma=0.2$ dex）。
 - **核球质量分数 ($f_{\mathrm{bulge}}$)**：为避免星系族群关系的随机性，我们将其与星系自身的 Sérsic 指数 $n$ 耦合，采用经验 logit-线性关系：$\text{logit}(f_{\mathrm{bulge}}) \sim \mathcal{N}(\mu = 1.2(n - 2.5), \sigma = 0.2)$。
 - **核球尺度 ($a$)**：$\mathcal{LN}(\mu = \ln(0.13 R_e), \sigma = 0.3)$。基于核球尺寸的经验标度关系设定，防止 MCMC 采样时出现非物理的极值。
 - **速度弥散 ($\sigma_0$)**：$\mathcal{LN}(\mu = \ln 5, \sigma = 0.3 \ln 10)$ km/s，为非对称漂移修正提供弱信息先验。
@@ -99,6 +105,12 @@ $$ \log_{10} c = \log_{10} c_0 - \alpha \log_{10}\left(\frac{M_{200}}{10^{12} M_
 **3. 后验推断**
 通过上述精心调试的模型，使用 MCMC 采样，最终获得 $M_{200}$ 和 $c$ 的边缘后验分布及不确定度。
 
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="fig-4.3.png" alt="MCMC 推断结果" width="50%">
+</div>
+
+*图 4.3：单个星系多组分动力学质量分解的 MCMC 后验推断结果。*
+
 ### 4.4 拟合 $c-M_{200}$ 关系并分析 Sérsic $n$ 的影响
 提取大样本星系的 $M_{200}$ 和 $c$ 后验中值后，我们再次使用 MCMC 方法拟合宇宙学标度的质量-浓集度线性关系（见公式 2.7）。
 在星系形态学中，普遍认为 Sérsic 指数 $n = 2.5$ 是区分盘主导（晚型）和核球主导（早型）星系的临界值。在我们的数据分析中，通过对样本的统计特征进行划分，得出的实际临界值为 $n = 2.4$，这与理论预期高度一致。
@@ -108,6 +120,13 @@ $$ \log_{10} c = \log_{10} c_0 - \alpha \log_{10}\left(\frac{M_{200}}{10^{12} M_
 具体而言，拟合结果显示：**两个子样本的质量依赖斜率 $\alpha$ 基本一致，但高 $n$ 值星系的特征浓集度 $c_0$ 显著更高**。这一结论具有重要的物理意义：
 1. **$\alpha$ 值的一致性**：$\alpha$ 反映了暗晕浓集度随质量变化的标度关系。两个子样本的 $\alpha$ 值相近，说明暗物质晕的底层宇宙学组装规律（即低质量暗晕形成更早、浓集度更高）是普适的，不依赖于其内部重子物质的最终形态。
 2. **高 $n$ 值具有更高的 $c_0$**：$c_0$ 代表了在相同暗晕质量（如 $10^{12} M_\odot$）下的基准浓集度。高 $n$ 值（核球主导）星系通常经历了更剧烈的气体流入、中心星暴或星系并合过程，大量重子物质向星系中心高度聚集，极大地加深了中心区域的引力势阱。这种强烈的重子引力作用会拖拽周围的暗物质向中心塌缩，即引发了更显著的**重子冷却收缩效应（Baryonic Cooling/Adiabatic Contraction）**。因此，在相同的总暗晕质量下，核球主导星系的中心暗物质密度更高，表现为更大的 $c_0$ 值。
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="fig-4.4-a.png" alt="c-M200 拟合结果 a" width="45%">
+  <img src="fig-4.4-b.png" alt="c-M200 拟合结果 b" width="45%">
+</div>
+
+*图 4.4：大样本星系的 $c-M_{200}$ 关系拟合结果。左图（a）展示了未区分Sérsic 指数的拟合情况 ；右图（b）展示了Sérsic 指数（$n < 2.4$，盘主导）子样本的拟合和高 Sérsic 指数（$n \ge 2.4$，核球主导）子样本分别拟合的情况。对比可见，两者的质量依赖斜率 $\alpha$ 基本一致，但高 $n$ 值星系具有显著更高的特征浓集度 $c_0$。*
 
 ## 5. 总结
 
@@ -128,8 +147,14 @@ $$ \log_{10} c = \log_{10} c_0 - \alpha \log_{10}\left(\frac{M_{200}}{10^{12} M_
 
 ## 6. 引用
 
-1. Navarro, J. F., Frenk, C. S., & White, S. D. M. (1997). A Universal Density Profile from Hierarchical Clustering. *The Astrophysical Journal*, 490(2), 493-508.
-2. Dutton, A. A., & Macciò, A. V. (2014). Cold dark matter haloes in the Planck era: evolution of structural parameters for Einasto and NFW profiles. *Monthly Notices of the Royal Astronomical Society*, 441(4), 3359-3374.
-3. Moster, B. P., Naab, T., & White, S. D. M. (2013). Galactic star formation and supermassive black hole growth in the concordance cosmology. *Monthly Notices of the Royal Astronomical Society*, 428(4), 3121-3138.
-4. Fisher, D. B., & Drory, N. (2008). The Structure of Classical Bulges and Pseudobulges: the Link Between Pseudobulges and SÉRSIC Index. *The Astronomical Journal*, 675(2), 1014.
-5. Binney, J., & Tremaine, S. (2008). *Galactic Dynamics* (2nd ed.). Princeton University Press.
+1. Planck Collaboration 2020, Aghanim, N., Akrami, Y., et al. (2020). Planck2018 results: VI. Cosmological parameters. *Astronomy & Astrophysics*, 641, A6.
+2. Perlmutter, S., Aldering, G., Goldhaber, G., et al. (1999). Measurements of $\Omega$ and $\Lambda$ from 42 High-Redshift Supernovae. *The Astrophysical Journal*, 517(2), 565–586.
+3. Navarro, J. F., Frenk, C. S., & White, S. D. M. (1997). A Universal Density Profile from Hierarchical Clustering. *The Astrophysical Journal*, 490(2), 493–508.
+4. Navarro, J. F., Ludlow, A., Springel, V., et al. (2009). The diversity and similarity of simulated cold dark matter haloes: Diversity and similarity of simulated CDM haloes. *Monthly Notices of the Royal Astronomical Society*, 402(1), 21–34.
+5. White, S. D. M., & Rees, M. J. (1978). Core condensation in heavy halos: a two-stage theory for galaxy formation and clustering. *Monthly Notices of the Royal Astronomical Society*, 183(3), 341–358.
+6. Benson, A. J. (2010). Galaxy formation theory. *Physics Reports*, 495(2-3), 33–86.
+7. Wechsler, R. H., Bullock, J. S., Primack, J. R., Kravtsov, A. V., & Dekel, A. (2002). Concentrations of dark halos from their assembly histories. *The Astrophysical Journal*, 568(1), 52.
+8. Courteau, S. (1997). Optical rotation curves and line widths for Tully-Fisher applications. *The Astronomical Journal*, 114(6), 2402–2427.
+9. Newville, M., Stensitzki, T., Allen, D. B., & Ingargiola, A. (2014). LMFIT: Non-linear least-square minimization and curve-fitting for Python. *Zenodo*.
+10. Westfall, K. B., et al. (2019). The Data Analysis Pipeline for the SDSS-IV MaNGA IFU Galaxy Survey: Overview. *The Astronomical Journal*.
+11. Dutton, A. A., & Macciò, A. V. (2014). Cold dark matter haloes in the Planck era: evolution of structural parameters for Einasto and NFW profiles. *Monthly Notices of the Royal Astronomical Society*.

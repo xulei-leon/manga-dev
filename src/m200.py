@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 import pymc as pm
 import arviz as az
+import pytensor.tensor as pt
 
 # Constants
 M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
@@ -47,12 +48,12 @@ def c_m200_model(M200: np.ndarray, c0: float, alpha: float, h: float = H_0) -> n
 def get_m200_c_data():
     """
     Load M200 and c data from the results CSV file.
-    Returns M200, M200_std, c, c_std, sersic_n arrays.
+    Returns a dict of arrays keyed by column name.
     """
     nfw_param_file = result_dir / NFW_PARAM_CM200_FILENAME
     if not nfw_param_file.exists():
         print(f"Warning: Data file {nfw_param_file} not found.")
-        return None, None, None, None, None
+        return None
 
     df = pd.read_csv(nfw_param_file, index_col=0)
 
@@ -62,15 +63,33 @@ def get_m200_c_data():
 
     if df.empty:
         print("Warning: No successful fits found in data.")
-        return None, None, None, None, None
+        return None
 
+    import ast
     M200 = df['M200'].values
     M200_std = df['M200_std'].values if 'M200_std' in df.columns else np.zeros_like(M200)
     c = df['c'].values
     c_std = df['c_std'].values if 'c_std' in df.columns else np.zeros_like(c)
     sersic_n = df['sersic_n'].values if 'sersic_n' in df.columns else np.zeros_like(c)
 
-    return M200, M200_std, c, c_std, sersic_n
+    log10_mu_obs = None
+    log10_cov_obs = None
+    if 'log10_mu_obs' in df.columns and 'log10_cov_obs' in df.columns:
+        try:
+            log10_mu_obs = np.array([ast.literal_eval(x) if isinstance(x, str) else x for x in df['log10_mu_obs']])
+            log10_cov_obs = np.array([ast.literal_eval(x) if isinstance(x, str) else x for x in df['log10_cov_obs']])
+        except Exception as e:
+            print(f"Warning: Could not parse log10_mu_obs or log10_cov_obs: {e}")
+
+    return {
+        'M200': M200,
+        'M200_std': M200_std,
+        'c': c,
+        'c_std': c_std,
+        'sersic_n': sersic_n,
+        'log10_mu_obs': log10_mu_obs,
+        'log10_cov_obs': log10_cov_obs,
+    }
 
 def filter_outliers(M200: np.ndarray, c: np.ndarray, sigma_threshold: float = 3.0) -> np.ndarray:
     """
@@ -291,6 +310,100 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
         print("-------------------------------------------")
 
     return c0_best, alpha_best, c0_err, alpha_err, log_rmse
+
+def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
+    """
+    Fit the non-linear c-M200 relation using a Hierarchical Bayesian Model (HBM).
+    This uses the full covariance matrix from the first stage inference.
+    """
+    print("\n--- Fitting using Hierarchical Bayesian Model (HBM) ---")
+
+    # Filter out any data points where covariance is not available or invalid
+    valid_cov_mask = np.array([cov is not None and np.shape(cov) == (2, 2) and np.all(np.isfinite(cov)) for cov in log10_cov_obs])
+    valid_mu_mask = np.array([mu is not None and np.shape(mu) == (2,) and np.all(np.isfinite(mu)) for mu in log10_mu_obs])
+    valid_mask = valid_cov_mask & valid_mu_mask
+
+    if not np.all(valid_mask):
+        print(f"Warning: Dropping {np.sum(~valid_mask)} points due to invalid mu/cov data.")
+        log10_mu_obs = log10_mu_obs[valid_mask]
+        log10_cov_obs = log10_cov_obs[valid_mask]
+        M200 = M200[valid_mask]
+        c = c[valid_mask]
+
+    if len(M200) < 3:
+        print("Not enough valid data points for HBM fitting.")
+        return None, None, None, None, None
+
+    N_galaxies = len(M200)
+    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
+
+    # Stack mu and cov for PyMC
+    mu_obs_stacked = np.stack(log10_mu_obs)
+    cov_obs_stacked = np.stack(log10_cov_obs)
+
+    with pm.Model() as model:
+        # 1. Hyper-priors for the population parameters
+        log_c0_t = pm.Normal('log_c0', mu=np.log10(8.5), sigma=0.5)
+        alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.2)
+
+        # Intrinsic scatter (sigma_int)
+        sigma_int = pm.HalfNormal('sigma_int', sigma=0.2)
+
+        # 2. Latent Variables for each galaxy
+        # We need a prior for the true M200. We can use a wide normal centered roughly on the observed values
+        log_M200_true = pm.Normal('log_M200_true', mu=np.mean(mu_obs_stacked[:, 0]), sigma=1.0, shape=N_galaxies)
+
+        # The true concentration is determined by the theoretical relation + intrinsic scatter
+        log_c_expect = log_c0_t + alpha_t * (log_M200_true - log_M_pivot)
+        log_c_true = pm.Normal('log_c_true', mu=log_c_expect, sigma=sigma_int, shape=N_galaxies)
+
+        # Combine latent variables into a single vector per galaxy: [log_M200_true, log_c_true]
+        latent_true_vector = pt.stack([log_M200_true, log_c_true], axis=1)
+
+        # 3. MvNormal Likelihood
+        # Connect the latent true values to the observed values using the covariance matrix
+        obs = pm.MvNormal('obs', mu=latent_true_vector, cov=cov_obs_stacked, observed=mu_obs_stacked)
+
+        # Sampling
+        draws = 2000
+        tune = 1000
+        chains = min(4, os.cpu_count())
+        target_accept = 0.95
+        sampler = 'nutpie'
+        init = "jitter+adapt_full"
+
+        trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
+                          nuts_sampler=sampler, target_accept=target_accept,
+                          random_seed=42, progressbar=True)
+
+    var_names = ["log_c0", "alpha", "sigma_int"]
+    summary = az.summary(trace, var_names=var_names, round_to=4)
+
+    log_c0_mean = summary.loc['log_c0', 'mean']
+    alpha_mean = summary.loc['alpha', 'mean']
+    log_c0_sd = summary.loc['log_c0', 'sd']
+    alpha_sd = summary.loc['alpha', 'sd']
+    sigma_int_mean = summary.loc['sigma_int', 'mean']
+
+    # Convert back to linear c0
+    c0_mean = 10**log_c0_mean
+    c0_err = c0_mean * np.log(10) * log_c0_sd
+
+    # Calculate RMSE using the mean parameters
+    c_pred = c_m200_model(M200, c0_mean, alpha_mean, h=H_0)
+    log_residuals = np.log10(c) - np.log10(c_pred)
+    log_rmse = np.sqrt(np.mean(log_residuals**2))
+
+    if verbose:
+        print("--------- HBM M200-c fit results ---------")
+        print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
+        print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_sd:.4f}")
+        print(f" sigma_int      : {sigma_int_mean:.4f}")
+        print("---------------")
+        print(f" Log RMSE       : {log_rmse:.3f}")
+        print("------------------------------------------")
+
+    return c0_mean, alpha_mean, c0_err, alpha_sd, log_rmse
 
 def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
@@ -546,23 +659,42 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     print(f"Split plot saved to {plot_path}")
 
 
-def main(mode: str = 'curve_fit'):
+def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers: bool = False):
     """
     Main execution function.
     mode: 'curve_fit' (default) or 'mcmc'
+    n_threshold: 'auto' or a float value
     """
     # 1. Load data
-    M200_raw, M200_std, c_raw, c_std, sersic_n_raw = get_m200_c_data()
-    if M200_raw is None or c_raw is None:
+    data = get_m200_c_data()
+    if not data:
         print("Failed to load data. Exiting.")
         return
 
-    # 2. Filter outliers
-    mask = filter_outliers(M200_raw, c_raw)
+    M200_raw = np.array(data['M200'], dtype=float)
+    M200_std = np.array(data['M200_std'], dtype=float)
+    c_raw = np.array(data['c'], dtype=float)
+    c_std = np.array(data['c_std'], dtype=float)
+    sersic_n_raw = np.array(data['sersic_n'], dtype=float)
+
+    M200_std = np.where(np.isfinite(M200_std), M200_std, 0.0)
+    c_std = np.where(np.isfinite(c_std), c_std, 0.0)
+    sersic_n_raw = np.where(np.isfinite(sersic_n_raw), sersic_n_raw, 0.0)
+
+    log10_mu_obs_raw = data.get('log10_mu_obs')
+    log10_cov_obs_raw = data.get('log10_cov_obs')
+
+    # 2. Filter outliers (disabled by default)
+    if use_filter_outliers:
+        mask = filter_outliers(M200_raw, c_raw)
+    else:
+        mask = np.ones_like(M200_raw, dtype=bool)
     M200 = M200_raw[mask]
     c = c_raw[mask]
     c_err = c_std[mask] if c_std is not None else None
     sersic_n = sersic_n_raw[mask]
+    log10_mu_obs = log10_mu_obs_raw[mask] if log10_mu_obs_raw is not None else None
+    log10_cov_obs = log10_cov_obs_raw[mask] if log10_cov_obs_raw is not None else None
 
     if len(M200) < 3:
         print("Not enough valid data points for fitting.")
@@ -572,19 +704,36 @@ def main(mode: str = 'curve_fit'):
     if mode == 'mcmc':
         print("\nUsing MCMC (PyMC) for fitting...")
         fit_func = fit_m200_c_mcmc
+    elif mode == 'hbm':
+        print("\nUsing Hierarchical Bayesian Model (HBM) for fitting...")
+        fit_func = fit_m200_c_hbm
     else:
         print("\nUsing curve_fit for fitting...")
         fit_func = fit_m200_c_nonlinear
 
     # 3. Perform overall non-linear fit
     print("\n--- Fitting All Data ---")
-    c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, c_std=c_err)
+    if mode == 'hbm':
+        c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, log10_mu_obs, log10_cov_obs)
+    else:
+        c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, c_std=c_err)
 
     # 4. Infer optimal Sersic n threshold
-    if mode == 'mcmc':
-        threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
+    if n_threshold.lower() == 'auto':
+        if mode == 'mcmc' or mode == 'hbm':
+            threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
+        else:
+            threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
     else:
-        threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
+        try:
+            threshold = float(n_threshold)
+            print(f"\n--- Using fixed Sersic n threshold: {threshold:.2f} ---")
+        except ValueError:
+            print(f"\n--- Invalid Sersic n threshold '{n_threshold}', falling back to auto ---")
+            if mode == 'mcmc' or mode == 'hbm':
+                threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
+            else:
+                threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
 
     # 5. Plot overall results
     plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all, threshold=threshold)
@@ -594,16 +743,30 @@ def main(mode: str = 'curve_fit'):
     mask_low_n = sersic_n < threshold
 
     print(f"\n--- Fitting High Sersic n (>= {threshold:.2f}) ---")
-    c0_high, alpha_high, _, _, rmse_high = fit_func(
-        M200[mask_high_n], c[mask_high_n],
-        c_std=c_err[mask_high_n] if c_err is not None else None
-    )
+    if mode == 'hbm':
+        c0_high, alpha_high, _, _, rmse_high = fit_func(
+            M200[mask_high_n], c[mask_high_n],
+            log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
+            log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None
+        )
+    else:
+        c0_high, alpha_high, _, _, rmse_high = fit_func(
+            M200[mask_high_n], c[mask_high_n],
+            c_std=c_err[mask_high_n] if c_err is not None else None
+        )
 
     print(f"\n--- Fitting Low Sersic n (< {threshold:.2f}) ---")
-    c0_low, alpha_low, _, _, rmse_low = fit_func(
-        M200[mask_low_n], c[mask_low_n],
-        c_std=c_err[mask_low_n] if c_err is not None else None
-    )
+    if mode == 'hbm':
+        c0_low, alpha_low, _, _, rmse_low = fit_func(
+            M200[mask_low_n], c[mask_low_n],
+            log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
+            log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None
+        )
+    else:
+        c0_low, alpha_low, _, _, rmse_low = fit_func(
+            M200[mask_low_n], c[mask_low_n],
+            c_std=c_err[mask_low_n] if c_err is not None else None
+        )
 
     # 7. Plot split results
     plot_m200_c_split(M200, c, sersic_n, c0_high, alpha_high, rmse_high, c0_low, alpha_low, rmse_low, threshold=threshold)
@@ -614,8 +777,12 @@ def main(mode: str = 'curve_fit'):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Fit c-M200 relation.")
-    parser.add_argument('--mode', type=str, choices=['curve_fit', 'mcmc'], default='curve_fit',
-                        help="Fitting method to use: 'curve_fit' or 'mcmc'")
+    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc', 'hbm'], default='fit',
+                        help="Fitting method to use: 'fit', 'mcmc', or 'hbm'")
+    parser.add_argument('--n', type=str, default='auto',
+                        help="Sersic n threshold: 'auto' or a float value (e.g., '2.5')")
+    parser.add_argument('--filter-outliers', action='store_true',
+                        help="Enable MAD-based outlier filtering")
     args = parser.parse_args()
 
-    main(mode=args.mode)
+    main(mode=args.mode, n_threshold=args.n, use_filter_outliers=args.filter_outliers)

@@ -118,10 +118,10 @@ class DmNfw:
         return r200_kpc # in kpc
 
    # c = r200 / rss
-   # c = 5.74 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.097)
+   # c = 8.5 * ( M200 / (2 * 10^12 * h^-1 * Msun) )^(-0.10)
     def _calc_c_from_M200(self, M200: float, h: float) -> float:
         mass_ratio = M200 / (M_pivot_h_inv / h)
-        return 5.74 * (mass_ratio)**(-0.097)
+        return 8.5 * (mass_ratio)**(-0.10)
 
     # formula: V200^3 = 10 * G * H(z) * M200
     def _calc_V200_from_M200(self, M200: float, z: float) -> float:
@@ -366,14 +366,12 @@ class DmNfw:
             # c prior
             if self.inf_mode == "c-m200":
                 # Independent c: decoupled from M200, for empirical c-M200 fitting later.
-                c_mu = 9.0  # typical concentration for ~Milky Way mass halos; use a soft prior to allow flexibility.
-                c_sigma = 0.2  # in log space, corresponds to ~0.46 dex in linear space, allowing a wide range of concentrations.
+                c_mu = 9.0
+                c_sigma = 0.2 * pt.log(10)
             else:
                 # c tightly constrained by theoretical c-M200 relation.
-                # Dutton & Macciò (2014): c = 5.74 * (M200 / (2e12/h))^(-0.097)
-                # Intrinsic scatter: sigma ≈ 0.11 dex (from Dutton & Macciò 2014 Table 2)
                 c_mu = c_from_M200(M200_t, h=H_ACTUAL)
-                c_sigma = 0.11  # intrinsic scatter in c at fixed M200, in log space
+                c_sigma = 0.11 * pt.log(10)
             log_c_t = pm.Normal("log_c", mu=pt.log(c_mu), sigma=c_sigma)
             c_t = pm.Deterministic("c", pt.exp(log_c_t))
 
@@ -606,9 +604,35 @@ class DmNfw:
         phi_delta_best = phi_delta_samples[best_idx] if self.pri_phi_delta else 0.0
         sigma0_best = sigma0_samples[best_idx]
 
+        # calculate derived parameters for the best fit
         V200_calc = self._calc_V200_from_M200(M200_best, z)
         r200_calc = self._calc_r200_from_V200(V200_calc, z)
         c_calc = c_from_M200(M200_best, h=H_ACTUAL)
+
+        # ------------------------------------------
+        # HBM Data Preparation: 68% Core Samples in log10 space
+        # ------------------------------------------
+        log10_M200_samples = np.log10(M200_samples)
+        log10_c_samples = np.log10(c_samples)
+
+        # MAP point in log10 space
+        theta_MAP = np.array([np.log10(M200_best), np.log10(c_best)])
+        samples_2d = np.vstack([log10_M200_samples, log10_c_samples]).T
+
+        # Calculate Mahalanobis distance to MAP to account for covariance
+        cov_all = np.cov(samples_2d, rowvar=False)
+        inv_cov_all = np.linalg.pinv(cov_all)
+        diff = samples_2d - theta_MAP
+        dist_sq = np.sum(diff @ inv_cov_all * diff, axis=1)
+
+        # Select the 68.27% (1 sigma) closest samples
+        threshold_dist_sq = np.percentile(dist_sq, 68.27)
+        core_mask = dist_sq <= threshold_dist_sq
+        core_samples = samples_2d[core_mask]
+
+        # Calculate mean and covariance of the core samples
+        mu_obs = np.mean(core_samples, axis=0)
+        cov_obs = np.cov(core_samples, rowvar=False)
 
 
         # LOO
@@ -708,6 +732,10 @@ class DmNfw:
             print("--- Expectation ---")
             print(f"Mstar Expect        : {Mstar_obs:.3e} Msun")
             print(f"M200 Expect         : {M200_shmr:.3e} Msun")
+            print(f"--- HBM Data  ---")
+            print(f"MAP (log10 space)   : M200={10**theta_MAP[0]:.3e} Msun, c={10**theta_MAP[1]:.3f}")
+            print(f"Core Mean (log10)   : M200={10**mu_obs[0]:.3e} Msun, c={10**mu_obs[1]:.3f}")
+            print(f"Core Covariance     : [[{cov_obs[0,0]:.6f}, {cov_obs[0,1]:.6f}], [{cov_obs[1,0]:.6f}, {cov_obs[1,1]:.6f}]]")
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")
@@ -811,6 +839,8 @@ class DmNfw:
             'c': c_best,
             'c_std': c_sd,
             'c_M200_corr': c_m200_corr,
+            'log10_mu_obs': mu_obs.tolist(),
+            'log10_cov_obs': cov_obs.tolist(),
             'v_rot_mean': float(np.mean(v_rot_best)),
             'v_dm_mean': float(np.mean(v_dm_best)),
             'v_star_mean': float(np.mean(v_star_best)),

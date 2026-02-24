@@ -765,6 +765,9 @@ class DmNfw:
             # corner plot
             az.rcParams['plot.max_subplots'] = 100
             az_api.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
+            az_api.plot_pair(trace, var_names=["M200", "c"], kind='kde', marginals=True,
+                             kde_kwargs={"contour_kwargs": {"levels": [0.68, 0.95]},"contourf_kwargs": {"alpha": 0.5}},
+                             point_estimate="median", divergences=True)
             plt.gcf().set_size_inches(12, 10)
             plt.tight_layout()
             plt.show()

@@ -232,7 +232,7 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
         target_accept = 0.95
         displaybar = True
         checks = True
-        sampler = 'nutpie'
+        sampler = 'numpyro'
         init = "jitter+adapt_full"
         random_seed = 42
         trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
@@ -369,7 +369,7 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
         tune = 1000
         chains = min(4, os.cpu_count())
         target_accept = 0.95
-        sampler = 'nutpie'
+        sampler = 'numpyro'
         init = "jitter+adapt_full"
 
         trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
@@ -453,7 +453,7 @@ def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.
         draws = 3000
         tune = 2000
         chains = min(4, os.cpu_count())
-        sampler = 'nutpie'
+        sampler = 'numpyro'
         init = "jitter+adapt_full"
 
         trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,

@@ -517,19 +517,19 @@ class DmNfw:
         az_api = _get_arviz_api()
         _set_arviz_ci_defaults()
 
-        summary = az_api.summary(trace, var_names=var_names, round_to=3, stat_funcs={"median": np.median})
+        summary = az_api.summary(trace, var_names=var_names, round_to=3)
 
-        Mstar_median = float(summary.loc["Mstar", "median"])
-        M200_median = float(summary.loc["M200", "median"])
-        c_median = float(summary.loc["c", "median"])
-        sigma0_median = float(summary.loc["sigma_0", "median"])
-        v_sys_median = float(summary.loc["v_sys", "median"])
-        inc_median = float(summary.loc["inc", "median"]) if self.pri_inc else inc_rad
-        phi_delta_median = float(summary.loc["phi_delta", "median"]) if "phi_delta" in var_names else 0.0
-        Re_median = float(summary.loc["Re", "median"])
-        f_bulge_median = float(summary.loc["f_bulge", "median"]) if "f_bulge" in var_names else 0.0
-        a_median = float(summary.loc["a", "median"]) if "a" in var_names else 0.0
-        sigma_scale_median = float(summary.loc["sigma_scale", "median"])
+        Mstar_mean = float(summary.loc["Mstar", "mean"])
+        M200_mean = float(summary.loc["M200", "mean"])
+        c_mean = float(summary.loc["c", "mean"])
+        sigma0_mean = float(summary.loc["sigma_0", "mean"])
+        v_sys_mean = float(summary.loc["v_sys", "mean"])
+        inc_mean = float(summary.loc["inc", "mean"]) if self.pri_inc else inc_rad
+        phi_delta_mean = float(summary.loc["phi_delta", "mean"]) if "phi_delta" in var_names else 0.0
+        Re_mean = float(summary.loc["Re", "mean"])
+        f_bulge_mean = float(summary.loc["f_bulge", "mean"]) if "f_bulge" in var_names else 0.0
+        a_mean = float(summary.loc["a", "mean"]) if "a" in var_names else 0.0
+        sigma_scale_mean = float(summary.loc["sigma_scale", "mean"])
          # standard deviation
         Mstar_sd = float(summary.loc["Mstar", "sd"])
         M200_sd = float(summary.loc["M200", "sd"])
@@ -610,29 +610,36 @@ class DmNfw:
         c_calc = c_from_M200(M200_best, h=H_ACTUAL)
 
         # ------------------------------------------
-        # HBM Data Preparation: 68% Core Samples in log10 space
+        # Covariance Data Preparation: 68% Core Samples in log10 space
         # ------------------------------------------
         log10_M200_samples = np.log10(M200_samples)
         log10_c_samples = np.log10(c_samples)
 
-        # MAP point in log10 space
-        theta_MAP = np.array([np.log10(M200_best), np.log10(c_best)])
+        # Mean point in log10 space
+        theta_mean = np.array([np.mean(log10_M200_samples), np.mean(log10_c_samples)])
         samples_2d = np.vstack([log10_M200_samples, log10_c_samples]).T
 
-        # Calculate Mahalanobis distance to MAP to account for covariance
+        # Calculate Mahalanobis distance to mean to account for covariance
         cov_all = np.cov(samples_2d, rowvar=False)
         inv_cov_all = np.linalg.pinv(cov_all)
-        diff = samples_2d - theta_MAP
+        diff = samples_2d - theta_mean
         dist_sq = np.sum(diff @ inv_cov_all * diff, axis=1)
 
         # Select the 68.27% (1 sigma) closest samples
-        threshold_dist_sq = np.percentile(dist_sq, 68.27)
-        core_mask = dist_sq <= threshold_dist_sq
-        core_samples = samples_2d[core_mask]
+        threshold_dist_sq_1sigma = np.percentile(dist_sq, 68.27)
+        core_mask_1sigma = dist_sq <= threshold_dist_sq_1sigma
+        core_samples_1sigma = samples_2d[core_mask_1sigma]
+
+        # Select the 95.45% (2 sigma) closest samples
+        threshold_dist_sq_2sigma = np.percentile(dist_sq, 95.45)
+        core_mask_2sigma = dist_sq <= threshold_dist_sq_2sigma
+        core_samples_2sigma = samples_2d[core_mask_2sigma]
 
         # Calculate mean and covariance of the core samples
-        mu_obs = np.mean(core_samples, axis=0)
-        cov_obs = np.cov(core_samples, rowvar=False)
+        mu_obs = np.mean(core_samples_1sigma, axis=0)
+        cov_obs = np.cov(core_samples_1sigma, rowvar=False)
+        mu_obs_2 = np.mean(core_samples_2sigma, axis=0)
+        cov_obs_2 = np.cov(core_samples_2sigma, rowvar=False)
 
 
         # LOO
@@ -700,6 +707,14 @@ class DmNfw:
         rmse_best = float(np.sqrt(np.mean(res_map_best**2)))
         nrmse_best = float(rmse_best / np.mean(np.abs(vel_obs_valid[mask])))
 
+        # residuals for the mean fit
+        v_obs_mean = np.mean(v_obs_samples, axis=1)
+        res_obs_mean = vel_obs_valid - v_obs_mean
+        res_norm_mean = np.full_like(res_obs_mean, np.nan, dtype=float)
+        res_norm_mean[mask] = res_obs_mean[mask] / np.mean(sigma_obs_samples, axis=1)[mask]
+        rmse_mean = float(np.sqrt(np.mean(res_obs_mean[mask]**2)))
+        nrmse_mean = float(rmse_mean / np.mean(np.abs(vel_obs_valid[mask])))
+
         # ------------------------------------------
         # Recalculate Reduced Chi2 for the best fit
         # ------------------------------------------
@@ -713,12 +728,16 @@ class DmNfw:
 
         dof = int(max(np.sum(valid_cols) - params_num, 1))
 
+        # reduced chi2 for the best fit
         chi2_best = np.sum(res_norm_best[mask]**2)
         redchi_best = float(chi2_best / dof)
 
+        # reduced chi2 for the mean fit
+        chi2_mean = np.sum(res_norm_mean[mask]**2)
+        redchi_mean = float(chi2_mean / dof)
+
         # Get the correlation between variables c and M200 from the posterior samples
         c_m200_corr = float(np.corrcoef(c_samples, M200_samples)[0, 1])
-
 
         # ---------------------
         # Inference summary info
@@ -732,10 +751,12 @@ class DmNfw:
             print("--- Expectation ---")
             print(f"Mstar Expect        : {Mstar_obs:.3e} Msun")
             print(f"M200 Expect         : {M200_shmr:.3e} Msun")
-            print(f"--- HBM Data  ---")
-            print(f"MAP (log10 space)   : M200={10**theta_MAP[0]:.3e} Msun, c={10**theta_MAP[1]:.3f}")
-            print(f"Core Mean (log10)   : M200={10**mu_obs[0]:.3e} Msun, c={10**mu_obs[1]:.3f}")
-            print(f"Core Covariance     : [[{cov_obs[0,0]:.6f}, {cov_obs[0,1]:.6f}], [{cov_obs[1,0]:.6f}, {cov_obs[1,1]:.6f}]]")
+            print(f"--- Covariance Data  ---")
+            print(f"Core Mean (total)   : M200={10**theta_mean[0]:.3e} Msun, c={10**theta_mean[1]:.3f}")
+            print(f"Core Mean (1σ)      : M200={10**mu_obs[0]:.3e} Msun, c={10**mu_obs[1]:.3f}")
+            print(f"Core Cov (1σ)       : [[{cov_obs[0,0]:.6f}, {cov_obs[0,1]:.6f}], [{cov_obs[1,0]:.6f}, {cov_obs[1,1]:.6f}]]")
+            print(f"Core Mean (2σ)      : M200={10**mu_obs_2[0]:.3e} Msun, c={10**mu_obs_2[1]:.3f}")
+            print(f"Core Cov (2σ)       : [[{cov_obs_2[0,0]:.6f}, {cov_obs_2[0,1]:.6f}], [{cov_obs_2[1,0]:.6f}, {cov_obs_2[1,1]:.6f}]]")
             print(f"--- Best ---")
             print(f" Best Mstar         : {Mstar_best:.3e} Msun")
             print(f" Best M200          : {M200_best:.3e} Msun")
@@ -748,18 +769,18 @@ class DmNfw:
             print(f" Best f_bulge       : {f_bulge_best:.3f}")
             print(f" Best a             : {a_best:.3f} kpc")
             print(f" Best sigma_scale   : {sigma_scale_best:.3f}")
-            print(f"--- median estimates ---")
-            print(f" Median Mstar       : {Mstar_median:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_median, 1e-12):.2%})")
-            print(f" Median M200        : {M200_median:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_median, 1e-12):.2%})")
-            print(f" Median c           : {c_median:.3f} ± {c_sd:.3f} ({c_sd/max(c_median, 1e-12):.2%})")
-            print(f" Median sigma_0     : {sigma0_median:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_median, 1e-12):.2%})")
-            print(f" Median v_sys       : {v_sys_median:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(np.abs(v_sys_median), 1e-12):.2%})")
-            print(f" Median inc         : {np.degrees(inc_median):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(np.abs(inc_median), 1e-12):.2%})") if self.pri_inc else None
-            print(f" Median phi_delta   : {np.degrees(phi_delta_median):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(np.abs(phi_delta_median), 1e-12):.2%})") if self.pri_phi_delta else None
-            print(f" Median Re          : {Re_median:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_median, 1e-12):.2%})")
-            print(f" Median f_bulge     : {f_bulge_median:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_median, 1e-12):.2%})")
-            print(f" Median a           : {a_median:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_median, 1e-12):.2%})")
-            print(f" Median sigma_scale : {sigma_scale_median:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/max(sigma_scale_median, 1e-12):.2%})")
+            print(f"--- mean estimates ---")
+            print(f" Mean Mstar         : {Mstar_mean:.3e} ± {Mstar_sd:.3e} Msun ({Mstar_sd/max(Mstar_mean, 1e-12):.2%})")
+            print(f" Mean M200          : {M200_mean:.3e} ± {M200_sd:.3e} Msun ({M200_sd/max(M200_mean, 1e-12):.2%})")
+            print(f" Mean c             : {c_mean:.3f} ± {c_sd:.3f} ({c_sd/max(c_mean, 1e-12):.2%})")
+            print(f" Mean sigma_0       : {sigma0_mean:.3f} ± {sigma0_sd:.3f} km/s ({sigma0_sd/max(sigma0_mean, 1e-12):.2%})")
+            print(f" Mean v_sys         : {v_sys_mean:.3f} ± {v_sys_sd:.3f} km/s ({v_sys_sd/max(np.abs(v_sys_mean), 1e-12):.2%})")
+            print(f" Mean inc           : {np.degrees(inc_mean):.3f} ± {np.degrees(inc_sd):.3f} deg ({inc_sd/max(np.abs(inc_mean), 1e-12):.2%})") if self.pri_inc else None
+            print(f" Mean phi_delta     : {np.degrees(phi_delta_mean):.3f} ± {np.degrees(phi_delta_sd):.3f} deg ({phi_delta_sd/max(np.abs(phi_delta_mean), 1e-12):.2%})") if self.pri_phi_delta else None
+            print(f" Mean Re            : {Re_mean:.3f} ± {Re_sd:.3f} kpc ({Re_sd/max(Re_mean, 1e-12):.2%})")
+            print(f" Mean f_bulge       : {f_bulge_mean:.3f} ± {f_bulge_sd:.3f} ({f_bulge_sd/max(f_bulge_mean, 1e-12):.2%})")
+            print(f" Mean a             : {a_mean:.3f} ± {a_sd:.3f} kpc ({a_sd/max(a_mean, 1e-12):.2%})")
+            print(f" Mean sigma_scale   : {sigma_scale_mean:.3f} ± {sigma_scale_sd:.3f} ({sigma_scale_sd/max(sigma_scale_mean, 1e-12):.2%})")
             print(f"--- caculate ---")
             print(f" Calc: V200         : {V200_calc:.3f} km/s")
             print(f" Calc: r200         : {r200_calc:.3f} kpc")
@@ -768,8 +789,8 @@ class DmNfw:
             print(f" Calc: inc          : {np.degrees(inc_rad):.3f} deg")
             print(f" Stellar Mass       : {Mstar_obs:.3e} Msun")
             print("--- diagnostics ---")
-            print(f" Reduced Chi (Best) : {redchi_best:.3f}")
-            print(f" NRMSE (Best)       : {nrmse_best:.3f}")
+            print(f" Reduced Chi (mean) : {redchi_mean:.3f}")
+            print(f" NRMSE (Mean)       : {nrmse_mean:.3f}")
             print(f" Deviance PPC p-val : {dev_ppc_p:.3f}")
             print("------------------------------------------------------------\n")
             diag_samples = [np.asarray(flat_trace[var].values).reshape(-1) for var in var_names]
@@ -792,11 +813,14 @@ class DmNfw:
 
             # corner plot
             az.rcParams['plot.max_subplots'] = 100
+
             az_api.plot_pair(trace, var_names=var_names, kind='kde', marginals=True)
-            az_api.plot_pair(trace, var_names=["M200", "c"], kind='kde', marginals=True,
-                             kde_kwargs={"contour_kwargs": {"levels": [0.68, 0.95]},"contourf_kwargs": {"alpha": 0.5}},
-                             point_estimate="median", divergences=True)
             plt.gcf().set_size_inches(12, 10)
+            az_api.plot_pair(trace, var_names=["M200", "c"], kind='kde', marginals=True,
+                             kde_kwargs={"contour_kwargs": {"levels": [0.68, 0.95]},
+                                         "contourf_kwargs": {"alpha": 0.5}},
+                             point_estimate="median", divergences=True)
+            plt.gcf().set_size_inches(8, 6)
             plt.tight_layout()
             plt.show()
 
@@ -819,7 +843,8 @@ class DmNfw:
             print(f"  mean(v_rot)={mean_v_rot:.3f}, mean(v_star)={mean_v_star:.3f}, mean(v_dm)={mean_v_dm:.3f}, mean(v_drift)={mean_v_drift:.3f}")
             print(f"  frac(v_rot<=v_star)={frac_star:.3f}, frac(v_rot<=v_dm)={frac_dm:.3f}")
 
-        inf_result = {
+        # best values for plotting Rotation Curves
+        best_result = {
             'radius': radius_valid,
             'v_rot': v_rot_best,
             'v_dm': v_dm_best,
@@ -829,29 +854,29 @@ class DmNfw:
             'res_obs': res_obs_best,
         }
 
+        # Compute mean and covariance of the core posterior samples (in log10 space)
+        # for hierarchical modeling / inference of M200 and concentration c.
         inf_params = {
             'result': 'success' if success else 'failure',
             'sersic_n': sersic_n,
-            'Mstar': Mstar_best,
+            'Mstar': Mstar_mean,
             'Mstar_std': Mstar_sd,
-            'M200': M200_best,
+            'M200': M200_mean,
             'M200_std': M200_sd,
-            'c': c_best,
+            'c': c_mean,
             'c_std': c_sd,
             'c_M200_corr': c_m200_corr,
             'log10_mu_obs': mu_obs.tolist(),
             'log10_cov_obs': cov_obs.tolist(),
-            'v_rot_mean': float(np.mean(v_rot_best)),
-            'v_dm_mean': float(np.mean(v_dm_best)),
-            'v_star_mean': float(np.mean(v_star_best)),
-            'v_drift_mean': float(np.mean(v_drift_best)),
-            'nrmse': nrmse_best,
-            'redchi': redchi_best,
+            'log10_mu_obs_2': mu_obs_2.tolist(),
+            'log10_cov_obs_2': cov_obs_2.tolist(),
+            'nrmse': nrmse_mean,
+            'redchi': redchi_mean,
             'dev_ppc_p': dev_ppc_p,
             'good_k_fraction': f"{good_k_fraction:.2f}",
         }
 
-        return success, inf_result, inf_params
+        return success, best_result, inf_params
 
 
     ################################################################################

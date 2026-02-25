@@ -139,6 +139,9 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode
         "gflux_map": gflux_map,
     }
     success, fit_result, fit_params = vel_rot.fit_vel_rot(vel_param, radius_fit=radius_fit)
+    # save all fitting parameters (including failure cases) to file for later analysis and debugging
+    store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
+
     if not success:
         print(f"Fitting rotational velocity failed for {PLATE_IFU}")
         return
@@ -163,21 +166,21 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode
         (NRMSE > NRMSE_THRESHOLD) or \
         (CHI_SQ_V > CHI_SQ_V_THRESHOLD) or \
         (Rmax < Rt * RMAX_RT_FACTOR):
-        print(f"First fitting results failure for {PLATE_IFU}, data amount: {data_count}, "
+        print(f"fitting results failure for {PLATE_IFU}, data amount: {data_count}, "
               f"NRMSE: {NRMSE:.3f}, CHI_SQ_V: {CHI_SQ_V:.3f}, "
               f"Rmax: {Rmax:.3f}, Rt: {Rt:.3f}, skipping...")
         return
 
-    store_params_file(PLATE_IFU, fit_params, filename=vel_rot_filename)
-    if not process_nfw:
-        return
-
-    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
-
     #--------------------------------------------------------
     # DM NFW inference
     #--------------------------------------------------------
+    if not process_nfw:
+        return
+
     print(f"## DM NFW inferring {PLATE_IFU} ##")
+
+    r_disp_map, V_disp_map, _ = vel_rot.get_vel_obs_disp(inc_rad=inc_rad_fit, vel_sys=vel_sys_fit, phi_delta=phi_delta_fit)
+
     dm_nfw = DmNfw(drpall_util)
     dm_nfw.set_PLATE_IFU(PLATE_IFU)
     dm_nfw.set_plot_enable(debug)
@@ -198,7 +201,7 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode
     #   'shmr'   → M200 anchored to Mstar via SHMR; c independent LogNormal
     dm_nfw.set_inf_mode(mode)
 
-    success, inf_result, inf_params = dm_nfw.inf_dm_nfw(vel_param=vel_param)
+    success, best_result, inf_params = dm_nfw.inf_dm_nfw(vel_param=vel_param)
     if isinstance(inf_params, dict):
         inf_params['inf_mode'] = mode
     store_params_file(PLATE_IFU, inf_params, filename=NFW_PARAM_FILENAME[mode])
@@ -207,26 +210,26 @@ def process_plate_ifu(PLATE_IFU, process_nfw: bool=True, debug: bool=False, mode
         print(f"Inferring dark matter NFW failed for {PLATE_IFU} mode={mode}")
         return
 
-    r_inf = inf_result['radius']
-    V_rot_inf = inf_result['v_rot']
-    V_dm_inf = inf_result['v_dm']
-    V_star_inf = inf_result['v_star']
-    V_drift_inf = inf_result['v_drift']
+    r_best = best_result['radius']
+    V_rot_best = best_result['v_rot']
+    V_dm_best = best_result['v_dm']
+    V_star_best = best_result['v_star']
+    V_drift_best = best_result['v_drift']
 
     print(f"V_obs_map shape: {V_disp_map.shape}, range: [{np.nanmin(V_disp_map):,.1f}, {np.nanmax(V_disp_map):,.1f}] km/s")
     print(f"V_obs_fitted shape: {V_rot_fit.shape}, range: [{np.nanmin(V_rot_fit):,.1f}, {np.nanmax(V_rot_fit):,.1f}] km/s")
-    print(f"V_total_fit shape: {V_rot_inf.shape}, range: [{np.nanmin(V_rot_inf):,.1f}, {np.nanmax(V_rot_inf):,.1f}] km/s")
-    print(f"V_dm_fit shape: {V_dm_inf.shape}, range: [{np.nanmin(V_dm_inf):,.1f}, {np.nanmax(V_dm_inf):,.1f}] km/s")
-    print(f"V_star_fit shape: {V_star_inf.shape}, range: [{np.nanmin(V_star_inf):,.1f}, {np.nanmax(V_star_inf):,.1f}] km/s")
-    print(f"V_drift_fit shape: {V_drift_inf.shape}, range: [{np.nanmin(V_drift_inf):,.1f}, {np.nanmax(V_drift_inf):,.1f}] km/s")
+    print(f"V_total_fit shape: {V_rot_best.shape}, range: [{np.nanmin(V_rot_best):,.1f}, {np.nanmax(V_rot_best):,.1f}] km/s")
+    print(f"V_dm_fit shape: {V_dm_best.shape}, range: [{np.nanmin(V_dm_best):,.1f}, {np.nanmax(V_dm_best):,.1f}] km/s")
+    print(f"V_star_fit shape: {V_star_best.shape}, range: [{np.nanmin(V_star_best):,.1f}, {np.nanmax(V_star_best):,.1f}] km/s")
+    print(f"V_drift_fit shape: {V_drift_best.shape}, range: [{np.nanmin(V_drift_best):,.1f}, {np.nanmax(V_drift_best):,.1f}] km/s")
 
     plot_util.plot_rv_curves([
         {'r_map': r_disp_map, 'V_map': V_disp_map, 'title': "Observe", 'color': 'gray', 'linestyle': None, 'size': 5},
         {'r_map': r_rot_fit, 'V_map': V_rot_fit, 'title': "Fit rot", 'color': 'black', 'linestyle': '-'},
-        {'r_map': r_inf, 'V_map': V_rot_inf, 'title': "Inf rot", 'color': 'red', 'linestyle': '-'},
-        {'r_map': r_inf, 'V_map': V_dm_inf, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},
-        {'r_map': r_inf, 'V_map': V_star_inf, 'title': "Inf Stellar", 'color': 'blue', 'linestyle': '-'},
-        {'r_map': r_inf, 'V_map': V_drift_inf, 'title': "Inf Drift", 'color': 'green', 'linestyle': '-'},
+        {'r_map': r_best, 'V_map': V_rot_best, 'title': "Inf rot", 'color': 'red', 'linestyle': '-'},
+        {'r_map': r_best, 'V_map': V_dm_best, 'title': "Inf DM", 'color': 'black', 'linestyle': '--'},
+        {'r_map': r_best, 'V_map': V_star_best, 'title': "Inf Stellar", 'color': 'blue', 'linestyle': '-'},
+        {'r_map': r_best, 'V_map': V_drift_best, 'title': "Inf Drift", 'color': 'green', 'linestyle': '-'},
     ], plateifu=PLATE_IFU, savedir=result_dir if not debug else None)
 
     return

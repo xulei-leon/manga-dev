@@ -76,6 +76,7 @@ def get_m200_c_data():
     c = df['c'].values
     c_std = df['c_std'].values if 'c_std' in df.columns else np.zeros_like(c)
     sersic_n = df['sersic_n'].values if 'sersic_n' in df.columns else np.zeros_like(c)
+    nrmse = df['nrmse'].values if 'nrmse' in df.columns else None
 
     log10_mu_obs = None
     log10_cov_obs = None
@@ -94,35 +95,65 @@ def get_m200_c_data():
         'sersic_n': sersic_n,
         'log10_mu_obs': log10_mu_obs,
         'log10_cov_obs': log10_cov_obs,
+        'nrmse': nrmse,
     }
 
-def filter_outliers(M200: np.ndarray, c: np.ndarray, sigma_threshold: float = 3.0) -> np.ndarray:
+def filter_by_cov(log10_cov_obs: np.ndarray, drop_fraction: float = 0.10) -> np.ndarray:
     """
-    Filter out outliers based on Median Absolute Deviation (MAD) of residuals in log-log space.
-    Returns a boolean mask of valid data points to keep.
+    Filter out the worst observations based on the provided covariance matrices.
+    The "worst" entries are defined as those with the largest total variance
+    (trace of the 2x2 covariance in log space). By default, drop the worst 10%.
     """
-    valid_mask = (M200 > 0) & (c > 0)
+    valid_mask = np.ones(len(log10_cov_obs), dtype=bool)
+    if log10_cov_obs is None:
+        return valid_mask
+
+    cov_valid_mask = np.array([
+        cov is not None and np.shape(cov) == (2, 2) and np.all(np.isfinite(cov))
+        for cov in log10_cov_obs
+    ])
+    valid_mask = valid_mask & cov_valid_mask
     if not np.any(valid_mask):
         return valid_mask
 
-    M200_valid = M200[valid_mask]
-    c_valid = c[valid_mask]
-
-    # Simple log-log linear fit for outlier detection
-    log_m200 = np.log10(M200_valid)
-    log_c = np.log10(c_valid)
-    A = np.column_stack([log_m200, np.ones_like(log_m200)])
-    coeffs, *_ = np.linalg.lstsq(A, log_c, rcond=None)
-    slope, intercept = coeffs
-
-    residuals = log_c - (slope * log_m200 + intercept)
-    mad = np.median(np.abs(residuals - np.median(residuals)))
-
-    if mad == 0:
+    cov_valid = log10_cov_obs[valid_mask]
+    var_score = np.array([np.trace(cov) for cov in cov_valid])
+    if var_score.size == 0:
         return valid_mask
 
-    robust_sigma = 1.4826 * mad
-    keep_mask = np.abs(residuals) <= sigma_threshold * robust_sigma
+    cutoff = np.quantile(var_score, 1.0 - drop_fraction)
+    print(f"Filtering data: dropping {drop_fraction*100:.1f}% of points with variance score above {cutoff:.4f}")
+    keep_mask = var_score <= cutoff
+
+    final_mask = np.zeros_like(valid_mask, dtype=bool)
+    final_mask[valid_mask] = keep_mask
+    return final_mask
+
+def filter_by_nrmse(nrmse: np.ndarray, drop_fraction: float = None, threshold: float = None) -> np.ndarray:
+    """
+    Filter observations based on the nrmse column.
+    - If threshold is provided, keep points with nrmse <= threshold.
+    - Else if drop_fraction is provided, drop the worst fraction by nrmse.
+    """
+    if nrmse is None:
+        return None
+
+    nrmse = np.array(nrmse, dtype=float)
+    valid_mask = np.isfinite(nrmse)
+    if not np.any(valid_mask):
+        return valid_mask
+
+    nrmse_valid = nrmse[valid_mask]
+
+    if threshold is not None:
+        print(f"Filtering data: keeping points with nrmse <= {threshold:.4f}")
+        keep_mask = nrmse_valid <= threshold
+    elif drop_fraction is not None:
+        cutoff = np.quantile(nrmse_valid, 1.0 - drop_fraction)
+        print(f"Filtering data: dropping {drop_fraction*100:.1f}% of points with nrmse above {cutoff:.4f}")
+        keep_mask = nrmse_valid <= cutoff
+    else:
+        keep_mask = np.ones_like(nrmse_valid, dtype=bool)
 
     final_mask = np.zeros_like(valid_mask, dtype=bool)
     final_mask[valid_mask] = keep_mask
@@ -425,7 +456,7 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
     log_c0_mean = summary.loc['log_c0', 'mean']
     alpha_mean = summary.loc['alpha', 'mean']
     log_c0_sd = summary.loc['log_c0', 'sd']
-    alpha_sd = summary.loc['alpha', 'sd']
+    alpha_std = summary.loc['alpha', 'sd']
     sigma_int_mean = summary.loc['sigma_int', 'mean']
 
     # extract posterior samples
@@ -447,14 +478,23 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
 
     # Convert back to linear c0
     c0_mean = 10**log_c0_mean
-    c0_mean_sd = c0_mean * np.log(10) * log_c0_sd
+    c0_mean_std = c0_mean * np.log(10) * log_c0_sd
     c0_best = 10**log_c0_best
     c0_best_sd = c0_best * np.log(10) * log_c0_sd
 
-    # Calculate RMSE using the mean parameters
+    # Calculate RMSE/NRMSE using the mean parameters (linear space)
     c_pred = c_m200_profile(M200, c0_mean, alpha_mean, h=H_0)
-    log_residuals = np.log10(c) - np.log10(c_pred)
-    log_rmse = np.sqrt(np.mean(log_residuals**2))
+    residuals_mean = c - c_pred
+    rmse_mean = np.sqrt(np.mean(residuals_mean**2))
+    nrmse_mean = rmse_mean / (np.mean(c) if np.mean(c) > 0 else 1)
+
+    # Recalculate Reduced Chi2 for the mean fit (log space)
+    log_residuals_mean = np.log10(c) - np.log10(c_pred)
+    log_rmse = np.sqrt(np.mean(log_residuals_mean**2))
+    log_c_err_total = np.sqrt(cov_obs_stacked[:, 1, 1] + sigma_int_mean**2)
+    dof = int(max(len(M200) - 2, 1))  # 2 parameters: log_c0 and alpha
+    chi2_mean = np.sum((log_residuals_mean / log_c_err_total)**2)
+    redchi_mean = chi2_mean / dof
 
     # Recalculate Reduced Chi2 for the best fit
     c_pred_best = c_m200_profile(M200, 10**log_c0_best, alpha_best, h=H_0)
@@ -476,21 +516,24 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
         print(summary)
         print("--- LOO ---")
         print(loo)
+        print("--- mean ---")
+        print(f" c0 mean        : {c0_mean:.4f} ± {c0_mean_std:.4f}")
+        print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_std:.4f}")
+        print(f" sigma_int      : {sigma_int_mean:.4f}")
+        print(f" Log RMSE       : {log_rmse:.3f}")
+        print(f" NRMSE (mean)   : {nrmse_mean:.3f}")
+        print(f" Reduced Chi2 (mean) : {redchi_mean:.3f}")
         print("--- best ---")
         print(f" c0 best        : {c0_best:.4f} ± {c0_best_sd:.4f}")
-        print(f" alpha best     : {alpha_best:.4f} ± {alpha_sd:.4f}")
-        print("--- mean ---")
-        print(f" c0 mean        : {c0_mean:.4f} ± {c0_mean_sd:.4f}")
-        print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_sd:.4f}")
-        print(f" sigma_int      : {sigma_int_mean:.4f}")
-        print("--- metrics ---")
-        print(f" Log RMSE       : {log_rmse:.3f}")
+        print(f" alpha best     : {alpha_best:.4f} ± {alpha_std:.4f}")
         print(f" RMSE (best)    : {rmse_best:.3f}")
         print(f" NRMSE (best)   : {nrmse_best:.3f}")
-        print(f" Reduced Chi2   : {redchi_best:.3f}")
+        print(f" Reduced Chi2 (best) : {redchi_best:.3f}")
+        print("--- metrics ---")
+
         print("------------------------------------------")
 
-    return c0_best, alpha_best, c0_best_sd, alpha_sd, log_rmse
+    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse
 
 def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
@@ -614,7 +657,17 @@ def infer_sersic_n_threshold_grid(M200: np.ndarray, c: np.ndarray, sersic_n: np.
 
     return best_threshold
 
-def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fit: float, alpha_fit: float, log_rmse: float, threshold: float = 2.5):
+def plot_m200_c_all(
+    M200: np.ndarray,
+    c: np.ndarray,
+    sersic_n: np.ndarray,
+    c0_fit: float,
+    alpha_fit: float,
+    log_rmse: float,
+    c0_fit_std: float = None,
+    alpha_fit_std: float = None,
+    threshold: float = 2.5,
+):
     """
     Plot the M200 vs c data and the overall non-linear fit with residuals, color-coded by Sersic n.
     """
@@ -635,8 +688,14 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
         m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
         c_plot = c_m200_profile(m_plot, c0_fit, alpha_fit, h=H_0)
 
+        c0_label = f"{c0_fit:.2f}"
+        alpha_label = f"{alpha_fit:.3f}"
+        if c0_fit_std is not None:
+            c0_label = f"{c0_label} ± {c0_fit_std:.2f}"
+        if alpha_fit_std is not None:
+            alpha_label = f"{alpha_label} ± {alpha_fit_std:.3f}"
         ax1.plot(m_plot, c_plot, color='black', linewidth=2,
-                 label=rf'Fit (All): $c_0={c0_fit:.2f}$, $\alpha={alpha_fit:.3f}$')
+                 label=rf'Fit (All): $c_0={c0_label}$, $\alpha={alpha_label}$')
 
         # Plot ±1 sigma band in log space
         if log_rmse is not None and not np.isnan(log_rmse):
@@ -677,10 +736,22 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"Overall plot saved to {plot_path}")
 
-def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
-                c0_high: float, alpha_high: float, rmse_high: float,
-                c0_low: float, alpha_low: float, rmse_low: float,
-                threshold: float = 2.5):
+def plot_m200_c_split(
+    M200: np.ndarray,
+    c: np.ndarray,
+    sersic_n: np.ndarray,
+    c0_high: float,
+    alpha_high: float,
+    rmse_high: float,
+    c0_low: float,
+    alpha_low: float,
+    rmse_low: float,
+    c0_high_std: float = None,
+    alpha_high_std: float = None,
+    c0_low_std: float = None,
+    alpha_low_std: float = None,
+    threshold: float = 2.5,
+):
     """
     Plot the M200 vs c data and the non-linear fits with residuals, separated by Sersic n.
     """
@@ -700,8 +771,14 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     # Plot high n fit
     if c0_high is not None and alpha_high is not None:
         c_plot_high = c_m200_profile(m_plot, c0_high, alpha_high, h=H_0)
+        c0_high_label = f"{c0_high:.2f}"
+        alpha_high_label = f"{alpha_high:.3f}"
+        if c0_high_std is not None:
+            c0_high_label = f"{c0_high_label} ± {c0_high_std:.2f}"
+        if alpha_high_std is not None:
+            alpha_high_label = f"{alpha_high_label} ± {alpha_high_std:.3f}"
         ax1.plot(m_plot, c_plot_high, color='darkred', linewidth=2,
-                 label=rf'Fit ($n \geq {threshold:.2f}$): $c_0={c0_high:.2f}$, $\alpha={alpha_high:.3f}$')
+                 label=rf'Fit ($n \geq {threshold:.2f}$): $c_0={c0_high_label}$, $\alpha={alpha_high_label}$')
 
         if rmse_high is not None and not np.isnan(rmse_high):
             c_upper = 10**(np.log10(c_plot_high) + rmse_high)
@@ -715,8 +792,14 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     # Plot low n fit
     if c0_low is not None and alpha_low is not None:
         c_plot_low = c_m200_profile(m_plot, c0_low, alpha_low, h=H_0)
+        c0_low_label = f"{c0_low:.2f}"
+        alpha_low_label = f"{alpha_low:.3f}"
+        if c0_low_std is not None:
+            c0_low_label = f"{c0_low_label} ± {c0_low_std:.2f}"
+        if alpha_low_std is not None:
+            alpha_low_label = f"{alpha_low_label} ± {alpha_low_std:.3f}"
         ax1.plot(m_plot, c_plot_low, color='darkblue', linewidth=2,
-                 label=rf'Fit ($n < {threshold:.2f}$): $c_0={c0_low:.2f}$, $\alpha={alpha_low:.3f}$')
+                 label=rf'Fit ($n < {threshold:.2f}$): $c_0={c0_low_label}$, $\alpha={alpha_low_label}$')
 
         if rmse_low is not None and not np.isnan(rmse_low):
             c_upper = 10**(np.log10(c_plot_low) + rmse_low)
@@ -748,7 +831,12 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
     print(f"Split plot saved to {plot_path}")
 
 
-def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers: bool = False):
+def main(
+    mode: str = 'curve_fit',
+    n_threshold: str = 'auto',
+    filter_drop_fraction: float = None,
+    nrmse_threshold: float = None,
+):
     """
     Main execution function.
     mode: 'curve_fit' (default) or 'mcmc'
@@ -765,6 +853,7 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
     c_raw = np.array(data['c'], dtype=float)
     c_std = np.array(data['c_std'], dtype=float)
     sersic_n_raw = np.array(data['sersic_n'], dtype=float)
+    nrmse = np.array(data['nrmse'], dtype=float) if 'nrmse' in data else None
 
     M200_std = np.where(np.isfinite(M200_std), M200_std, 0.0)
     c_std = np.where(np.isfinite(c_std), c_std, 0.0)
@@ -774,8 +863,12 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
     log10_cov_obs_raw = data.get('log10_cov_obs')
 
     # 2. Filter outliers (disabled by default)
-    if use_filter_outliers:
-        mask = filter_outliers(M200_raw, c_raw)
+    if nrmse_threshold is not None or filter_drop_fraction is not None:
+        # mask = filter_by_cov(log10_cov_obs_raw, drop_fraction=filter_drop_fraction)
+        mask = filter_by_nrmse(nrmse, drop_fraction=filter_drop_fraction, threshold=nrmse_threshold)
+        if mask is None:
+            print("Warning: nrmse column missing; skipping NRMSE filtering.")
+            mask = np.ones_like(M200_raw, dtype=bool)
     else:
         mask = np.ones_like(M200_raw, dtype=bool)
     M200 = M200_raw[mask]
@@ -784,6 +877,7 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
     sersic_n = sersic_n_raw[mask]
     log10_mu_obs = log10_mu_obs_raw[mask] if log10_mu_obs_raw is not None else None
     log10_cov_obs = log10_cov_obs_raw[mask] if log10_cov_obs_raw is not None else None
+    print(f"Data points after filtering: {len(M200)} (dropped {len(M200_raw) - len(M200)})")
 
     if len(M200) < 3:
         print("Not enough valid data points for fitting.")
@@ -803,9 +897,9 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
     # 3. Perform overall non-linear fit
     print("\n# 1. Fitting All Data")
     if mode == 'hbm':
-        c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, log10_mu_obs, log10_cov_obs)
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_func(M200, c, log10_mu_obs, log10_cov_obs)
     else:
-        c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, c_std=c_err)
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_func(M200, c, c_std=c_err)
 
     # 4. Infer optimal Sersic n threshold
     if n_threshold.lower() == 'auto':
@@ -825,7 +919,17 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
                 threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
 
     # 5. Plot overall results
-    plot_m200_c_all(M200, c, sersic_n, c0_all, alpha_all, rmse_all, threshold=threshold)
+    plot_m200_c_all(
+        M200,
+        c,
+        sersic_n,
+        c0_all,
+        alpha_all,
+        log_rmse_all,
+        c0_fit_std=c0_std_all,
+        alpha_fit_std=alpha_std_all,
+        threshold=threshold,
+    )
 
     # 6. Split data and perform non-linear fits separately
     mask_high_n = sersic_n >= threshold
@@ -833,32 +937,47 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
 
     print(f"\n#2. Fitting High Sersic n (>= {threshold:.2f})")
     if mode == 'hbm':
-        c0_high, alpha_high, _, _, rmse_high = fit_func(
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_func(
             M200[mask_high_n], c[mask_high_n],
             log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None
         )
     else:
-        c0_high, alpha_high, _, _, rmse_high = fit_func(
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_func(
             M200[mask_high_n], c[mask_high_n],
             c_std=c_err[mask_high_n] if c_err is not None else None
         )
 
     print(f"\n#3. Fitting Low Sersic n (< {threshold:.2f})")
     if mode == 'hbm':
-        c0_low, alpha_low, _, _, rmse_low = fit_func(
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_func(
             M200[mask_low_n], c[mask_low_n],
             log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None
         )
     else:
-        c0_low, alpha_low, _, _, rmse_low = fit_func(
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_func(
             M200[mask_low_n], c[mask_low_n],
             c_std=c_err[mask_low_n] if c_err is not None else None
         )
 
     # 7. Plot split results
-    plot_m200_c_split(M200, c, sersic_n, c0_high, alpha_high, rmse_high, c0_low, alpha_low, rmse_low, threshold=threshold)
+    plot_m200_c_split(
+        M200,
+        c,
+        sersic_n,
+        c0_high,
+        alpha_high,
+        log_rmse_high,
+        c0_low,
+        alpha_low,
+        log_rmse_low,
+        c0_high_std=c0_std_high,
+        alpha_high_std=alpha_std_high,
+        c0_low_std=c0_std_low,
+        alpha_low_std=alpha_std_low,
+        threshold=threshold,
+    )
 
     plt.show()
     plt.close()
@@ -870,8 +989,10 @@ if __name__ == "__main__":
                         help="Fitting method to use: 'fit', 'mcmc', or 'hbm'")
     parser.add_argument('--n', type=str, default='auto',
                         help="Sersic n threshold: 'auto' or a float value (e.g., '2.5')")
-    parser.add_argument('--filter', action='store_true',
-                        help="Enable MAD-based outlier filtering")
+    parser.add_argument('--filter', type=float, default=None,
+                        help="Drop fraction for NRMSE filtering (e.g., 0.10)")
+    parser.add_argument('--nmrse', '--nrmse', dest='nrmse', type=float, default=None,
+                        help="NRMSE threshold: keep points with nrmse <= value")
     args = parser.parse_args()
 
-    main(mode=args.mode, n_threshold=args.n, use_filter_outliers=args.filter)
+    main(mode=args.mode, n_threshold=args.n, filter_drop_fraction=args.filter, nrmse_threshold=args.nrmse)

@@ -37,13 +37,18 @@ root_dir = Path(__file__).resolve().parent.parent
 data_dir = root_dir / data_directory
 result_dir = data_dir / result_directory
 
-def c_m200_model(M200: np.ndarray, c0: float, alpha: float, h: float = H_0) -> np.ndarray:
+def c_m200_profile(M200: np.ndarray, c0: float, alpha: float, h: float = H_0) -> np.ndarray:
     """
     Theoretical non-linear model for c-M200 relation.
     c = c0 * (M200 / (M_pivot_h_inv / h))^alpha
     """
-    mass_ratio = M200 / (M_PIVOT_H_INV / h)
-    return c0 * (mass_ratio)**alpha
+    M_pivot = M_PIVOT_H_INV / h
+    return c0 * (M200 / M_pivot)**alpha
+
+
+def log_c_m200_profile(log_M200, log_c0, alpha, h=H_0):
+    log_M_pivot = np.log10(M_PIVOT_H_INV / h)
+    return log_c0 + alpha * (log_M200 - log_M_pivot)
 
 def get_m200_c_data():
     """
@@ -149,7 +154,7 @@ def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = No
 
     # Wrapper to fix h parameter
     def model_to_fit(M, c0, alpha):
-        return c_m200_model(M, c0, alpha, h=H_0)
+        return c_m200_profile(M, c0, alpha, h=H_0)
 
     try:
         popt, pcov = curve_fit(
@@ -203,7 +208,6 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     # Convert to log space for better MCMC sampling
     log_M200 = np.log10(M200)
     log_c = np.log10(c)
-    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
 
     # Calculate total error in log space
     if c_std is not None and np.all(c_std > 0):
@@ -218,7 +222,8 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
         alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.2)
 
         # Expected value
-        log_c_expect = log_c0_t + alpha_t * (log_M200 - log_M_pivot)
+        log_c_expect = log_c_m200_profile(log_M200, log_c0_t, alpha_t, h=H_0)
+
         log_c_t = pm.Deterministic('log_c_model', log_c_expect)
         c_model_t = pm.Deterministic('c_model', 10**log_c_t)
 
@@ -251,6 +256,7 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     var_names = ["log_c0", "alpha"]
     summary = az.summary(trace, var_names=var_names, round_to=4)
 
+
     log_c0_mean = summary.loc['log_c0', 'mean']
     alpha_mean = summary.loc['alpha', 'mean']
     log_c0_sd = summary.loc['log_c0', 'sd']
@@ -263,7 +269,12 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     c_model_samples = posterior['c_model'].values.flatten()
 
     # Maximum A Posteriori (MAP) estimates
-    lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
+    if "logp" in trace.sample_stats:
+        lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
+    elif "lp" in trace.sample_stats:
+        lp_stacked = trace.sample_stats["lp"].stack(sample=("chain", "draw"))
+    else:
+        raise KeyError("Could not find 'logp' or 'lp' in trace.sample_stats")
     best_idx = int(lp_stacked.argmax("sample").values)
     log_c0_best = log_c0_samples[best_idx]
     alpha_best = alpha_samples[best_idx]
@@ -280,7 +291,7 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
     alpha_err = alpha_sd
 
     # Calculate RMSE
-    c_pred = c_m200_model(M200, c0_best, alpha_best, h=H_0)
+    c_pred = c_m200_profile(M200, c0_best, alpha_best, h=H_0)
     log_residuals = np.log10(c) - np.log10(c_pred)
     log_rmse = np.sqrt(np.mean(log_residuals**2))
 
@@ -298,12 +309,15 @@ def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, i
 
     if verbose:
         print("--------- MCMC M200-c fit results ---------")
+        print("--- Summary ---")
+        print(summary)
+        print("--- best ---")
         print(f" c0 best        : {c0_best:.4f} ± {c0_err:.4f}")
         print(f" alpha best     : {alpha_best:.4f} ± {alpha_err:.4f}")
-        print("---------------")
+        print("--- mean ---")
         print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
         print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_err:.4f}")
-        print("---------------")
+        print("--- metrics ---")
         print(f" Log RMSE       : {log_rmse:.3f}")
         print(f" NRMSE          : {nrmse_best:.3f}")
         print(f" Reduced Chi²   : {redchi_best:.3f}")
@@ -341,69 +355,142 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
     mu_obs_stacked = np.stack(log10_mu_obs)
     cov_obs_stacked = np.stack(log10_cov_obs)
 
+    # Shift the observed M200 by pivot to make sampling easier and more stable
+    mu_obs_shifted = mu_obs_stacked.copy()
+    mu_obs_shifted[:, 0] -= log_M_pivot
+
     with pm.Model() as model:
         # 1. Hyper-priors for the population parameters
+        # Population distribution of M200 (shifted by pivot)
+        mu_M = pm.Normal('mu_M', mu=np.mean(mu_obs_shifted[:, 0]), sigma=1.0)
+        sigma_M = pm.HalfNormal('sigma_M', sigma=1.0)
+
+        # Relation parameters
         log_c0_t = pm.Normal('log_c0', mu=np.log10(8.5), sigma=0.5)
-        alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.2)
+        alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.3)
 
         # Intrinsic scatter (sigma_int)
-        sigma_int = pm.HalfNormal('sigma_int', sigma=0.2)
+        sigma_int = pm.HalfCauchy('sigma_int', beta=0.2)
 
-        # 2. Latent Variables for each galaxy
-        # We need a prior for the true M200. We can use a wide normal centered roughly on the observed values
-        log_M200_true = pm.Normal('log_M200_true', mu=np.mean(mu_obs_stacked[:, 0]), sigma=1.0, shape=N_galaxies)
+        # 2. Marginalized Likelihood
+        # Instead of sampling latent variables for each galaxy, we marginalize them out.
+        # The true values [M_true, c_true] follow a population distribution:
+        # M_true ~ N(mu_M, sigma_M^2)
+        # c_true | M_true ~ N(log_c0 + alpha * M_true, sigma_int^2)
+        # This implies the joint distribution of [M_true, c_true] is a 2D Normal:
+        # Mean: [mu_M, log_c0 + alpha * mu_M]
+        # Covariance: [[sigma_M^2, alpha * sigma_M^2], [alpha * sigma_M^2, alpha^2 * sigma_M^2 + sigma_int^2]]
 
-        # The true concentration is determined by the theoretical relation + intrinsic scatter
-        log_c_expect = log_c0_t + alpha_t * (log_M200_true - log_M_pivot)
-        log_c_true = pm.Normal('log_c_true', mu=log_c_expect, sigma=sigma_int, shape=N_galaxies)
+        mu_pop = pt.stack([mu_M, log_c0_t + alpha_t * mu_M])
 
-        # Combine latent variables into a single vector per galaxy: [log_M200_true, log_c_true]
-        latent_true_vector = pt.stack([log_M200_true, log_c_true], axis=1)
+        cov_pop = pt.stack([
+            pt.stack([sigma_M**2, alpha_t * sigma_M**2]),
+            pt.stack([alpha_t * sigma_M**2, alpha_t**2 * sigma_M**2 + sigma_int**2])
+        ])
 
-        # 3. MvNormal Likelihood
-        # Connect the latent true values to the observed values using the covariance matrix
-        obs = pm.MvNormal('obs', mu=latent_true_vector, cov=cov_obs_stacked, observed=mu_obs_stacked)
+        # The observed values are the true values plus observation noise:
+        # obs ~ N(true, cov_obs)
+        # Therefore, the marginal distribution of obs is:
+        # obs ~ N(mu_pop, cov_pop + cov_obs)
+
+        total_cov = cov_pop + cov_obs_stacked
+
+        # Use a StudentT likelihood to be more robust to potential outliers in the observed data
+        obs = pm.MvStudentT('obs', mu=mu_pop, cov=total_cov, observed=mu_obs_shifted, nu=4)
 
         # Sampling
-        draws = 2000
-        tune = 1000
+        draws = 3000
+        tune = 2000
         chains = min(4, os.cpu_count())
-        target_accept = 0.95
+        target_accept = 0.98
         sampler = 'numpyro'
         init = "jitter+adapt_full"
 
         trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
                           nuts_sampler=sampler, target_accept=target_accept,
                           random_seed=42, progressbar=True)
+        try:
+            pm.compute_log_likelihood(trace)
+        except Exception as exc:
+            print(f"Warning: compute_log_likelihood failed: {exc}")
 
+    # summarize results
     var_names = ["log_c0", "alpha", "sigma_int"]
     summary = az.summary(trace, var_names=var_names, round_to=4)
 
+    # LOO
+    loo = az.loo(trace, pointwise=True)
+
+    # mean and std
     log_c0_mean = summary.loc['log_c0', 'mean']
     alpha_mean = summary.loc['alpha', 'mean']
     log_c0_sd = summary.loc['log_c0', 'sd']
     alpha_sd = summary.loc['alpha', 'sd']
     sigma_int_mean = summary.loc['sigma_int', 'mean']
 
+    # extract posterior samples
+    posterior = trace.posterior
+    log_c0_samples = posterior['log_c0'].values.flatten()
+    alpha_samples = posterior['alpha'].values.flatten()
+
+    # Maximum A Posteriori (MAP) estimates
+    if "logp" in trace.sample_stats:
+        lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
+    elif "lp" in trace.sample_stats:
+        lp_stacked = trace.sample_stats["lp"].stack(sample=("chain", "draw"))
+    else:
+        raise KeyError("Could not find 'logp' or 'lp' in trace.sample_stats")
+    best_idx = int(lp_stacked.argmax("sample").values)
+    log_c0_best = log_c0_samples[best_idx]
+    alpha_best = alpha_samples[best_idx]
+
+
     # Convert back to linear c0
     c0_mean = 10**log_c0_mean
-    c0_err = c0_mean * np.log(10) * log_c0_sd
+    c0_mean_sd = c0_mean * np.log(10) * log_c0_sd
+    c0_best = 10**log_c0_best
+    c0_best_sd = c0_best * np.log(10) * log_c0_sd
 
     # Calculate RMSE using the mean parameters
-    c_pred = c_m200_model(M200, c0_mean, alpha_mean, h=H_0)
+    c_pred = c_m200_profile(M200, c0_mean, alpha_mean, h=H_0)
     log_residuals = np.log10(c) - np.log10(c_pred)
     log_rmse = np.sqrt(np.mean(log_residuals**2))
 
+    # Recalculate Reduced Chi2 for the best fit
+    c_pred_best = c_m200_profile(M200, 10**log_c0_best, alpha_best, h=H_0)
+    log_residuals_best = np.log10(c) - np.log10(c_pred_best)
+    rmse_best = np.sqrt(np.mean(log_residuals_best**2))
+    nrmse_best = rmse_best / (np.mean(c) if np.mean(c) > 0 else 1)
+    dof = int(max(len(M200) - 2, 1))  # 2 parameters: log_c0 and alpha
+
+    # Calculate total error in log space for chi2
+    # We use the observed variance in log_c (index 1,1) + intrinsic scatter
+    log_c_err_total = np.sqrt(cov_obs_stacked[:, 1, 1] + sigma_int_mean**2)
+    chi2_best = np.sum((log_residuals_best / log_c_err_total)**2)
+    redchi_best = chi2_best / dof
+
+
     if verbose:
         print("--------- HBM M200-c fit results ---------")
-        print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
+        print("--- Summary ---")
+        print(summary)
+        print("--- LOO ---")
+        print(loo)
+        print("--- best ---")
+        print(f" c0 best        : {c0_best:.4f} ± {c0_best_sd:.4f}")
+        print(f" alpha best     : {alpha_best:.4f} ± {alpha_sd:.4f}")
+        print("--- mean ---")
+        print(f" c0 mean        : {c0_mean:.4f} ± {c0_mean_sd:.4f}")
         print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_sd:.4f}")
         print(f" sigma_int      : {sigma_int_mean:.4f}")
-        print("---------------")
+        print("--- metrics ---")
         print(f" Log RMSE       : {log_rmse:.3f}")
+        print(f" RMSE (best)    : {rmse_best:.3f}")
+        print(f" NRMSE (best)   : {nrmse_best:.3f}")
+        print(f" Reduced Chi2   : {redchi_best:.3f}")
         print("------------------------------------------")
 
-    return c0_mean, alpha_mean, c0_err, alpha_sd, log_rmse
+    return c0_best, alpha_best, c0_best_sd, alpha_sd, log_rmse
 
 def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
@@ -462,6 +549,8 @@ def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.
                           return_inferencedata=True)
 
     summary = az.summary(trace, var_names=["threshold", "log_c0_high", "alpha_high", "log_c0_low", "alpha_low"], round_to=4)
+    print("\n--- Threshold MCMC Summary ---")
+    print(summary)
 
     threshold_mean = summary.loc['threshold', 'mean']
     threshold_sd = summary.loc['threshold', 'sd']
@@ -544,7 +633,7 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
     if c0_fit is not None and alpha_fit is not None:
         # Generate smooth curve for plotting
         m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
-        c_plot = c_m200_model(m_plot, c0_fit, alpha_fit, h=H_0)
+        c_plot = c_m200_profile(m_plot, c0_fit, alpha_fit, h=H_0)
 
         ax1.plot(m_plot, c_plot, color='black', linewidth=2,
                  label=rf'Fit (All): $c_0={c0_fit:.2f}$, $\alpha={alpha_fit:.3f}$')
@@ -557,7 +646,7 @@ def plot_m200_c_all(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c0_fi
                              color='black', alpha=0.2, label=r'Fit $\pm 1\sigma$ (log)')
 
         # Calculate residuals (in log space)
-        c_pred = c_m200_model(M200, c0_fit, alpha_fit, h=H_0)
+        c_pred = c_m200_profile(M200, c0_fit, alpha_fit, h=H_0)
         log_residuals = np.log10(c) - np.log10(c_pred)
 
         # Plot residuals color-coded by sersic_n
@@ -610,7 +699,7 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
 
     # Plot high n fit
     if c0_high is not None and alpha_high is not None:
-        c_plot_high = c_m200_model(m_plot, c0_high, alpha_high, h=H_0)
+        c_plot_high = c_m200_profile(m_plot, c0_high, alpha_high, h=H_0)
         ax1.plot(m_plot, c_plot_high, color='darkred', linewidth=2,
                  label=rf'Fit ($n \geq {threshold:.2f}$): $c_0={c0_high:.2f}$, $\alpha={alpha_high:.3f}$')
 
@@ -619,13 +708,13 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
             c_lower = 10**(np.log10(c_plot_high) - rmse_high)
             ax1.fill_between(m_plot, c_lower, c_upper, color='red', alpha=0.15)
 
-        c_pred_high = c_m200_model(M200[mask_high_n], c0_high, alpha_high, h=H_0)
+        c_pred_high = c_m200_profile(M200[mask_high_n], c0_high, alpha_high, h=H_0)
         log_res_high = np.log10(c[mask_high_n]) - np.log10(c_pred_high)
         ax2.scatter(M200[mask_high_n], log_res_high, color='red', alpha=0.6, s=20, edgecolors='none')
 
     # Plot low n fit
     if c0_low is not None and alpha_low is not None:
-        c_plot_low = c_m200_model(m_plot, c0_low, alpha_low, h=H_0)
+        c_plot_low = c_m200_profile(m_plot, c0_low, alpha_low, h=H_0)
         ax1.plot(m_plot, c_plot_low, color='darkblue', linewidth=2,
                  label=rf'Fit ($n < {threshold:.2f}$): $c_0={c0_low:.2f}$, $\alpha={alpha_low:.3f}$')
 
@@ -634,7 +723,7 @@ def plot_m200_c_split(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray,
             c_lower = 10**(np.log10(c_plot_low) - rmse_low)
             ax1.fill_between(m_plot, c_lower, c_upper, color='blue', alpha=0.15)
 
-        c_pred_low = c_m200_model(M200[mask_low_n], c0_low, alpha_low, h=H_0)
+        c_pred_low = c_m200_profile(M200[mask_low_n], c0_low, alpha_low, h=H_0)
         log_res_low = np.log10(c[mask_low_n]) - np.log10(c_pred_low)
         ax2.scatter(M200[mask_low_n], log_res_low, color='blue', alpha=0.6, s=20, edgecolors='none')
 
@@ -712,7 +801,7 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
         fit_func = fit_m200_c_nonlinear
 
     # 3. Perform overall non-linear fit
-    print("\n--- Fitting All Data ---")
+    print("\n# 1. Fitting All Data")
     if mode == 'hbm':
         c0_all, alpha_all, _, _, rmse_all = fit_func(M200, c, log10_mu_obs, log10_cov_obs)
     else:
@@ -742,7 +831,7 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
     mask_high_n = sersic_n >= threshold
     mask_low_n = sersic_n < threshold
 
-    print(f"\n--- Fitting High Sersic n (>= {threshold:.2f}) ---")
+    print(f"\n#2. Fitting High Sersic n (>= {threshold:.2f})")
     if mode == 'hbm':
         c0_high, alpha_high, _, _, rmse_high = fit_func(
             M200[mask_high_n], c[mask_high_n],
@@ -755,7 +844,7 @@ def main(mode: str = 'curve_fit', n_threshold: str = 'auto', use_filter_outliers
             c_std=c_err[mask_high_n] if c_err is not None else None
         )
 
-    print(f"\n--- Fitting Low Sersic n (< {threshold:.2f}) ---")
+    print(f"\n#3. Fitting Low Sersic n (< {threshold:.2f})")
     if mode == 'hbm':
         c0_low, alpha_low, _, _, rmse_low = fit_func(
             M200[mask_low_n], c[mask_low_n],
@@ -781,8 +870,8 @@ if __name__ == "__main__":
                         help="Fitting method to use: 'fit', 'mcmc', or 'hbm'")
     parser.add_argument('--n', type=str, default='auto',
                         help="Sersic n threshold: 'auto' or a float value (e.g., '2.5')")
-    parser.add_argument('--filter-outliers', action='store_true',
+    parser.add_argument('--filter', action='store_true',
                         help="Enable MAD-based outlier filtering")
     args = parser.parse_args()
 
-    main(mode=args.mode, n_threshold=args.n, use_filter_outliers=args.filter_outliers)
+    main(mode=args.mode, n_threshold=args.n, use_filter_outliers=args.filter)

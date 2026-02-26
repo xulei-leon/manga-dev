@@ -231,132 +231,7 @@ def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = No
         print(f"Fitting failed: {e}")
         return None, None, None, None, None
 
-def fit_m200_c_mcmc(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
-    """
-    Fit the non-linear c-M200 relation using PyMC (MCMC).
-    Returns c0_fit, alpha_fit, c0_err, alpha_err, log_rmse.
-    """
-    # Convert to log space for better MCMC sampling
-    log_M200 = np.log10(M200)
-    log_c = np.log10(c)
-
-    # Calculate total error in log space
-    if c_std is not None and np.all(c_std > 0):
-        log_c_err = c_std / (c * np.log(10))
-        total_log_err = np.sqrt(log_c_err**2 + intrinsic_scatter_dex**2)
-    else:
-        total_log_err = np.full_like(log_c, intrinsic_scatter_dex)
-
-    with pm.Model() as model:
-        # Priors
-        log_c0_t = pm.Normal('log_c0', mu=np.log10(8.5), sigma=0.5)
-        alpha_t = pm.Normal('alpha', mu=-0.1, sigma=0.2)
-
-        # Expected value
-        log_c_expect = log_c_m200_profile(log_M200, log_c0_t, alpha_t, h=H_0)
-
-        log_c_t = pm.Deterministic('log_c_model', log_c_expect)
-        c_model_t = pm.Deterministic('c_model', 10**log_c_t)
-
-        # Likelihood
-        log_c_like = pm.Normal('log_c_obs', mu=log_c_t, sigma=total_log_err, observed=log_c)
-
-        # Sampling
-        draws = 3000
-        tune = 2000
-        chains = min(4, os.cpu_count())
-        target_accept = 0.95
-        displaybar = True
-        checks = True
-        sampler = 'numpyro'
-        init = "jitter+adapt_full"
-        random_seed = 42
-        trace = pm.sample(init=init, draws=draws, tune=tune, chains=chains, cores=chains,
-                          nuts_sampler=sampler, target_accept=target_accept,
-                          progressbar=displaybar,
-                          random_seed=random_seed,
-                          return_inferencedata=True, compute_convergence_checks=checks)
-
-        try:
-            pm.compute_log_likelihood(trace)
-        except Exception as exc:
-            print(f"Warning: compute_log_likelihood failed: {exc}")
-
-        ppc_idata = pm.sample_posterior_predictive(trace, random_seed=random_seed, extend_inferencedata=True)
-
-    var_names = ["log_c0", "alpha"]
-    summary = az.summary(trace, var_names=var_names, round_to=4)
-
-
-    log_c0_mean = summary.loc['log_c0', 'mean']
-    alpha_mean = summary.loc['alpha', 'mean']
-    log_c0_sd = summary.loc['log_c0', 'sd']
-    alpha_sd = summary.loc['alpha', 'sd']
-
-    # extract posterior samples
-    posterior = trace.posterior
-    log_c0_samples = posterior['log_c0'].values.flatten()
-    alpha_samples = posterior['alpha'].values.flatten()
-    c_model_samples = posterior['c_model'].values.flatten()
-
-    # Maximum A Posteriori (MAP) estimates
-    if "logp" in trace.sample_stats:
-        lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
-    elif "lp" in trace.sample_stats:
-        lp_stacked = trace.sample_stats["lp"].stack(sample=("chain", "draw"))
-    else:
-        raise KeyError("Could not find 'logp' or 'lp' in trace.sample_stats")
-    best_idx = int(lp_stacked.argmax("sample").values)
-    log_c0_best = log_c0_samples[best_idx]
-    alpha_best = alpha_samples[best_idx]
-    c_model_best = c_model_samples[best_idx]
-
-    # Convert back to linear c0
-    c0_mean = 10**log_c0_mean
-    c0_best = 10**log_c0_best
-    # Error propagation for c0: sigma_c0 = c0 * ln(10) * sigma_log_c0
-    c0_err = c0_best * np.log(10) * log_c0_sd
-
-    alpha_mean = alpha_mean
-    alpha_best = alpha_best
-    alpha_err = alpha_sd
-
-    # Calculate RMSE
-    c_pred = c_m200_profile(M200, c0_best, alpha_best, h=H_0)
-    log_residuals = np.log10(c) - np.log10(c_pred)
-    log_rmse = np.sqrt(np.mean(log_residuals**2))
-
-    # Recalculate Reduced Chi2 for the best fit
-    params_num = 2  # log_c0 and alpha
-    mask = np.isfinite(M200) & np.isfinite(c)
-    res_obs_best = c - c_model_best
-    res_norm_best = res_obs_best / (total_log_err * c * np.log(10))  # Convert log error to linear space for chi2
-    rmse_best = np.sqrt(np.mean(res_norm_best[mask]**2))
-    nrmse_best = rmse_best / (np.mean(c[mask]) if np.mean(c[mask]) > 0 else 1)
-
-
-    dof = int(max(np.sum(mask) - params_num, 1))
-    redchi_best = np.sum(res_norm_best[mask]**2) / dof if dof > 0 else np.nan
-
-    if verbose:
-        print("--------- MCMC M200-c fit results ---------")
-        print("--- Summary ---")
-        print(summary)
-        print("--- best ---")
-        print(f" c0 best        : {c0_best:.4f} ± {c0_err:.4f}")
-        print(f" alpha best     : {alpha_best:.4f} ± {alpha_err:.4f}")
-        print("--- mean ---")
-        print(f" c0 mean        : {c0_mean:.4f} ± {c0_err:.4f}")
-        print(f" alpha mean     : {alpha_mean:.4f} ± {alpha_err:.4f}")
-        print("--- metrics ---")
-        print(f" Log RMSE       : {log_rmse:.3f}")
-        print(f" NRMSE          : {nrmse_best:.3f}")
-        print(f" Reduced Chi²   : {redchi_best:.3f}")
-        print("-------------------------------------------")
-
-    return c0_best, alpha_best, c0_err, alpha_err, log_rmse
-
-def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
+def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
     """
     Fit the non-linear c-M200 relation using a Hierarchical Bayesian Model (HBM).
     This uses the full covariance matrix from the first stage inference.
@@ -372,19 +247,23 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
         print(f"Warning: Dropping {np.sum(~valid_mask)} points due to invalid mu/cov data.")
         log10_mu_obs = log10_mu_obs[valid_mask]
         log10_cov_obs = log10_cov_obs[valid_mask]
-        M200 = M200[valid_mask]
-        c = c[valid_mask]
 
-    if len(M200) < 3:
-        print("Not enough valid data points for HBM fitting.")
+    if len(log10_mu_obs) < 3:
+        print("Not enough valid data points for MCMC fitting.")
         return None, None, None, None, None
 
-    N_galaxies = len(M200)
+    N_galaxies = len(log10_mu_obs)
     log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
 
     # Stack mu and cov for PyMC
     mu_obs_stacked = np.stack(log10_mu_obs)
     cov_obs_stacked = np.stack(log10_cov_obs)
+
+    # Derive M200 and c from the observed log values for diagnostics/metrics
+    log_M200_obs = mu_obs_stacked[:, 0]
+    log_c_obs = mu_obs_stacked[:, 1]
+    M200 = 10**log_M200_obs
+    c = 10**log_c_obs
 
     # Shift the observed M200 by pivot to make sampling easier and more stable
     mu_obs_shifted = mu_obs_stacked.copy()
@@ -511,7 +390,7 @@ def fit_m200_c_hbm(M200: np.ndarray, c: np.ndarray, log10_mu_obs: np.ndarray, lo
 
 
     if verbose:
-        print("--------- HBM M200-c fit results ---------")
+        print("--------- MCMC M200-c fit results ---------")
         print("--- Summary ---")
         print(summary)
         print("--- LOO ---")
@@ -883,27 +762,18 @@ def main(
         print("Not enough valid data points for fitting.")
         return
 
-    # Select fitting function based on mode
-    if mode == 'mcmc':
-        print("\nUsing MCMC (PyMC) for fitting...")
-        fit_func = fit_m200_c_mcmc
-    elif mode == 'hbm':
-        print("\nUsing Hierarchical Bayesian Model (HBM) for fitting...")
-        fit_func = fit_m200_c_hbm
-    else:
-        print("\nUsing curve_fit for fitting...")
-        fit_func = fit_m200_c_nonlinear
-
     # 3. Perform overall non-linear fit
     print("\n# 1. Fitting All Data")
-    if mode == 'hbm':
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_func(M200, c, log10_mu_obs, log10_cov_obs)
+    if mode == 'mcmc':
+        print("\nUsing MCMC for fitting...")
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
     else:
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_func(M200, c, c_std=c_err)
+        print("\nUsing curve_fit for fitting...")
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
 
     # 4. Infer optimal Sersic n threshold
     if n_threshold.lower() == 'auto':
-        if mode == 'mcmc' or mode == 'hbm':
+        if mode == 'mcmc':
             threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
         else:
             threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
@@ -913,7 +783,7 @@ def main(
             print(f"\n--- Using fixed Sersic n threshold: {threshold:.2f} ---")
         except ValueError:
             print(f"\n--- Invalid Sersic n threshold '{n_threshold}', falling back to auto ---")
-            if mode == 'mcmc' or mode == 'hbm':
+            if mode == 'mcmc':
                 threshold = infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
             else:
                 threshold = infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
@@ -936,27 +806,25 @@ def main(
     mask_low_n = sersic_n < threshold
 
     print(f"\n#2. Fitting High Sersic n (>= {threshold:.2f})")
-    if mode == 'hbm':
-        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_func(
-            M200[mask_high_n], c[mask_high_n],
+    if mode == 'mcmc':
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_m200_c_mcmc(
             log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None
         )
     else:
-        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_func(
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_m200_c_nonlinear(
             M200[mask_high_n], c[mask_high_n],
             c_std=c_err[mask_high_n] if c_err is not None else None
         )
 
     print(f"\n#3. Fitting Low Sersic n (< {threshold:.2f})")
-    if mode == 'hbm':
-        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_func(
-            M200[mask_low_n], c[mask_low_n],
+    if mode == 'mcmc':
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_m200_c_mcmc(
             log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None
         )
     else:
-        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_func(
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_m200_c_nonlinear(
             M200[mask_low_n], c[mask_low_n],
             c_std=c_err[mask_low_n] if c_err is not None else None
         )
@@ -985,8 +853,8 @@ def main(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Fit c-M200 relation.")
-    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc', 'hbm'], default='fit',
-                        help="Fitting method to use: 'fit', 'mcmc', or 'hbm'")
+    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc'], default='fit',
+                        help="Fitting method to use: 'fit' or 'mcmc'")
     parser.add_argument('--n', type=str, default='auto',
                         help="Sersic n threshold: 'auto' or a float value (e.g., '2.5')")
     parser.add_argument('--filter', type=float, default=None,

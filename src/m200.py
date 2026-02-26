@@ -312,7 +312,7 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
         draws = 3000
         tune = 2000
         chains = min(4, os.cpu_count())
-        target_accept = 0.98
+        target_accept = 0.95
         sampler = 'numpyro'
         init = "jitter+adapt_full"
 
@@ -342,6 +342,33 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
     posterior = trace.posterior
     log_c0_samples = posterior['log_c0'].values.flatten()
     alpha_samples = posterior['alpha'].values.flatten()
+    sigma_int_samples = posterior['sigma_int'].values.flatten()
+
+    # KDE curves and pair plot for diagnostics
+    try:
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        az.plot_kde(log_c0_samples, ax=axes[0])
+        axes[0].set_title('KDE: log_c0')
+        az.plot_kde(alpha_samples, ax=axes[1])
+        axes[1].set_title('KDE: alpha')
+        az.plot_kde(sigma_int_samples, ax=axes[2])
+        axes[2].set_title('KDE: sigma_int')
+        fig.tight_layout()
+        kde_path = result_dir / "m200_c_hbm_kde.png"
+        fig.savefig(kde_path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"KDE plot saved to {kde_path}")
+    except Exception as exc:
+        print(f"Warning: KDE plot failed: {exc}")
+
+    try:
+        pair_fig = az.plot_pair(trace, var_names=["log_c0", "alpha"], kind="kde", marginals=True)
+        pair_path = result_dir / "m200_c_hbm_pair.png"
+        pair_fig.figure.savefig(pair_path, dpi=300, bbox_inches='tight')
+        plt.close(pair_fig.figure)
+        print(f"Pair plot saved to {pair_path}")
+    except Exception as exc:
+        print(f"Warning: Pair plot failed: {exc}")
 
     # Maximum A Posteriori (MAP) estimates
     if "logp" in trace.sample_stats:
@@ -412,7 +439,7 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
 
         print("------------------------------------------")
 
-    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse
+    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse, sigma_int_mean
 
 def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
@@ -545,6 +572,7 @@ def plot_m200_c_all(
     log_rmse: float,
     c0_fit_std: float = None,
     alpha_fit_std: float = None,
+    sigma_int: float = None,
     threshold: float = 2.5,
 ):
     """
@@ -597,6 +625,18 @@ def plot_m200_c_all(
             ax2.axhline(-log_rmse, color='black', linestyle=':', alpha=0.5)
             ax2.fill_between(m_plot, -log_rmse, log_rmse, color='black', alpha=0.1)
 
+    if sigma_int is not None:
+        ax1.text(
+            0.02,
+            0.98,
+            f"sigma_int = {sigma_int:.4f}",
+            transform=ax1.transAxes,
+            ha='left',
+            va='top',
+            fontsize=10,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7),
+        )
+
     ax1.set_xscale('log')
     ax1.set_yscale('log')
     ax1.set_ylabel(r'$c$', fontsize=12)
@@ -629,6 +669,8 @@ def plot_m200_c_split(
     alpha_high_std: float = None,
     c0_low_std: float = None,
     alpha_low_std: float = None,
+    sigma_int_high: float = None,
+    sigma_int_low: float = None,
     threshold: float = 2.5,
 ):
     """
@@ -691,6 +733,29 @@ def plot_m200_c_split(
 
     ax2.axhline(0, color='black', linestyle='--', linewidth=1.5)
 
+    if sigma_int_high is not None:
+        ax1.text(
+            0.02,
+            0.98,
+            f"sigma_int_high = {sigma_int_high:.4f}",
+            transform=ax1.transAxes,
+            ha='left',
+            va='top',
+            fontsize=10,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7),
+        )
+    if sigma_int_low is not None:
+        ax1.text(
+            0.02,
+            0.90,
+            f"sigma_int_low = {sigma_int_low:.4f}",
+            transform=ax1.transAxes,
+            ha='left',
+            va='top',
+            fontsize=10,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7),
+        )
+
     ax1.set_xscale('log')
     ax1.set_yscale('log')
     ax1.set_ylabel(r'$c$', fontsize=12)
@@ -708,6 +773,70 @@ def plot_m200_c_split(
     plot_path = result_dir / "m200_c_split.png"
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"Split plot saved to {plot_path}")
+
+
+def plot_m200_c_spaghetti(
+    M200: np.ndarray,
+    c: np.ndarray,
+    sersic_n: np.ndarray,
+    threshold: float = 2.5,
+    n_boot: int = 50,
+):
+    """
+    Spaghetti plot of c-M200 relations by Sersic n groups using bootstrap fits.
+    """
+    valid_mask = (M200 > 0) & (c > 0) & np.isfinite(M200) & np.isfinite(c)
+    if not np.any(valid_mask):
+        return
+
+    M200 = M200[valid_mask]
+    c = c[valid_mask]
+    sersic_n = sersic_n[valid_mask]
+
+    mask_high_n = sersic_n >= threshold
+    mask_low_n = sersic_n < threshold
+
+    m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
+    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    ax.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.4,
+               label=rf'Data ($n \geq {threshold:.2f}$)', s=20, edgecolors='none')
+    ax.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.4,
+               label=rf'Data ($n < {threshold:.2f}$)', s=20, edgecolors='none')
+
+    def bootstrap_lines(mask, color):
+        if np.sum(mask) < 3:
+            return
+        log_M = np.log10(M200[mask])
+        log_c = np.log10(c[mask])
+        x = log_M - log_M_pivot
+        n = len(x)
+        for _ in range(n_boot):
+            idx = np.random.randint(0, n, n)
+            X = np.column_stack([x[idx], np.ones_like(x[idx])])
+            coeffs, *_ = np.linalg.lstsq(X, log_c[idx], rcond=None)
+            alpha = coeffs[0]
+            log_c0 = coeffs[1]
+            c_plot = c_m200_profile(m_plot, 10**log_c0, alpha, h=H_0)
+            ax.plot(m_plot, c_plot, color=color, alpha=0.15, linewidth=1)
+
+    bootstrap_lines(mask_high_n, 'red')
+    bootstrap_lines(mask_low_n, 'blue')
+
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlabel(r'$M_{200} \ [M_\odot]$', fontsize=12)
+    ax.set_ylabel(r'$c$', fontsize=12)
+    ax.set_title('DM NFW: Spaghetti Plot by Sersic n', fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / "m200_c_spaghetti.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Spaghetti plot saved to {plot_path}")
 
 
 def main(
@@ -766,10 +895,11 @@ def main(
     print("\n# 1. Fitting All Data")
     if mode == 'mcmc':
         print("\nUsing MCMC for fitting...")
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all, sigma_int_all = fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
     else:
         print("\nUsing curve_fit for fitting...")
         c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
+        sigma_int_all = None
 
     # 4. Infer optimal Sersic n threshold
     if n_threshold.lower() == 'auto':
@@ -798,6 +928,7 @@ def main(
         log_rmse_all,
         c0_fit_std=c0_std_all,
         alpha_fit_std=alpha_std_all,
+        sigma_int=sigma_int_all,
         threshold=threshold,
     )
 
@@ -807,7 +938,7 @@ def main(
 
     print(f"\n#2. Fitting High Sersic n (>= {threshold:.2f})")
     if mode == 'mcmc':
-        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high = fit_m200_c_mcmc(
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high, sigma_int_high = fit_m200_c_mcmc(
             log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None
         )
@@ -816,10 +947,11 @@ def main(
             M200[mask_high_n], c[mask_high_n],
             c_std=c_err[mask_high_n] if c_err is not None else None
         )
+        sigma_int_high = None
 
     print(f"\n#3. Fitting Low Sersic n (< {threshold:.2f})")
     if mode == 'mcmc':
-        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low = fit_m200_c_mcmc(
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low, sigma_int_low = fit_m200_c_mcmc(
             log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None
         )
@@ -828,6 +960,7 @@ def main(
             M200[mask_low_n], c[mask_low_n],
             c_std=c_err[mask_low_n] if c_err is not None else None
         )
+        sigma_int_low = None
 
     # 7. Plot split results
     plot_m200_c_split(
@@ -844,8 +977,13 @@ def main(
         alpha_high_std=alpha_std_high,
         c0_low_std=c0_std_low,
         alpha_low_std=alpha_std_low,
+        sigma_int_high=sigma_int_high,
+        sigma_int_low=sigma_int_low,
         threshold=threshold,
     )
+
+    # 8. Spaghetti plot by Sersic n
+    plot_m200_c_spaghetti(M200, c, sersic_n, threshold=threshold)
 
     plt.show()
     plt.close()

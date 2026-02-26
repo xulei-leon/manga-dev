@@ -1037,11 +1037,11 @@ def main(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Fit c-M200 relation.")
-    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc'], default='fit',
+    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc'], default='mcmc',
                         help="Fitting method to use: 'fit' or 'mcmc'")
-    parser.add_argument('--n', type=str, default='auto',
+    parser.add_argument('--n', type=str, default='2.5',
                         help="Sersic n threshold: 'all', 'auto', or a float value (e.g., '2.5')")
-    parser.add_argument('--nmrse', '--nrmse', dest='nrmse', type=float, default=None,
+    parser.add_argument('--nmrse', '--nrmse', dest='nrmse', type=float, default=0.10,
                         help="NRMSE threshold: keep points with nrmse <= value")
     parser.add_argument('--sigma', type=int, default=2,
                         help="Sigma selector for mu/cov columns (e.g., 1 or 2)")

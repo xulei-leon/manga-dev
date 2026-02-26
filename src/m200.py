@@ -306,7 +306,9 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
         total_cov = cov_pop + cov_obs_stacked
 
         # Use a StudentT likelihood to be more robust to potential outliers in the observed data
-        obs = pm.MvStudentT('obs', mu=mu_pop, cov=total_cov, observed=mu_obs_shifted, nu=4)
+        # obs = pm.MvStudentT('obs', mu=mu_pop, cov=total_cov, observed=mu_obs_shifted, nu=4)
+        # Use a Normal likelihood for simplicity, but be aware it may be sensitive to outliers
+        obs = pm.MvNormal('obs', mu=mu_pop, cov=total_cov, observed=mu_obs_shifted)
 
         # Sampling
         draws = 3000
@@ -345,30 +347,28 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
     sigma_int_samples = posterior['sigma_int'].values.flatten()
 
     # KDE curves and pair plot for diagnostics
-    try:
-        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-        az.plot_kde(log_c0_samples, ax=axes[0])
-        axes[0].set_title('KDE: log_c0')
-        az.plot_kde(alpha_samples, ax=axes[1])
-        axes[1].set_title('KDE: alpha')
-        az.plot_kde(sigma_int_samples, ax=axes[2])
-        axes[2].set_title('KDE: sigma_int')
-        fig.tight_layout()
-        kde_path = result_dir / "m200_c_hbm_kde.png"
-        fig.savefig(kde_path, dpi=300, bbox_inches='tight')
-        plt.close(fig)
-        print(f"KDE plot saved to {kde_path}")
-    except Exception as exc:
-        print(f"Warning: KDE plot failed: {exc}")
+    # try:
+    #     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    #     az.plot_kde(log_c0_samples, ax=axes[0])
+    #     axes[0].set_title('KDE: log_c0')
+    #     az.plot_kde(alpha_samples, ax=axes[1])
+    #     axes[1].set_title('KDE: alpha')
+    #     az.plot_kde(sigma_int_samples, ax=axes[2])
+    #     axes[2].set_title('KDE: sigma_int')
+    #     fig.tight_layout()
+    #     kde_path = result_dir / "m200_c_hbm_kde.png"
+    #     fig.savefig(kde_path, dpi=300, bbox_inches='tight')
+    #     print(f"KDE plot saved to {kde_path}")
+    # except Exception as exc:
+    #     print(f"Warning: KDE plot failed: {exc}")
 
-    try:
-        pair_fig = az.plot_pair(trace, var_names=["log_c0", "alpha"], kind="kde", marginals=True)
-        pair_path = result_dir / "m200_c_hbm_pair.png"
-        pair_fig.figure.savefig(pair_path, dpi=300, bbox_inches='tight')
-        plt.close(pair_fig.figure)
-        print(f"Pair plot saved to {pair_path}")
-    except Exception as exc:
-        print(f"Warning: Pair plot failed: {exc}")
+    # try:
+    #     pair_fig = az.plot_pair(trace, var_names=["log_c0", "alpha"], kind="kde", marginals=True)
+    #     pair_path = result_dir / "m200_c_hbm_pair.png"
+    #     pair_fig.figure.savefig(pair_path, dpi=300, bbox_inches='tight')
+    #     print(f"Pair plot saved to {pair_path}")
+    # except Exception as exc:
+    #     print(f"Warning: Pair plot failed: {exc}")
 
     # Maximum A Posteriori (MAP) estimates
     if "logp" in trace.sample_stats:
@@ -439,7 +439,7 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
 
         print("------------------------------------------")
 
-    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse, sigma_int_mean
+    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse, sigma_int_mean, alpha_samples, log_c0_samples
 
 def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
     """
@@ -780,7 +780,7 @@ def plot_m200_c_spaghetti(
     c: np.ndarray,
     sersic_n: np.ndarray,
     threshold: float = 2.5,
-    n_boot: int = 50,
+    n_boot: int = 50, # number of bootstrap samples for the spaghetti lines
 ):
     """
     Spaghetti plot of c-M200 relations by Sersic n groups using bootstrap fits.
@@ -839,6 +839,94 @@ def plot_m200_c_spaghetti(
     print(f"Spaghetti plot saved to {plot_path}")
 
 
+def plot_alpha_posterior_difference(alpha_high_samples: np.ndarray, alpha_low_samples: np.ndarray):
+    """
+    Plot posterior difference distribution for alpha_high - alpha_low.
+    """
+    diff = alpha_high_samples - alpha_low_samples
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+
+    hist, edges = np.histogram(diff, bins=200, density=True)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    ax.plot(centers, hist, color='black', linewidth=1.5)
+
+    diff_mean = float(np.mean(diff))
+    hdi_low, hdi_high = az.hdi(diff, hdi_prob=0.94)
+
+    hdi_mask = (centers >= hdi_low) & (centers <= hdi_high)
+    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color='gray', alpha=0.25)
+
+    ax.axvline(0.0, color='black', linestyle='--', linewidth=1)
+    ax.set_title('Posterior Difference: alpha_high - alpha_low', fontsize=12)
+    ax.set_xlabel(r'$\Delta \alpha$')
+    ax.set_ylabel('Density')
+
+    y_top = np.max(hist) * 1.02
+    tick_height = np.max(hist) * 0.06
+    ax.hlines(y_top, hdi_low, hdi_high, color='black', linewidth=3)
+    ax.vlines([hdi_low, hdi_high], y_top - tick_height, y_top + tick_height, color='black', linewidth=2)
+
+    ax.text(
+        0.02,
+        0.98,
+        f"mean = {diff_mean:.4f}\n94% HDI = [{hdi_low:.4f}, {hdi_high:.4f}]",
+        transform=ax.transAxes,
+        ha='left',
+        va='top',
+        fontsize=10,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.7),
+    )
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / "m200_alpha_posterior_diff.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Posterior difference plot saved to {plot_path}")
+
+
+def plot_logc0_posterior_difference(log_c0_high_samples: np.ndarray, log_c0_low_samples: np.ndarray):
+    """
+    Plot posterior difference distribution for log_c0_high - log_c0_low.
+    """
+    diff = log_c0_high_samples - log_c0_low_samples
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+
+    hist, edges = np.histogram(diff, bins=200, density=True)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    ax.plot(centers, hist, color='black', linewidth=1.5)
+
+    diff_mean = float(np.mean(diff))
+    hdi_low, hdi_high = az.hdi(diff, hdi_prob=0.94)
+
+    hdi_mask = (centers >= hdi_low) & (centers <= hdi_high)
+    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color='gray', alpha=0.25)
+
+    ax.axvline(0.0, color='black', linestyle='--', linewidth=1)
+    ax.set_title('Posterior Difference: log_c0_high - log_c0_low', fontsize=12)
+    ax.set_xlabel(r'$\Delta \log c_0$')
+    ax.set_ylabel('Density')
+
+    y_top = np.max(hist) * 1.02
+    tick_height = np.max(hist) * 0.06
+    ax.hlines(y_top, hdi_low, hdi_high, color='black', linewidth=3)
+    ax.vlines([hdi_low, hdi_high], y_top - tick_height, y_top + tick_height, color='black', linewidth=2)
+
+    ax.text(
+        0.02,
+        0.98,
+        f"mean = {diff_mean:.4f}\n94% HDI = [{hdi_low:.4f}, {hdi_high:.4f}]",
+        transform=ax.transAxes,
+        ha='left',
+        va='top',
+        fontsize=10,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.7),
+    )
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / "m200_logc0_posterior_diff.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Posterior difference plot saved to {plot_path}")
+
+
 def main(
     mode: str = 'curve_fit',
     n_threshold: str = 'auto',
@@ -895,11 +983,13 @@ def main(
     print("\n# 1. Fitting All Data")
     if mode == 'mcmc':
         print("\nUsing MCMC for fitting...")
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all, sigma_int_all = fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
+        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all, sigma_int_all, alpha_samples_all, log_c0_samples_all = fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
     else:
         print("\nUsing curve_fit for fitting...")
         c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
         sigma_int_all = None
+        alpha_samples_all = None
+        log_c0_samples_all = None
 
     # 4. Infer optimal Sersic n threshold
     if n_threshold.lower() == 'auto':
@@ -932,13 +1022,16 @@ def main(
         threshold=threshold,
     )
 
+    plt.show()
+
+
     # 6. Split data and perform non-linear fits separately
     mask_high_n = sersic_n >= threshold
     mask_low_n = sersic_n < threshold
 
     print(f"\n#2. Fitting High Sersic n (>= {threshold:.2f})")
     if mode == 'mcmc':
-        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high, sigma_int_high = fit_m200_c_mcmc(
+        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high, sigma_int_high, alpha_samples_high, log_c0_samples_high = fit_m200_c_mcmc(
             log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None
         )
@@ -948,10 +1041,12 @@ def main(
             c_std=c_err[mask_high_n] if c_err is not None else None
         )
         sigma_int_high = None
+        alpha_samples_high = None
+        log_c0_samples_high = None
 
     print(f"\n#3. Fitting Low Sersic n (< {threshold:.2f})")
     if mode == 'mcmc':
-        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low, sigma_int_low = fit_m200_c_mcmc(
+        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low, sigma_int_low, alpha_samples_low, log_c0_samples_low = fit_m200_c_mcmc(
             log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
             log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None
         )
@@ -961,6 +1056,8 @@ def main(
             c_std=c_err[mask_low_n] if c_err is not None else None
         )
         sigma_int_low = None
+        alpha_samples_low = None
+        log_c0_samples_low = None
 
     # 7. Plot split results
     plot_m200_c_split(
@@ -981,6 +1078,11 @@ def main(
         sigma_int_low=sigma_int_low,
         threshold=threshold,
     )
+
+    if mode == 'mcmc' and alpha_samples_high is not None and alpha_samples_low is not None:
+        plot_alpha_posterior_difference(alpha_samples_high, alpha_samples_low)
+    if mode == 'mcmc' and log_c0_samples_high is not None and log_c0_samples_low is not None:
+        plot_logc0_posterior_difference(log_c0_samples_high, log_c0_samples_low)
 
     # 8. Spaghetti plot by Sersic n
     plot_m200_c_spaghetti(M200, c, sersic_n, threshold=threshold)

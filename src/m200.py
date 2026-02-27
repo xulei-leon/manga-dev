@@ -488,7 +488,7 @@ def plot_m200_c_spaghetti_all(
 
     m_min, m_max = np.min(M200), np.max(M200)
     c_min, c_max = np.min(c), np.max(c)
-    title = f"Dark Matter Halo Concentration vs Mass\n"
+    title = f"Dark Matter: Halo Concentration vs Mass\n"
 
     ax_top.set_xscale('log')
     ax_top.set_yscale('log')
@@ -673,7 +673,7 @@ def plot_m200_c_spaghetti_split(
     ax_bottom.axhspan(-sigma_band_high, sigma_band_high, color=COLOR_HIGH_N, alpha=0.1)
     ax_bottom.axhspan(-sigma_band_low, sigma_band_low, color=COLOR_LOW_N, alpha=0.1)
 
-    title = f"Dark Matter Halo Concentration vs Mass\n(Split by Sersic n={sersic_n_threshold:.2f})\n"
+    title = f"Dark Matter: Halo Concentration vs Mass (Split by Sersic n={sersic_n_threshold:.2f})\n"
 
     ax_top.set_xscale('log')
     ax_top.set_yscale('log')

@@ -13,7 +13,12 @@ import pytensor.tensor as pt
 # Constants
 M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
 H_0 = 0.674           # Hubble parameter
-DM_INTRINSIC_SIGMA_DEX = 0.15  # Intrinsic scatter in dex for c
+
+# Plotting Colors
+COLOR_DATA_POINTS = '0.2'
+COLOR_BOOTSTRAP_LINES = '0.4'
+COLOR_SIGMA_BAND = '0.8'
+COLOR_HDI_BAND = '0.8'
 
 def load_config() -> dict:
     """Load configuration from config.toml."""
@@ -48,7 +53,7 @@ def c_m200_profile(M200: np.ndarray, c0: float, alpha: float, h: float = H_0) ->
 
 def get_m200_c_data():
     """
-    Load M200 and c data from the results CSV file.
+    Load data from the results CSV file.
     Returns a dict of arrays keyed by column name.
     """
     nfw_param_file = result_dir / NFW_PARAM_CM200_FILENAME
@@ -67,11 +72,7 @@ def get_m200_c_data():
         return None
 
     import ast
-    M200 = df['M200'].values
-    M200_std = df['M200_std'].values if 'M200_std' in df.columns else np.zeros_like(M200)
-    c = df['c'].values
-    c_std = df['c_std'].values if 'c_std' in df.columns else np.zeros_like(c)
-    sersic_n = df['sersic_n'].values if 'sersic_n' in df.columns else np.zeros_like(c)
+    sersic_n = df['sersic_n'].values if 'sersic_n' in df.columns else np.zeros(len(df))
     nrmse = df['nrmse'].values if 'nrmse' in df.columns else None
 
     log10_mu_obs = None
@@ -92,10 +93,6 @@ def get_m200_c_data():
             print(f"Warning: Could not parse log10_mu_obs_2 or log10_cov_obs_2: {e}")
 
     return {
-        'M200': M200,
-        'M200_std': M200_std,
-        'c': c,
-        'c_std': c_std,
         'sersic_n': sersic_n,
         'log10_mu_obs': log10_mu_obs,
         'log10_cov_obs': log10_cov_obs,
@@ -135,79 +132,7 @@ def filter_by_nrmse(nrmse: np.ndarray, drop_fraction: float = None, threshold: f
     final_mask[valid_mask] = keep_mask
     return final_mask
 
-def fit_m200_c_nonlinear(M200: np.ndarray, c: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
-    """
-    Fit the non-linear c-M200 relation using scipy.optimize.curve_fit.
-    Includes an intrinsic scatter (in dex) added in quadrature to the measurement errors.
-    Returns c0_fit, alpha_fit, c0_err, alpha_err, log_rmse.
-    """
-    # Initial guess for c0 and alpha based on typical values (e.g., Dutton & Macciò 2014)
-    p0 = [8.5, -0.10]
-
-    # Use c_std for weighting if available and valid
-    sigma = None
-    absolute_sigma = False
-    if c_std is not None and np.all(c_std > 0):
-        # Convert intrinsic scatter from dex to linear scale error approximately
-        # delta_c / c = ln(10) * delta_log10_c
-        intrinsic_scatter_linear = c * np.log(10) * intrinsic_scatter_dex
-        # Add measurement error and intrinsic scatter in quadrature
-        sigma = np.sqrt(c_std**2 + intrinsic_scatter_linear**2)
-        absolute_sigma = True
-    else:
-        # If no measurement errors, just use intrinsic scatter
-        sigma = c * np.log(10) * intrinsic_scatter_dex
-        absolute_sigma = True
-
-    # Wrapper to fix h parameter
-    def model_to_fit(M, c0, alpha):
-        return c_m200_profile(M, c0, alpha, h=H_0)
-
-    try:
-        popt, pcov = curve_fit(
-            model_to_fit,
-            M200,
-            c,
-            p0=p0,
-            sigma=sigma,
-            absolute_sigma=absolute_sigma,
-            maxfev=10000
-        )
-        c0_fit, alpha_fit = popt
-        c0_err, alpha_err = np.sqrt(np.diag(pcov))
-
-        c_pred = model_to_fit(M200, c0_fit, alpha_fit)
-
-        # Calculate metrics in log space for better representation in log-log plots
-        log_c = np.log10(c)
-        log_c_pred = np.log10(c_pred)
-        log_residuals = log_c - log_c_pred
-        log_rmse = np.sqrt(np.mean(log_residuals**2))
-
-        if sigma is not None:
-            residuals = c - c_pred
-            chi_squared = np.sum((residuals / sigma)**2)
-            dof = len(M200) - len(popt)
-            chi_squared_reduced = chi_squared / max(dof, 1)
-        else:
-            chi_squared_reduced = np.nan
-
-        if verbose:
-            print("--------- Non-linear M200-c fit results ---------")
-            print(f" c0             : {c0_fit:.4f} ± {c0_err:.4f}")
-            print(f" alpha          : {alpha_fit:.4f} ± {alpha_err:.4f}")
-            print("---------------")
-            print(f" chi² reduced   : {chi_squared_reduced:.3f}")
-            print(f" Log RMSE       : {log_rmse:.3f}")
-            print("-------------------------------------------------")
-
-        return c0_fit, alpha_fit, c0_err, alpha_err, log_rmse
-
-    except Exception as e:
-        print(f"Fitting failed: {e}")
-        return None, None, None, None, None
-
-def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX, verbose: bool = True):
+def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, verbose: bool = True):
     """
     Fit the non-linear c-M200 relation using a Hierarchical Bayesian Model (HBM).
     This uses the full covariance matrix from the first stage inference.
@@ -226,7 +151,7 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
 
     if len(log10_mu_obs) < 3:
         print("Not enough valid data points for MCMC fitting.")
-        return None, None, None, None, None, None, None, None, None
+        return None
 
     N_galaxies = len(log10_mu_obs)
     log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
@@ -347,23 +272,9 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
     # except Exception as exc:
     #     print(f"Warning: Pair plot failed: {exc}")
 
-    # Maximum A Posteriori (MAP) estimates
-    if "logp" in trace.sample_stats:
-        lp_stacked = trace.sample_stats["logp"].stack(sample=("chain", "draw"))
-    elif "lp" in trace.sample_stats:
-        lp_stacked = trace.sample_stats["lp"].stack(sample=("chain", "draw"))
-    else:
-        raise KeyError("Could not find 'logp' or 'lp' in trace.sample_stats")
-    best_idx = int(lp_stacked.argmax("sample").values)
-    log_c0_best = log_c0_samples[best_idx]
-    alpha_best = alpha_samples[best_idx]
-
-
     # Convert back to linear c0
     c0_mean = 10**log_c0_mean
     c0_mean_std = c0_mean * np.log(10) * log_c0_sd
-    c0_best = 10**log_c0_best
-    c0_best_sd = c0_best * np.log(10) * log_c0_sd
 
     # Calculate RMSE/NRMSE using the mean parameters (linear space)
     c_pred = c_m200_profile(M200, c0_mean, alpha_mean, h=H_0)
@@ -379,20 +290,6 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
     chi2_mean = np.sum((log_residuals_mean / log_c_err_total)**2)
     redchi_mean = chi2_mean / dof
 
-    # Recalculate Reduced Chi2 for the best fit
-    c_pred_best = c_m200_profile(M200, 10**log_c0_best, alpha_best, h=H_0)
-    log_residuals_best = np.log10(c) - np.log10(c_pred_best)
-    rmse_best = np.sqrt(np.mean(log_residuals_best**2))
-    nrmse_best = rmse_best / (np.mean(c) if np.mean(c) > 0 else 1)
-    dof = int(max(len(M200) - 2, 1))  # 2 parameters: log_c0 and alpha
-
-    # Calculate total error in log space for chi2
-    # We use the observed variance in log_c (index 1,1) + intrinsic scatter
-    log_c_err_total = np.sqrt(cov_obs_stacked[:, 1, 1] + sigma_int_mean**2)
-    chi2_best = np.sum((log_residuals_best / log_c_err_total)**2)
-    redchi_best = chi2_best / dof
-
-
     if verbose:
         print("--------- MCMC M200-c fit results ---------")
         print("--- Summary ---")
@@ -406,19 +303,21 @@ def fit_m200_c_mcmc(log10_mu_obs: np.ndarray, log10_cov_obs: np.ndarray, intrins
         print(f" Log RMSE       : {log_rmse:.3f}")
         print(f" NRMSE (mean)   : {nrmse_mean:.3f}")
         print(f" Reduced Chi2 (mean) : {redchi_mean:.3f}")
-        print("--- best ---")
-        print(f" c0 best        : {c0_best:.4f} ± {c0_best_sd:.4f}")
-        print(f" alpha best     : {alpha_best:.4f} ± {alpha_std:.4f}")
-        print(f" RMSE (best)    : {rmse_best:.3f}")
-        print(f" NRMSE (best)   : {nrmse_best:.3f}")
-        print(f" Reduced Chi2 (best) : {redchi_best:.3f}")
-        print("--- metrics ---")
-
         print("------------------------------------------")
 
-    return c0_mean, alpha_mean, c0_mean_std, alpha_std, log_rmse, sigma_int_mean, sigma_int_std, alpha_samples, log_c0_samples
+    return {
+        'c0_mean': c0_mean,
+        'alpha_mean': alpha_mean,
+        'c0_mean_std': c0_mean_std,
+        'alpha_std': alpha_std,
+        'log_rmse': log_rmse,
+        'sigma_int_mean': sigma_int_mean,
+        'sigma_int_std': sigma_int_std,
+        'alpha_samples': alpha_samples,
+        'log_c0_samples': log_c0_samples
+    }
 
-def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
+def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, log10_cov_obs: np.ndarray = None):
     """
     Use a Bayesian switchpoint model to infer the optimal Sersic n threshold.
     """
@@ -427,11 +326,11 @@ def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.
     log_c = np.log10(c)
     log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
 
-    if c_std is not None and np.all(c_std > 0):
-        log_c_err = c_std / (c * np.log(10))
-        total_log_err = np.sqrt(log_c_err**2 + intrinsic_scatter_dex**2)
+    if log10_cov_obs is not None:
+        log_c_err = np.sqrt(log10_cov_obs[:, 1, 1])
+        total_log_err = log_c_err
     else:
-        total_log_err = np.full_like(log_c, intrinsic_scatter_dex)
+        total_log_err = np.full_like(log_c, 0.15) # Fallback if no cov provided
 
     with pm.Model() as model:
         # Threshold prior: restrict to 10th-90th percentile to avoid edge effects
@@ -489,82 +388,16 @@ def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.
 
     return threshold_mean
 
-def infer_sersic_n_threshold_grid(M200: np.ndarray, c: np.ndarray, sersic_n: np.ndarray, c_std: np.ndarray = None, intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX):
-    """
-    Infer the optimal Sersic n threshold by grid search, minimizing the combined RMSE.
-    """
-    print("\n--- Inferring optimal Sersic n threshold using Grid Search ---")
-    lower_bound = np.percentile(sersic_n, 15)
-    upper_bound = np.percentile(sersic_n, 85)
 
-    thresholds = np.linspace(lower_bound, upper_bound, 50)
-    best_threshold = 2.5
-    min_rmse = np.inf
-
-    for t in thresholds:
-        mask_high = sersic_n >= t
-        mask_low = sersic_n < t
-
-        if np.sum(mask_high) < 5 or np.sum(mask_low) < 5:
-            continue
-
-        # Fit high
-        res_high = fit_m200_c_nonlinear(M200[mask_high], c[mask_high],
-                                        c_std[mask_high] if c_std is not None else None,
-                                        intrinsic_scatter_dex, verbose=False)
-        # Fit low
-        res_low = fit_m200_c_nonlinear(M200[mask_low], c[mask_low],
-                                       c_std[mask_low] if c_std is not None else None,
-                                       intrinsic_scatter_dex, verbose=False)
-
-        if res_high[0] is None or res_low[0] is None:
-            continue
-
-        # Calculate combined RMSE
-        rmse_high = res_high[4]
-        rmse_low = res_low[4]
-
-        # Weighted average of RMSE squared
-        n_high = np.sum(mask_high)
-        n_low = np.sum(mask_low)
-        combined_rmse = np.sqrt((n_high * rmse_high**2 + n_low * rmse_low**2) / (n_high + n_low))
-
-        if combined_rmse < min_rmse:
-            min_rmse = combined_rmse
-            best_threshold = t
-
-    print(f"--------- Grid Search Threshold Inference Results ---------")
-    print(f" Best Sersic n threshold: {best_threshold:.4f}")
-    print(f" Minimum combined Log RMSE: {min_rmse:.4f}")
-    print("-----------------------------------------------------------")
-
-    return best_threshold
-
-
-def plot_m200_c_spaghetti(
+def plot_m200_c_spaghetti_all(
     M200: np.ndarray,
     c: np.ndarray,
-    sersic_n: np.ndarray,
-    threshold: float = 2.5,
+    fit_results: dict = None,
     n_boot: int = 50, # number of bootstrap samples for the spaghetti lines
     plot_suffix: str = "",
-    split_by_n: bool = True,
-    c0_fit: float = None,
-    alpha_fit: float = None,
-    c0_fit_std: float = None,
-    alpha_fit_std: float = None,
-    sigma_int: float = None,
-    sigma_int_std: float = None,
-    c0_high: float = None,
-    alpha_high: float = None,
-    c0_low: float = None,
-    alpha_low: float = None,
-    sigma_int_high: float = None,
-    sigma_int_low: float = None,
-    intrinsic_scatter_dex: float = DM_INTRINSIC_SIGMA_DEX,
 ):
     """
-    Spaghetti plot of c-M200 relations by Sersic n groups using bootstrap fits.
+    Spaghetti plot of c-M200 relation for all data (no Sersic n split).
     """
     valid_mask = (M200 > 0) & (c > 0) & np.isfinite(M200) & np.isfinite(c)
     if not np.any(valid_mask):
@@ -572,14 +405,7 @@ def plot_m200_c_spaghetti(
 
     M200 = M200[valid_mask]
     c = c[valid_mask]
-    sersic_n = sersic_n[valid_mask]
-
-    if split_by_n:
-        mask_high_n = sersic_n >= threshold
-        mask_low_n = sersic_n < threshold
-    else:
-        mask_high_n = np.ones_like(sersic_n, dtype=bool)
-        mask_low_n = np.zeros_like(sersic_n, dtype=bool)
+    mask_all = np.ones_like(M200, dtype=bool)
 
     m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
     log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
@@ -592,13 +418,7 @@ def plot_m200_c_spaghetti(
         gridspec_kw={'height_ratios': [3, 1]}
     )
 
-    if split_by_n:
-        ax_top.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.4,
-                       label=rf'Data ($n \geq {threshold:.2f}$)', s=20, edgecolors='none')
-        ax_top.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.4,
-                       label=rf'Data ($n < {threshold:.2f}$)', s=20, edgecolors='none')
-    else:
-        ax_top.scatter(M200, c, color='gray', alpha=0.5, label='Data (all)', s=20, edgecolors='none')
+    ax_top.scatter(M200, c, color=COLOR_DATA_POINTS, alpha=0.7, label='Data (all)', s=20, edgecolors='none')
 
     def bootstrap_lines(mask, color):
         if np.sum(mask) < 3:
@@ -614,13 +434,145 @@ def plot_m200_c_spaghetti(
             alpha = coeffs[0]
             log_c0 = coeffs[1]
             c_plot = c_m200_profile(m_plot, 10**log_c0, alpha, h=H_0)
+            ax_top.plot(m_plot, c_plot, color=color, alpha=0.3, linewidth=1)
+
+    bootstrap_lines(mask_all, COLOR_BOOTSTRAP_LINES)
+
+    c0_fit = fit_results.get('c0_mean') if fit_results else None
+    alpha_fit = fit_results.get('alpha_mean') if fit_results else None
+    c0_fit_std = fit_results.get('c0_mean_std') if fit_results else None
+    alpha_fit_std = fit_results.get('alpha_std') if fit_results else None
+    sigma_int = fit_results.get('sigma_int_mean') if fit_results else None
+    sigma_int_std = fit_results.get('sigma_int_std') if fit_results else None
+
+    if c0_fit is None or alpha_fit is None:
+        log_M = np.log10(M200)
+        log_c = np.log10(c)
+        x = log_M - log_M_pivot
+        X = np.column_stack([x, np.ones_like(x)])
+        coeffs, *_ = np.linalg.lstsq(X, log_c, rcond=None)
+        alpha_fit = coeffs[0]
+        c0_fit = 10**coeffs[1]
+
+    if c0_fit is not None and alpha_fit is not None:
+        c_mean = c_m200_profile(m_plot, c0_fit, alpha_fit, h=H_0)
+        ax_top.plot(m_plot, c_mean, color='black', linewidth=2, label='Mean Line (all)')
+        sigma_band = sigma_int if sigma_int is not None else 0.15
+        log_c_mean = np.log10(c_mean)
+        c_lower = 10**(log_c_mean - sigma_band)
+        c_upper = 10**(log_c_mean + sigma_band)
+        ax_top.fill_between(m_plot, c_lower, c_upper, color=COLOR_SIGMA_BAND, alpha=0.4, label=r'$1\sigma_{int}$ (all)')
+
+    log_c_obs = np.log10(c)
+    log_c_pred = np.log10(c_m200_profile(M200, c0_fit, alpha_fit, h=H_0))
+    residuals = log_c_obs - log_c_pred
+    ax_bottom.scatter(M200, residuals, color=COLOR_DATA_POINTS, alpha=0.7, s=20, edgecolors='none')
+    ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
+    sigma_band = sigma_int if sigma_int is not None else 0.15
+    ax_bottom.axhspan(-sigma_band, sigma_band, color=COLOR_SIGMA_BAND, alpha=0.4)
+
+    m_min, m_max = np.min(M200), np.max(M200)
+    c_min, c_max = np.min(c), np.max(c)
+    title = f"Dark Matter Halo Concentration vs Mass\n"
+
+    ax_top.set_xscale('log')
+    ax_top.set_yscale('log')
+    ax_top.set_ylabel(r'$c$', fontsize=12)
+    ax_top.set_title(title, fontsize=13)
+    ax_top.legend(fontsize=10, loc='lower left')
+    ax_top.grid(True, which="both", ls="--", alpha=0.5)
+
+    ax_bottom.set_xscale('log')
+    ax_bottom.set_xlabel(r'$M_{200} \ [M_\odot]$', fontsize=12)
+    ax_bottom.set_ylabel(r'$\Delta \log_{10} c$', fontsize=11)
+    ax_bottom.grid(True, which="both", ls="--", alpha=0.5)
+
+    c0_text = f"{c0_fit:.2f}" if c0_fit is not None else "n/a"
+    c0_std_text = f"{c0_fit_std:.2f}" if c0_fit_std is not None else "n/a"
+    alpha_text = f"{alpha_fit:.3f}" if alpha_fit is not None else "n/a"
+    alpha_std_text = f"{alpha_fit_std:.3f}" if alpha_fit_std is not None else "n/a"
+    sigma_text = f"{sigma_int:.3f}" if sigma_int is not None else "0.150"
+    sigma_std_text = f"{sigma_int_std:.3f}" if sigma_int_std is not None else "n/a"
+    infer_text = (
+        rf"$c_0 = {c0_text} \pm {c0_std_text}$" "\n"
+        rf"$\alpha = {alpha_text} \pm {alpha_std_text}$" "\n"
+        rf"$\sigma_{{int}} = {sigma_text} \pm {sigma_std_text}$"
+    )
+    ax_top.text(
+        0.98,
+        0.02,
+        infer_text,
+        transform=ax_top.transAxes,
+        ha='right',
+        va='bottom',
+        fontsize=10,
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+    )
+
+    result_dir.mkdir(parents=True, exist_ok=True)
+    plot_path = result_dir / f"m200_c_spaghetti{plot_suffix}.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Spaghetti plot saved to {plot_path}")
+
+
+def plot_m200_c_spaghetti_split(
+    M200: np.ndarray,
+    c: np.ndarray,
+    sersic_n: np.ndarray,
+    fit_results_high: dict = None,
+    fit_results_low: dict = None,
+    sersic_n_threshold: float = 2.5,
+    count_boot: int = 50, # count of bootstrap samples for the spaghetti lines
+    plot_suffix: str = "",
+):
+    """
+    Spaghetti plot of c-M200 relations split by Sersic n groups using bootstrap fits.
+    """
+    valid_mask = (M200 > 0) & (c > 0) & np.isfinite(M200) & np.isfinite(c)
+    if not np.any(valid_mask):
+        return
+
+    M200 = M200[valid_mask]
+    c = c[valid_mask]
+    sersic_n = sersic_n[valid_mask]
+
+    mask_high_n = sersic_n >= sersic_n_threshold
+    mask_low_n = sersic_n < sersic_n_threshold
+
+    m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
+    log_M_pivot = np.log10(M_PIVOT_H_INV / H_0)
+
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2,
+        1,
+        figsize=(10, 8),
+        sharex=True,
+        gridspec_kw={'height_ratios': [3, 1]}
+    )
+
+    ax_top.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.4,
+                   label=rf'Data ($n \geq {sersic_n_threshold:.2f}$)', s=20, edgecolors='none')
+    ax_top.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.4,
+                   label=rf'Data ($n < {sersic_n_threshold:.2f}$)', s=20, edgecolors='none')
+
+    def bootstrap_lines(mask, color):
+        if np.sum(mask) < 3:
+            return
+        log_M = np.log10(M200[mask])
+        log_c = np.log10(c[mask])
+        x = log_M - log_M_pivot
+        n = len(x)
+        for _ in range(count_boot):
+            idx = np.random.randint(0, n, n)
+            X = np.column_stack([x[idx], np.ones_like(x[idx])])
+            coeffs, *_ = np.linalg.lstsq(X, log_c[idx], rcond=None)
+            alpha = coeffs[0]
+            log_c0 = coeffs[1]
+            c_plot = c_m200_profile(m_plot, 10**log_c0, alpha, h=H_0)
             ax_top.plot(m_plot, c_plot, color=color, alpha=0.15, linewidth=1)
 
-    if split_by_n:
-        bootstrap_lines(mask_high_n, 'red')
-        bootstrap_lines(mask_low_n, 'blue')
-    else:
-        bootstrap_lines(mask_high_n, 'gray')
+    bootstrap_lines(mask_high_n, 'red')
+    bootstrap_lines(mask_low_n, 'blue')
 
     def fit_group_mean(mask):
         if np.sum(mask) < 3:
@@ -632,82 +584,70 @@ def plot_m200_c_spaghetti(
         coeffs, *_ = np.linalg.lstsq(X, log_c, rcond=None)
         return 10**coeffs[1], coeffs[0]
 
-    if split_by_n:
-        if c0_high is None or alpha_high is None:
-            c0_high, alpha_high = fit_group_mean(mask_high_n)
-        if c0_low is None or alpha_low is None:
-            c0_low, alpha_low = fit_group_mean(mask_low_n)
+    c0_high = fit_results_high.get('c0_mean') if fit_results_high else None
+    alpha_high = fit_results_high.get('alpha_mean') if fit_results_high else None
+    sigma_int_high = fit_results_high.get('sigma_int_mean') if fit_results_high else None
 
-    if c0_fit is None or alpha_fit is None:
+    c0_low = fit_results_low.get('c0_mean') if fit_results_low else None
+    alpha_low = fit_results_low.get('alpha_mean') if fit_results_low else None
+    sigma_int_low = fit_results_low.get('sigma_int_mean') if fit_results_low else None
+
+    if c0_high is None or alpha_high is None:
+        c0_high, alpha_high = fit_group_mean(mask_high_n)
+    if c0_low is None or alpha_low is None:
+        c0_low, alpha_low = fit_group_mean(mask_low_n)
+
+    def fit_all_mean():
         log_M = np.log10(M200)
         log_c = np.log10(c)
         x = log_M - log_M_pivot
         X = np.column_stack([x, np.ones_like(x)])
         coeffs, *_ = np.linalg.lstsq(X, log_c, rcond=None)
-        alpha_fit = coeffs[0]
-        c0_fit = 10**coeffs[1]
+        return 10**coeffs[1], coeffs[0]
 
-    sigma_band_high = sigma_int_high if sigma_int_high is not None else (sigma_int if sigma_int is not None else intrinsic_scatter_dex)
-    sigma_band_low = sigma_int_low if sigma_int_low is not None else (sigma_int if sigma_int is not None else intrinsic_scatter_dex)
+    sigma_band_high = sigma_int_high if sigma_int_high is not None else 0.15
+    sigma_band_low = sigma_int_low if sigma_int_low is not None else 0.15
 
-    if split_by_n:
-        if c0_high is not None and alpha_high is not None:
-            c_mean_high = c_m200_profile(m_plot, c0_high, alpha_high, h=H_0)
-            ax_top.plot(m_plot, c_mean_high, color='red', linewidth=2, label='Mean Line (high n)')
-            log_c_mean = np.log10(c_mean_high)
-            c_lower = 10**(log_c_mean - sigma_band_high)
-            c_upper = 10**(log_c_mean + sigma_band_high)
-            ax_top.fill_between(m_plot, c_lower, c_upper, color='red', alpha=0.15, label=r'$1\sigma_{int}$ (high n)')
+    if c0_high is not None and alpha_high is not None:
+        c_mean_high = c_m200_profile(m_plot, c0_high, alpha_high, h=H_0)
+        ax_top.plot(m_plot, c_mean_high, color='red', linewidth=2, label='Mean Line (high n)')
+        log_c_mean = np.log10(c_mean_high)
+        c_lower = 10**(log_c_mean - sigma_band_high)
+        c_upper = 10**(log_c_mean + sigma_band_high)
+        ax_top.fill_between(m_plot, c_lower, c_upper, color='red', alpha=0.15, label=r'$1\sigma_{int}$ (high n)')
 
-        if c0_low is not None and alpha_low is not None:
-            c_mean_low = c_m200_profile(m_plot, c0_low, alpha_low, h=H_0)
-            ax_top.plot(m_plot, c_mean_low, color='blue', linewidth=2, label='Mean Line (low n)')
-            log_c_mean = np.log10(c_mean_low)
-            c_lower = 10**(log_c_mean - sigma_band_low)
-            c_upper = 10**(log_c_mean + sigma_band_low)
-            ax_top.fill_between(m_plot, c_lower, c_upper, color='blue', alpha=0.15, label=r'$1\sigma_{int}$ (low n)')
-    elif c0_fit is not None and alpha_fit is not None:
-        c_mean = c_m200_profile(m_plot, c0_fit, alpha_fit, h=H_0)
-        ax_top.plot(m_plot, c_mean, color='black', linewidth=2, label='Mean Line (all)')
-        sigma_band = sigma_int if sigma_int is not None else intrinsic_scatter_dex
-        log_c_mean = np.log10(c_mean)
-        c_lower = 10**(log_c_mean - sigma_band)
-        c_upper = 10**(log_c_mean + sigma_band)
-        ax_top.fill_between(m_plot, c_lower, c_upper, color='gray', alpha=0.2, label=r'$1\sigma_{int}$ (all)')
+    if c0_low is not None and alpha_low is not None:
+        c_mean_low = c_m200_profile(m_plot, c0_low, alpha_low, h=H_0)
+        ax_top.plot(m_plot, c_mean_low, color='blue', linewidth=2, label='Mean Line (low n)')
+        log_c_mean = np.log10(c_mean_low)
+        c_lower = 10**(log_c_mean - sigma_band_low)
+        c_upper = 10**(log_c_mean + sigma_band_low)
+        ax_top.fill_between(m_plot, c_lower, c_upper, color='blue', alpha=0.15, label=r'$1\sigma_{int}$ (low n)')
 
     log_c_obs = np.log10(c)
-    if split_by_n:
-        log_c_pred = np.full_like(log_c_obs, np.nan)
-        if c0_high is not None and alpha_high is not None:
-            log_c_pred[mask_high_n] = np.log10(c_m200_profile(M200[mask_high_n], c0_high, alpha_high, h=H_0))
-        if c0_low is not None and alpha_low is not None:
-            log_c_pred[mask_low_n] = np.log10(c_m200_profile(M200[mask_low_n], c0_low, alpha_low, h=H_0))
-        if np.any(~np.isfinite(log_c_pred)):
-            log_c_pred = np.log10(c_m200_profile(M200, c0_fit, alpha_fit, h=H_0))
+    log_c_pred = np.full_like(log_c_obs, np.nan)
+    if c0_high is not None and alpha_high is not None:
+        log_c_pred[mask_high_n] = np.log10(c_m200_profile(M200[mask_high_n], c0_high, alpha_high, h=H_0))
+    if c0_low is not None and alpha_low is not None:
+        log_c_pred[mask_low_n] = np.log10(c_m200_profile(M200[mask_low_n], c0_low, alpha_low, h=H_0))
+    if np.any(~np.isfinite(log_c_pred)):
+        c0_all, alpha_all = fit_all_mean()
+        log_c_pred = np.log10(c_m200_profile(M200, c0_all, alpha_all, h=H_0))
 
-        residuals = log_c_obs - log_c_pred
-        ax_bottom.scatter(M200[mask_high_n], residuals[mask_high_n], color='red', alpha=0.4, s=20, edgecolors='none')
-        ax_bottom.scatter(M200[mask_low_n], residuals[mask_low_n], color='blue', alpha=0.4, s=20, edgecolors='none')
-        ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
-        ax_bottom.axhspan(-sigma_band_high, sigma_band_high, color='red', alpha=0.1)
-        ax_bottom.axhspan(-sigma_band_low, sigma_band_low, color='blue', alpha=0.1)
-    else:
-        log_c_pred = np.log10(c_m200_profile(M200, c0_fit, alpha_fit, h=H_0))
-        residuals = log_c_obs - log_c_pred
-        ax_bottom.scatter(M200, residuals, color='gray', alpha=0.5, s=20, edgecolors='none')
-        ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
-        sigma_band = sigma_int if sigma_int is not None else intrinsic_scatter_dex
-        ax_bottom.axhspan(-sigma_band, sigma_band, color='gray', alpha=0.15)
+    residuals = log_c_obs - log_c_pred
+    ax_bottom.scatter(M200[mask_high_n], residuals[mask_high_n], color='red', alpha=0.4, s=20, edgecolors='none')
+    ax_bottom.scatter(M200[mask_low_n], residuals[mask_low_n], color='blue', alpha=0.4, s=20, edgecolors='none')
+    ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
+    ax_bottom.axhspan(-sigma_band_high, sigma_band_high, color='red', alpha=0.1)
+    ax_bottom.axhspan(-sigma_band_low, sigma_band_low, color='blue', alpha=0.1)
 
-    m_min, m_max = np.min(M200), np.max(M200)
-    c_min, c_max = np.min(c), np.max(c)
-    title = f"DM NFW: Spaghetti Plot of $M_{{200}}$ vs $c$ profiles"
+    title = f"Dark Matter Halo Concentration vs Mass\n(Split by Sersic n={sersic_n_threshold:.2f})\n"
 
     ax_top.set_xscale('log')
     ax_top.set_yscale('log')
     ax_top.set_ylabel(r'$c$', fontsize=12)
     ax_top.set_title(title, fontsize=13)
-    ax_top.legend(fontsize=10)
+    ax_top.legend(fontsize=10, loc='lower left')
     ax_top.grid(True, which="both", ls="--", alpha=0.5)
 
     ax_bottom.set_xscale('log')
@@ -715,38 +655,25 @@ def plot_m200_c_spaghetti(
     ax_bottom.set_ylabel(r'$\Delta \log_{10} c$', fontsize=11)
     ax_bottom.grid(True, which="both", ls="--", alpha=0.5)
 
-    if split_by_n:
-        c0_high_text = f"{c0_high:.2f}" if c0_high is not None else "n/a"
-        alpha_high_text = f"{alpha_high:.3f}" if alpha_high is not None else "n/a"
-        sigma_high_text = f"{sigma_band_high:.3f}"
+    c0_high_text = f"{c0_high:.2f}" if c0_high is not None else "n/a"
+    alpha_high_text = f"{alpha_high:.3f}" if alpha_high is not None else "n/a"
+    sigma_high_text = f"{sigma_band_high:.3f}"
 
-        c0_low_text = f"{c0_low:.2f}" if c0_low is not None else "n/a"
-        alpha_low_text = f"{alpha_low:.3f}" if alpha_low is not None else "n/a"
-        sigma_low_text = f"{sigma_band_low:.3f}"
+    c0_low_text = f"{c0_low:.2f}" if c0_low is not None else "n/a"
+    alpha_low_text = f"{alpha_low:.3f}" if alpha_low is not None else "n/a"
+    sigma_low_text = f"{sigma_band_low:.3f}"
 
-        infer_text = (
-            rf"High n: $c_0 = {c0_high_text}$, $\alpha = {alpha_high_text}$, $\sigma_{{int}} = {sigma_high_text}$" "\n"
-            rf"Low n: $c_0 = {c0_low_text}$, $\alpha = {alpha_low_text}$, $\sigma_{{int}} = {sigma_low_text}$"
-        )
-    else:
-        c0_text = f"{c0_fit:.2f}" if c0_fit is not None else "n/a"
-        c0_std_text = f"{c0_fit_std:.2f}" if c0_fit_std is not None else "n/a"
-        alpha_text = f"{alpha_fit:.3f}" if alpha_fit is not None else "n/a"
-        alpha_std_text = f"{alpha_fit_std:.3f}" if alpha_fit_std is not None else "n/a"
-        sigma_text = f"{sigma_int:.3f}" if sigma_int is not None else f"{intrinsic_scatter_dex:.3f}"
-        sigma_std_text = f"{sigma_int_std:.3f}" if sigma_int_std is not None else "n/a"
-        infer_text = (
-            rf"$c_0 = {c0_text} \pm {c0_std_text}$" "\n"
-            rf"$\alpha = {alpha_text} \pm {alpha_std_text}$" "\n"
-            rf"$\sigma_{{int}} = {sigma_text} \pm {sigma_std_text}$"
-        )
+    infer_text = (
+        rf"$n \geq {sersic_n_threshold:.2f}$: $c_0 = {c0_high_text}$, $\alpha = {alpha_high_text}$, $\sigma_{{int}} = {sigma_high_text}$" "\n"
+        rf"$n < {sersic_n_threshold:.2f}$: $c_0 = {c0_low_text}$, $\alpha = {alpha_low_text}$, $\sigma_{{int}} = {sigma_low_text}$"
+    )
     ax_top.text(
-        0.02,
         0.98,
+        0.02,
         infer_text,
         transform=ax_top.transAxes,
-        ha='left',
-        va='top',
+        ha='right',
+        va='bottom',
         fontsize=10,
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
     )
@@ -772,7 +699,7 @@ def plot_alpha_posterior_difference(alpha_high_samples: np.ndarray, alpha_low_sa
     hdi_low, hdi_high = az.hdi(diff, hdi_prob=0.94)
 
     hdi_mask = (centers >= hdi_low) & (centers <= hdi_high)
-    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color='gray', alpha=0.25)
+    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color=COLOR_HDI_BAND, alpha=0.25)
 
     ax.axvline(0.0, color='black', linestyle='--', linewidth=1)
     ax.set_title('Posterior Difference: alpha_high - alpha_low', fontsize=12)
@@ -816,7 +743,7 @@ def plot_logc0_posterior_difference(log_c0_high_samples: np.ndarray, log_c0_low_
     hdi_low, hdi_high = az.hdi(diff, hdi_prob=0.94)
 
     hdi_mask = (centers >= hdi_low) & (centers <= hdi_high)
-    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color='gray', alpha=0.25)
+    ax.fill_between(centers, 0.0, hist, where=hdi_mask, color=COLOR_HDI_BAND, alpha=0.25)
 
     ax.axvline(0.0, color='black', linestyle='--', linewidth=1)
     ax.set_title('Posterior Difference: log_c0_high - log_c0_low', fontsize=12)
@@ -846,14 +773,12 @@ def plot_logc0_posterior_difference(log_c0_high_samples: np.ndarray, log_c0_low_
 
 
 def main(
-    mode: str = 'curve_fit',
     n_threshold: str = 'auto',
     nrmse_threshold: float = None,
     sigma: int = 1,
 ):
     """
     Main execution function.
-    mode: 'curve_fit' (default) or 'mcmc'
     n_threshold: 'auto', 'all', or a float value
     sigma: integer selector for mu/cov columns (e.g., 1 uses log10_mu_obs)
     """
@@ -863,15 +788,9 @@ def main(
         print("Failed to load data. Exiting.")
         return
 
-    M200_raw = np.array(data['M200'], dtype=float)
-    M200_std = np.array(data['M200_std'], dtype=float)
-    c_raw = np.array(data['c'], dtype=float)
-    c_std = np.array(data['c_std'], dtype=float)
     sersic_n_raw = np.array(data['sersic_n'], dtype=float)
     nrmse = np.array(data['nrmse'], dtype=float) if 'nrmse' in data else None
 
-    M200_std = np.where(np.isfinite(M200_std), M200_std, 0.0)
-    c_std = np.where(np.isfinite(c_std), c_std, 0.0)
     sersic_n_raw = np.where(np.isfinite(sersic_n_raw), sersic_n_raw, 0.0)
 
     log10_mu_obs_raw = data.get('log10_mu_obs')
@@ -884,16 +803,14 @@ def main(
         mask = filter_by_nrmse(nrmse, threshold=nrmse_threshold)
         if mask is None:
             print("Warning: nrmse column missing; skipping NRMSE filtering.")
-            mask = np.ones_like(M200_raw, dtype=bool)
+            mask = np.ones_like(sersic_n_raw, dtype=bool)
     else:
-        mask = np.ones_like(M200_raw, dtype=bool)
+        mask = np.ones_like(sersic_n_raw, dtype=bool)
 
-    def compute_threshold(M200, c, sersic_n, c_err):
+    def compute_threshold(M200, c, sersic_n, log10_cov_obs):
         mode_lower = n_threshold.lower()
         if mode_lower == 'auto':
-            if mode == 'mcmc':
-                return infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
-            return infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
+            return infer_sersic_n_threshold_mcmc(M200, c, sersic_n, log10_cov_obs=log10_cov_obs)
 
         if mode_lower == 'all':
             threshold_val = 2.5
@@ -906,118 +823,81 @@ def main(
             return threshold_val
         except ValueError:
             print(f"\n--- Invalid Sersic n threshold '{n_threshold}', falling back to auto ---")
-            if mode == 'mcmc':
-                return infer_sersic_n_threshold_mcmc(M200, c, sersic_n, c_std=c_err)
-            return infer_sersic_n_threshold_grid(M200, c, sersic_n, c_std=c_err)
+            return infer_sersic_n_threshold_mcmc(M200, c, sersic_n, log10_cov_obs=log10_cov_obs)
 
-    def fit_all_data(M200, c, c_err, log10_mu_obs, log10_cov_obs):
+    def fit_all_data(log10_mu_obs, log10_cov_obs):
         if n_threshold.lower() != 'all':
             print("\n# 1. Skipping All Data fit (use --n=all to enable)")
-            return (None,) * 9
+            return None
 
         print("\n# 1. Fitting All Data")
-        if mode == 'mcmc':
-            print("\nUsing MCMC for fitting...")
-            return fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
+        print("\nUsing MCMC for fitting...")
+        return fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
 
-        print("\nUsing curve_fit for fitting...")
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all = fit_m200_c_nonlinear(M200, c, c_std=c_err)
-        return c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all, None, None, None, None
-
-    def fit_group(label, M200, c, c_err, log10_mu_obs, log10_cov_obs):
+    def fit_group(label, log10_mu_obs, log10_cov_obs):
         print(label)
-        if mode == 'mcmc':
-            return fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
-
-        c0, alpha, c0_std, alpha_std, log_rmse = fit_m200_c_nonlinear(M200, c, c_std=c_err)
-        return c0, alpha, c0_std, alpha_std, log_rmse, None, None, None, None
+        return fit_m200_c_mcmc(log10_mu_obs, log10_cov_obs)
 
     def run_pipeline(log10_mu_obs_raw, log10_cov_obs_raw, plot_suffix: str, label: str):
         print(f"\n=== Running {label} data ===")
-        if mode == 'mcmc' and (log10_mu_obs_raw is None or log10_cov_obs_raw is None):
+        if log10_mu_obs_raw is None or log10_cov_obs_raw is None:
             print(f"Warning: Missing log10_mu_obs/log10_cov_obs for {label}; skipping.")
             return
 
-        M200 = M200_raw[mask]
-        c = c_raw[mask]
-        c_err = c_std[mask] if c_std is not None else None
+        log10_mu_obs = np.array(log10_mu_obs_raw[mask].tolist(), dtype=float)
+        log10_cov_obs = np.array(log10_cov_obs_raw[mask].tolist(), dtype=float)
+
+        M200 = 10 ** log10_mu_obs[:, 0]
+        c = 10 ** log10_mu_obs[:, 1]
         sersic_n = sersic_n_raw[mask]
-        log10_mu_obs = log10_mu_obs_raw[mask] if log10_mu_obs_raw is not None else None
-        log10_cov_obs = log10_cov_obs_raw[mask] if log10_cov_obs_raw is not None else None
-        print(f"Data points after filtering: {len(M200)} (dropped {len(M200_raw) - len(M200)}), nrmse_threshold={nrmse_threshold}")
+
+        print(f"Data points after filtering: {len(M200)} (dropped {len(sersic_n_raw) - len(M200)}), nrmse_threshold={nrmse_threshold}")
 
         if len(M200) < 3:
             print("Not enough valid data points for fitting.")
             return
 
-        threshold = compute_threshold(M200, c, sersic_n, c_err)
-
-        c0_all, alpha_all, c0_std_all, alpha_std_all, log_rmse_all, sigma_int_all, sigma_int_std_all, alpha_samples_all, log_c0_samples_all = fit_all_data(
-            M200, c, c_err, log10_mu_obs, log10_cov_obs
-        )
-
         if n_threshold.lower() == 'all':
-            plot_m200_c_spaghetti(
+            fit_results_all = fit_all_data(log10_mu_obs, log10_cov_obs)
+            plot_m200_c_spaghetti_all(
                 M200,
                 c,
-                sersic_n,
-                threshold=threshold,
+                fit_results=fit_results_all,
                 plot_suffix=plot_suffix,
-                split_by_n=False,
-                c0_fit=c0_all,
-                alpha_fit=alpha_all,
-                c0_fit_std=c0_std_all,
-                alpha_fit_std=alpha_std_all,
-                sigma_int=sigma_int_all,
-                sigma_int_std=sigma_int_std_all,
             )
             plt.show()
             return
 
+        # split by Sersic n using the threshold
+        threshold = compute_threshold(M200, c, sersic_n, log10_cov_obs)
         mask_high_n = sersic_n >= threshold
         mask_low_n = sersic_n < threshold
 
-        c0_high, alpha_high, c0_std_high, alpha_std_high, log_rmse_high, sigma_int_high, sigma_int_std_high, alpha_samples_high, log_c0_samples_high = fit_group(
+        fit_results_high = fit_group(
             f"\n#2. Fitting High Sersic n (>= {threshold:.2f})",
-            M200[mask_high_n],
-            c[mask_high_n],
-            c_err[mask_high_n] if c_err is not None else None,
-            log10_mu_obs[mask_high_n] if log10_mu_obs is not None else None,
-            log10_cov_obs[mask_high_n] if log10_cov_obs is not None else None,
+            log10_mu_obs[mask_high_n],
+            log10_cov_obs[mask_high_n],
         )
 
-        c0_low, alpha_low, c0_std_low, alpha_std_low, log_rmse_low, sigma_int_low, sigma_int_std_low, alpha_samples_low, log_c0_samples_low = fit_group(
+        fit_results_low = fit_group(
             f"\n#3. Fitting Low Sersic n (< {threshold:.2f})",
-            M200[mask_low_n],
-            c[mask_low_n],
-            c_err[mask_low_n] if c_err is not None else None,
-            log10_mu_obs[mask_low_n] if log10_mu_obs is not None else None,
-            log10_cov_obs[mask_low_n] if log10_cov_obs is not None else None,
+            log10_mu_obs[mask_low_n],
+            log10_cov_obs[mask_low_n],
         )
 
-        if mode == 'mcmc' and alpha_samples_high is not None and alpha_samples_low is not None:
-            plot_alpha_posterior_difference(alpha_samples_high, alpha_samples_low, plot_suffix=plot_suffix)
-        if mode == 'mcmc' and log_c0_samples_high is not None and log_c0_samples_low is not None:
-            plot_logc0_posterior_difference(log_c0_samples_high, log_c0_samples_low, plot_suffix=plot_suffix)
+        if fit_results_high and fit_results_low and fit_results_high.get('alpha_samples') is not None and fit_results_low.get('alpha_samples') is not None:
+            plot_alpha_posterior_difference(fit_results_high['alpha_samples'], fit_results_low['alpha_samples'], plot_suffix=plot_suffix)
+        if fit_results_high and fit_results_low and fit_results_high.get('log_c0_samples') is not None and fit_results_low.get('log_c0_samples') is not None:
+            plot_logc0_posterior_difference(fit_results_high['log_c0_samples'], fit_results_low['log_c0_samples'], plot_suffix=plot_suffix)
 
-        plot_m200_c_spaghetti(
+        plot_m200_c_spaghetti_split(
             M200,
             c,
             sersic_n,
-            threshold=threshold,
+            fit_results_high=fit_results_high,
+            fit_results_low=fit_results_low,
+            sersic_n_threshold=threshold,
             plot_suffix=plot_suffix,
-            c0_fit=c0_all,
-            alpha_fit=alpha_all,
-            c0_fit_std=c0_std_all,
-            alpha_fit_std=alpha_std_all,
-            sigma_int=sigma_int_all,
-            sigma_int_std=sigma_int_std_all,
-            c0_high=c0_high,
-            alpha_high=alpha_high,
-            c0_low=c0_low,
-            alpha_low=alpha_low,
-            sigma_int_high=sigma_int_high,
-            sigma_int_low=sigma_int_low,
         )
 
         plt.show()
@@ -1037,8 +917,6 @@ def main(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Fit c-M200 relation.")
-    parser.add_argument('--mode', type=str, choices=['fit', 'mcmc'], default='mcmc',
-                        help="Fitting method to use: 'fit' or 'mcmc'")
     parser.add_argument('--n', type=str, default='2.5',
                         help="Sersic n threshold: 'all', 'auto', or a float value (e.g., '2.5')")
     parser.add_argument('--nmrse', '--nrmse', dest='nrmse', type=float, default=0.10,
@@ -1047,4 +925,4 @@ if __name__ == "__main__":
                         help="Sigma selector for mu/cov columns (e.g., 1 or 2)")
     args = parser.parse_args()
 
-    main(mode=args.mode, n_threshold=args.n, nrmse_threshold=args.nrmse, sigma=args.sigma)
+    main(n_threshold=args.n, nrmse_threshold=args.nrmse, sigma=args.sigma)

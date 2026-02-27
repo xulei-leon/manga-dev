@@ -14,11 +14,13 @@ import pytensor.tensor as pt
 M_PIVOT_H_INV = 2e12  # in Msun/h, pivot mass for c-M200 relation
 H_0 = 0.674           # Hubble parameter
 
-# Plotting Colors
-COLOR_DATA_POINTS = '0.2'
-COLOR_BOOTSTRAP_LINES = '0.4'
-COLOR_SIGMA_BAND = '0.8'
-COLOR_HDI_BAND = '0.8'
+# Plotting Colors (colorblind-safe palette + neutral grays)
+COLOR_DATA_POINTS = '#4D4D4D'
+COLOR_BOOTSTRAP_LINES = '#7F7F7F'
+COLOR_SIGMA_BAND = '#D9D9D9'
+COLOR_HDI_BAND = '#BDBDBD'
+COLOR_HIGH_N = '#D55E00'
+COLOR_LOW_N = '#0072B2'
 
 def load_config() -> dict:
     """Load configuration from config.toml."""
@@ -392,9 +394,11 @@ def infer_sersic_n_threshold_mcmc(M200: np.ndarray, c: np.ndarray, sersic_n: np.
 def plot_m200_c_spaghetti_all(
     M200: np.ndarray,
     c: np.ndarray,
+    log10_cov_obs: np.ndarray = None,
     fit_results: dict = None,
     n_boot: int = 50, # number of bootstrap samples for the spaghetti lines
     plot_suffix: str = "",
+    show_error_bars: bool = False,
 ):
     """
     Spaghetti plot of c-M200 relation for all data (no Sersic n split).
@@ -405,6 +409,8 @@ def plot_m200_c_spaghetti_all(
 
     M200 = M200[valid_mask]
     c = c[valid_mask]
+    if log10_cov_obs is not None:
+        log10_cov_obs = log10_cov_obs[valid_mask]
     mask_all = np.ones_like(M200, dtype=bool)
 
     m_plot = np.logspace(np.log10(np.min(M200)), np.log10(np.max(M200)), 100)
@@ -418,7 +424,12 @@ def plot_m200_c_spaghetti_all(
         gridspec_kw={'height_ratios': [3, 1]}
     )
 
-    ax_top.scatter(M200, c, color=COLOR_DATA_POINTS, alpha=0.7, label='Data (all)', s=20, edgecolors='none')
+    if log10_cov_obs is not None and show_error_bars:
+        M200_err = M200 * np.log(10) * np.sqrt(log10_cov_obs[:, 0, 0])
+        c_err = c * np.log(10) * np.sqrt(log10_cov_obs[:, 1, 1])
+        ax_top.errorbar(M200, c, xerr=M200_err, yerr=c_err, fmt='o', color=COLOR_DATA_POINTS, alpha=0.5, label='Data (all)', markersize=4, capsize=2, elinewidth=1)
+    else:
+        ax_top.scatter(M200, c, color=COLOR_DATA_POINTS, alpha=0.7, label='Data (all)', s=20, edgecolors='none')
 
     def bootstrap_lines(mask, color):
         if np.sum(mask) < 3:
@@ -466,7 +477,11 @@ def plot_m200_c_spaghetti_all(
     log_c_obs = np.log10(c)
     log_c_pred = np.log10(c_m200_profile(M200, c0_fit, alpha_fit, h=H_0))
     residuals = log_c_obs - log_c_pred
-    ax_bottom.scatter(M200, residuals, color=COLOR_DATA_POINTS, alpha=0.7, s=20, edgecolors='none')
+    if log10_cov_obs is not None and show_error_bars:
+        res_err = np.sqrt(log10_cov_obs[:, 1, 1])
+        ax_bottom.errorbar(M200, residuals, xerr=M200_err, yerr=res_err, fmt='o', color=COLOR_DATA_POINTS, alpha=0.5, markersize=4, capsize=2, elinewidth=1)
+    else:
+        ax_bottom.scatter(M200, residuals, color=COLOR_DATA_POINTS, alpha=0.7, s=20, edgecolors='none')
     ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
     sigma_band = sigma_int if sigma_int is not None else 0.15
     ax_bottom.axhspan(-sigma_band, sigma_band, color=COLOR_SIGMA_BAND, alpha=0.4)
@@ -519,11 +534,13 @@ def plot_m200_c_spaghetti_split(
     M200: np.ndarray,
     c: np.ndarray,
     sersic_n: np.ndarray,
+    log10_cov_obs: np.ndarray = None,
     fit_results_high: dict = None,
     fit_results_low: dict = None,
     sersic_n_threshold: float = 2.5,
     count_boot: int = 50, # count of bootstrap samples for the spaghetti lines
     plot_suffix: str = "",
+    show_error_bars: bool = False,
 ):
     """
     Spaghetti plot of c-M200 relations split by Sersic n groups using bootstrap fits.
@@ -535,6 +552,8 @@ def plot_m200_c_spaghetti_split(
     M200 = M200[valid_mask]
     c = c[valid_mask]
     sersic_n = sersic_n[valid_mask]
+    if log10_cov_obs is not None:
+        log10_cov_obs = log10_cov_obs[valid_mask]
 
     mask_high_n = sersic_n >= sersic_n_threshold
     mask_low_n = sersic_n < sersic_n_threshold
@@ -550,12 +569,20 @@ def plot_m200_c_spaghetti_split(
         gridspec_kw={'height_ratios': [3, 1]}
     )
 
-    ax_top.scatter(M200[mask_high_n], c[mask_high_n], color='red', alpha=0.4,
-                   label=rf'Data ($n \geq {sersic_n_threshold:.2f}$)', s=20, edgecolors='none')
-    ax_top.scatter(M200[mask_low_n], c[mask_low_n], color='blue', alpha=0.4,
-                   label=rf'Data ($n < {sersic_n_threshold:.2f}$)', s=20, edgecolors='none')
+    if log10_cov_obs is not None and show_error_bars:
+        M200_err = M200 * np.log(10) * np.sqrt(log10_cov_obs[:, 0, 0])
+        c_err = c * np.log(10) * np.sqrt(log10_cov_obs[:, 1, 1])
+        ax_top.errorbar(M200[mask_high_n], c[mask_high_n], xerr=M200_err[mask_high_n], yerr=c_err[mask_high_n], fmt='s', color=COLOR_HIGH_N, alpha=0.4,
+                       label=rf'Data ($n \geq {sersic_n_threshold:.2f}$)', markersize=4, capsize=2, elinewidth=1)
+        ax_top.errorbar(M200[mask_low_n], c[mask_low_n], xerr=M200_err[mask_low_n], yerr=c_err[mask_low_n], fmt='o', color=COLOR_LOW_N, alpha=0.4,
+                       label=rf'Data ($n < {sersic_n_threshold:.2f}$)', markersize=4, capsize=2, elinewidth=1)
+    else:
+        ax_top.scatter(M200[mask_high_n], c[mask_high_n], color=COLOR_HIGH_N, alpha=0.4,
+                       label=rf'Data ($n \geq {sersic_n_threshold:.2f}$)', s=20, marker='s', edgecolors='none')
+        ax_top.scatter(M200[mask_low_n], c[mask_low_n], color=COLOR_LOW_N, alpha=0.4,
+                       label=rf'Data ($n < {sersic_n_threshold:.2f}$)', s=20, marker='o', edgecolors='none')
 
-    def bootstrap_lines(mask, color):
+    def bootstrap_lines(mask, color, linestyle):
         if np.sum(mask) < 3:
             return
         log_M = np.log10(M200[mask])
@@ -569,10 +596,10 @@ def plot_m200_c_spaghetti_split(
             alpha = coeffs[0]
             log_c0 = coeffs[1]
             c_plot = c_m200_profile(m_plot, 10**log_c0, alpha, h=H_0)
-            ax_top.plot(m_plot, c_plot, color=color, alpha=0.15, linewidth=1)
+            ax_top.plot(m_plot, c_plot, color=color, alpha=0.15, linewidth=1, linestyle=linestyle)
 
-    bootstrap_lines(mask_high_n, 'red')
-    bootstrap_lines(mask_low_n, 'blue')
+            bootstrap_lines(mask_high_n, COLOR_HIGH_N, '-')
+            bootstrap_lines(mask_low_n, COLOR_LOW_N, '--')
 
     def fit_group_mean(mask):
         if np.sum(mask) < 3:
@@ -610,19 +637,19 @@ def plot_m200_c_spaghetti_split(
 
     if c0_high is not None and alpha_high is not None:
         c_mean_high = c_m200_profile(m_plot, c0_high, alpha_high, h=H_0)
-        ax_top.plot(m_plot, c_mean_high, color='red', linewidth=2, label='Mean Line (high n)')
+        ax_top.plot(m_plot, c_mean_high, color=COLOR_HIGH_N, linewidth=2, linestyle='-', label=rf'Mean Line ($n \geq {sersic_n_threshold:.2f}$)')
         log_c_mean = np.log10(c_mean_high)
         c_lower = 10**(log_c_mean - sigma_band_high)
         c_upper = 10**(log_c_mean + sigma_band_high)
-        ax_top.fill_between(m_plot, c_lower, c_upper, color='red', alpha=0.15, label=r'$1\sigma_{int}$ (high n)')
+        ax_top.fill_between(m_plot, c_lower, c_upper, color=COLOR_HIGH_N, alpha=0.15, label=rf'$1\sigma_{{int}}$ ($n \geq {sersic_n_threshold:.2f}$)')
 
     if c0_low is not None and alpha_low is not None:
         c_mean_low = c_m200_profile(m_plot, c0_low, alpha_low, h=H_0)
-        ax_top.plot(m_plot, c_mean_low, color='blue', linewidth=2, label='Mean Line (low n)')
+        ax_top.plot(m_plot, c_mean_low, color=COLOR_LOW_N, linewidth=2, linestyle='--', label=rf'Mean Line (n < {sersic_n_threshold:.2f})')
         log_c_mean = np.log10(c_mean_low)
         c_lower = 10**(log_c_mean - sigma_band_low)
         c_upper = 10**(log_c_mean + sigma_band_low)
-        ax_top.fill_between(m_plot, c_lower, c_upper, color='blue', alpha=0.15, label=r'$1\sigma_{int}$ (low n)')
+        ax_top.fill_between(m_plot, c_lower, c_upper, color=COLOR_LOW_N, alpha=0.15, label=rf'$1\sigma_{{int}}$ (n < {sersic_n_threshold:.2f})')
 
     log_c_obs = np.log10(c)
     log_c_pred = np.full_like(log_c_obs, np.nan)
@@ -635,11 +662,16 @@ def plot_m200_c_spaghetti_split(
         log_c_pred = np.log10(c_m200_profile(M200, c0_all, alpha_all, h=H_0))
 
     residuals = log_c_obs - log_c_pred
-    ax_bottom.scatter(M200[mask_high_n], residuals[mask_high_n], color='red', alpha=0.4, s=20, edgecolors='none')
-    ax_bottom.scatter(M200[mask_low_n], residuals[mask_low_n], color='blue', alpha=0.4, s=20, edgecolors='none')
+    if log10_cov_obs is not None and show_error_bars:
+        res_err = np.sqrt(log10_cov_obs[:, 1, 1])
+        ax_bottom.errorbar(M200[mask_high_n], residuals[mask_high_n], xerr=M200_err[mask_high_n], yerr=res_err[mask_high_n], fmt='s', color=COLOR_HIGH_N, alpha=0.4, markersize=4, capsize=2, elinewidth=1)
+        ax_bottom.errorbar(M200[mask_low_n], residuals[mask_low_n], xerr=M200_err[mask_low_n], yerr=res_err[mask_low_n], fmt='o', color=COLOR_LOW_N, alpha=0.4, markersize=4, capsize=2, elinewidth=1)
+    else:
+        ax_bottom.scatter(M200[mask_high_n], residuals[mask_high_n], color=COLOR_HIGH_N, alpha=0.4, s=20, marker='s', edgecolors='none')
+        ax_bottom.scatter(M200[mask_low_n], residuals[mask_low_n], color=COLOR_LOW_N, alpha=0.4, s=20, marker='o', edgecolors='none')
     ax_bottom.axhline(0.0, color='black', linestyle='--', linewidth=1.2)
-    ax_bottom.axhspan(-sigma_band_high, sigma_band_high, color='red', alpha=0.1)
-    ax_bottom.axhspan(-sigma_band_low, sigma_band_low, color='blue', alpha=0.1)
+    ax_bottom.axhspan(-sigma_band_high, sigma_band_high, color=COLOR_HIGH_N, alpha=0.1)
+    ax_bottom.axhspan(-sigma_band_low, sigma_band_low, color=COLOR_LOW_N, alpha=0.1)
 
     title = f"Dark Matter Halo Concentration vs Mass\n(Split by Sersic n={sersic_n_threshold:.2f})\n"
 
@@ -776,6 +808,7 @@ def main(
     n_threshold: str = 'auto',
     nrmse_threshold: float = None,
     sigma: int = 1,
+    show_error_bars: bool = False,
 ):
     """
     Main execution function.
@@ -862,8 +895,10 @@ def main(
             plot_m200_c_spaghetti_all(
                 M200,
                 c,
+                log10_cov_obs=log10_cov_obs,
                 fit_results=fit_results_all,
                 plot_suffix=plot_suffix,
+                show_error_bars=show_error_bars,
             )
             plt.show()
             return
@@ -894,10 +929,12 @@ def main(
             M200,
             c,
             sersic_n,
+            log10_cov_obs=log10_cov_obs,
             fit_results_high=fit_results_high,
             fit_results_low=fit_results_low,
             sersic_n_threshold=threshold,
             plot_suffix=plot_suffix,
+            show_error_bars=show_error_bars,
         )
 
         plt.show()
@@ -923,6 +960,8 @@ if __name__ == "__main__":
                         help="NRMSE threshold: keep points with nrmse <= value")
     parser.add_argument('--sigma', type=int, default=2,
                         help="Sigma selector for mu/cov columns (e.g., 1 or 2)")
+    parser.add_argument('--show-error-bars', action='store_true',
+                        help="Show error bars for data points in plots")
     args = parser.parse_args()
 
-    main(n_threshold=args.n, nrmse_threshold=args.nrmse, sigma=args.sigma)
+    main(n_threshold=args.n, nrmse_threshold=args.nrmse, sigma=args.sigma, show_error_bars=args.show_error_bars)

@@ -525,7 +525,7 @@ def plot_m200_c_spaghetti_all(
     )
 
     result_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = result_dir / f"m200_c_spaghetti{plot_suffix}.png"
+    plot_path = result_dir / f"m200_c_spaghetti{plot_suffix}_all.png"
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"Spaghetti plot saved to {plot_path}")
 
@@ -598,8 +598,8 @@ def plot_m200_c_spaghetti_split(
             c_plot = c_m200_profile(m_plot, 10**log_c0, alpha, h=H_0)
             ax_top.plot(m_plot, c_plot, color=color, alpha=0.15, linewidth=1, linestyle=linestyle)
 
-            bootstrap_lines(mask_high_n, COLOR_HIGH_N, '-')
-            bootstrap_lines(mask_low_n, COLOR_LOW_N, '--')
+    bootstrap_lines(mask_high_n, COLOR_HIGH_N, '-')
+    bootstrap_lines(mask_low_n, COLOR_LOW_N, '-')
 
     def fit_group_mean(mask):
         if np.sum(mask) < 3:
@@ -711,7 +711,7 @@ def plot_m200_c_spaghetti_split(
     )
 
     result_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = result_dir / f"m200_c_spaghetti{plot_suffix}.png"
+    plot_path = result_dir / f"m200_c_spaghetti{plot_suffix}_split.png"
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"Spaghetti plot saved to {plot_path}")
 
